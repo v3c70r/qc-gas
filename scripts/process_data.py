@@ -1,8 +1,13 @@
 import gzip
 import json
 import os
+import sys
 
 def process_stations():
+    # Check if download file exists
+    if not os.path.exists('stations.geojson.gz') and not os.path.exists('stations.geojson'):
+        print("No data file found, using existing data/stations.json")
+        sys.exit(0)
     # Read GeoJSON
     import gzip
     try:

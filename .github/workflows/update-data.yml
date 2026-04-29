@@ -14,7 +14,7 @@ jobs:
         with:
           python-version: '3.11'
 
-- name: Download and process data
+      - name: Download and process data
         continue-on-error: true
         run: |
            python scripts/download_data.py || echo "No new data or download failed"
