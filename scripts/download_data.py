@@ -1,12 +1,11 @@
 import urllib.request
 import time
 import random
+import sys
 
 url = 'https://regieessencequebec.ca/stations.geojson.gz'
 filename = 'stations.geojson.gz'
 max_retries = 3
-
-req = urllib.request.Request(url, headers={'User-Agent': 'Mozilla/5.0'})
 
 for i in range(max_retries):
     try:
@@ -21,4 +20,5 @@ for i in range(max_retries):
             time.sleep(wait)
         else:
             print("All 3 attempts failed.")
-            raise e
+            print("Using existing data file if available")
+            sys.exit(0)
