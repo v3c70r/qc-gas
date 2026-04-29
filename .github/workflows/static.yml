@@ -47,6 +47,9 @@ jobs:
       - name: Copy data folder
         run: cp -r data dist/
 
+      - name: Copy logos folder
+        run: cp -r logos dist/
+
       - name: Setup Pages
         uses: actions/configure-pages@v4
 

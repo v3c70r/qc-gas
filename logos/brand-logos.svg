@@ -1,0 +1,63 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 200 60">
+  <style>text { font-family: Arial, sans-serif; font-weight: bold; }</style>
+  <!-- Shell -->
+  <g id="shell" transform="translate(0,0)">
+    <rect x="0" y="0" width="50" height="50" fill="#F0F0F0" rx="4"/>
+    <circle cx="25" cy="25" r="15" fill="#ED1118"/>
+    <text x="25" y="55" font-size="10" text-anchor="middle" fill="#333">Shell</text>
+  </g>
+  <!-- Petro-Canada -->
+  <g id="petro-canada" transform="translate(50,0)">
+    <rect x="0" y="0" width="50" height="50" fill="#F0F0F0" rx="4"/>
+    <text x="25" y="30" font-size="9" text-anchor="middle" fill="#D00">Petro</text>
+    <text x="25" y="42" font-size="9" text-anchor="middle" fill="#D00">Canada</text>
+  </g>
+  <!-- Couche-Tard -->
+  <g id="couche-tard" transform="translate(100,0)">
+    <rect x="0" y="0" width="50" height="50" fill="#F0F0F0" rx="4"/>
+    <text x="25" y="30" font-size="9" text-anchor="middle" fill="#0055A4">Couche</text>
+    <text x="25" y="42" font-size="9" text-anchor="middle" fill="#0055A4">Tard</text>
+  </g>
+  <!-- Canadian Tire -->
+  <g id="canadian-tire" transform="translate(150,0)">
+    <rect x="0" y="0" width="50" height="50" fill="#F0F0F0" rx="4"/>
+    <text x="25" y="30" font-size="9" text-anchor="middle" fill="#FF6600">Canadian</text>
+    <text x="25" y="42" font-size="9" text-anchor="middle" fill="#FF6600">Tire</text>
+  </g>
+  <!-- Esso -->
+  <g id="esso" transform="translate(200,0)">
+    <rect x="0" y="0" width="50" height="50" fill="#F0F0F0" rx="4"/>
+    <text x="25" y="30" font-size="12" text-anchor="middle" fill="#E31C1C">Esso</text>
+  </g>
+  <!-- Costco -->
+  <g id="costco" transform="translate(250,0)">
+    <rect x="0" y="0" width="50" height="50" fill="#F0F0F0" rx="4"/>
+    <text x="25" y="30" font-size="10" text-anchor="middle" fill="#0065AD">Costco</text>
+  </g>
+  <!-- Irving -->
+  <g id="irving" transform="translate(300,0)">
+    <rect x="0" y="0" width="50" height="50" fill="#F0F0F0" rx="4"/>
+    <text x="25" y="30" font-size="11" text-anchor="middle" fill="#E31837">Irving</text>
+  </g>
+  <!-- Ultramar -->
+  <g id="ultramar" transform="translate(350,0)">
+    <rect x="0" y="0" width="50" height="50" fill="#F0F0F0" rx="4"/>
+    <text x="25" y="30" font-size="11" text-anchor="middle" fill="#1C75BC">Ultramar</text>
+  </g>
+  <!-- Mobil -->
+  <g id="mobil" transform="translate(400,0)">
+    <rect x="0" y="0" width="50" height="50" fill="#F0F0F0" rx="4"/>
+    <text x="25" y="30" font-size="11" text-anchor="middle" fill="#0066CC">Mobil</text>
+  </g>
+  <!-- Harnois -->
+  <g id="harnois" transform="translate(450,0)">
+    <rect x="0" y="0" width="50" height="50" fill="#F0F0F0" rx="4"/>
+    <text x="25" y="30" font-size="11" text-anchor="middle" fill="#FF6600">Harnois</text>
+  </g>
+  <!-- Axco -->
+  <g id="axco" transform="translate(500,0)">
+    <rect x="0" y="0" width="50" height="50" fill="#F0F0F0" rx="4"/>
+    <text x="25" y="30" font-size="11" text-anchor="middle" fill="#FF6600">Axco</text>
+  </g>
+</svg>
