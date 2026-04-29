@@ -25,7 +25,7 @@ jobs:
   build-and-deploy:
     needs: update-data
     environment:
-      name: Credentials # Matches your screenshot
+      name: Credentials
     runs-on: ubuntu-latest
     steps:
       - name: Checkout
@@ -36,7 +36,7 @@ jobs:
         with:
           node-version: '20'
 
-- name: Install dependencies
+      - name: Install dependencies
         run: npm install
 
       - name: Build
@@ -53,7 +53,7 @@ jobs:
       - name: Upload artifact
         uses: actions/upload-pages-artifact@v3
         with:
-          path: './dist' # Vite's default output folder
+          path: './dist'
 
       - name: Deploy to GitHub Pages
         uses: actions/deploy-pages@v4
