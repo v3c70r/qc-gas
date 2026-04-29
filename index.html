@@ -12,7 +12,7 @@
     <div id="sidebar" class="collapsed">
       <div id="sidebar-content">
         <div class="control-group">
-          <label>Rayon de recherche</label>
+          <label id="search-radius-label">Rayon de recherche</label>
           <div class="range-selector">
             <button class="top-btn range-btn active" data-radius="5">5 km</button>
             <button class="top-btn range-btn" data-radius="10">10 km</button>
@@ -22,7 +22,7 @@
         </div>
 
         <div class="control-group">
-          <label>Plage de prix</label>
+          <label id="price-range-label">Plage de prix</label>
           <div style="display: flex; align-items: center; gap: 10px;">
             <input type="range" class="range-slider" id="min-price" min="159" max="239" value="159" step="0.1">
             <input type="range" class="range-slider" id="max-price" min="159" max="239" value="239" step="0.1">
@@ -33,58 +33,58 @@
         </div>
 
         <div class="control-group">
-          <label>Marque</label>
+          <label id="brand-label">Marque</label>
           <div class="filter-row" id="brand-filters">
           </div>
         </div>
 
         <div class="control-group">
-          <label>Type de carburant</label>
+          <label id="fuel-type-label">Type de carburant</label>
           <div class="filter-row">
             <label style="display: flex; align-items: center; gap: 6px; font-size: 13px;">
               <input type="checkbox" class="fuel-filter" value="regular" checked>
-              Régulier
+              <span class="fuel-filter-label" data-fuel="regular">Régular</span>
             </label>
             <label style="display: flex; align-items: center; gap: 6px; font-size: 13px;">
               <input type="checkbox" class="fuel-filter" value="super" checked>
-              Super
+              <span class="fuel-filter-label" data-fuel="super">Super</span>
             </label>
             <label style="display: flex; align-items: center; gap: 6px; font-size: 13px;">
               <input type="checkbox" class="fuel-filter" value="diesel" checked>
-              Diesel
+              <span class="fuel-filter-label" data-fuel="diesel">Diesel</span>
             </label>
           </div>
         </div>
 
         <div class="control-group">
-          <label>Région</label>
+          <label id="region-label">Région</label>
           <select class="filter-btn" id="region-filter" style="width: 100%; padding: 6px;">
             <option value="">Tous les régions</option>
           </select>
         </div>
 
         <div id="stats-panel">
-          <h3>Statistiques du rayon</h3>
+          <h3 id="stats-title">Statistiques du rayon</h3>
           <div class="stat-item">
-            <span class="stat-label">Stations</span>
+            <span class="stat-label" data-i18n="stations">Stations</span>
             <span class="stat-value" id="station-count">0</span>
           </div>
           <div class="stat-item">
-            <span class="stat-label">Régulier</span>
+            <span class="stat-label" data-i18n="regular">Régulier</span>
             <span class="stat-value" id="regular-stats">-</span>
           </div>
           <div class="stat-item">
-            <span class="stat-label">Super</span>
+            <span class="stat-label" data-i18n="super">Super</span>
             <span class="stat-value" id="super-stats">-</span>
           </div>
           <div class="stat-item">
-            <span class="stat-label">Diesel</span>
+            <span class="stat-label" data-i18n="diesel">Diesel</span>
             <span class="stat-value" id="diesel-stats">-</span>
           </div>
         </div>
 
         <div class="control-group">
-          <label>Stations (trié par prix)</label>
+          <label id="station-list-label">Stations (trié par prix)</label>
           <div id="station-list">
           </div>
         </div>
@@ -99,23 +99,24 @@
         </svg>
       </div>
       <div id="header">
-        <h1>⛽ Prix de l'essence Québec</h1>
+        <h1 id="title">⛽ Prix de l'essence Québec</h1>
         <div class="top-controls">
           <button class="top-btn" id="current-location">📍 Ma position</button>
           <button class="top-btn" id="reset-view">↺ Réinitialiser</button>
         </div>
         <div class="status" id="data-status">Données: en chargement...</div>
+        <div id="language-selector"></div>
       </div>
       <div id="loading">
         <div class="spinner"></div>
-        <div>Chargement des données...</div>
+        <div id="loading-text">Chargement des données...</div>
       </div>
       <div id="legend">
         <div id="legend-title">Prix au litre</div>
         <div class="legend-bar"></div>
         <div class="legend-text">
-          <span>Bas (≤1.70$)</span>
-          <span>Élevé (≥1.95$)</span>
+          <span id="legend-low">Bas (≤1.70$)</span>
+          <span id="legend-high">Élevé (≥1.95$)</span>
         </div>
       </div>
       <div id="map" style="width: 100%; height: 100%;"></div>
@@ -123,6 +124,7 @@
   </div>
 
   <script src="https://api.mapbox.com/mapbox-gl-js/v3.6.0/mapbox-gl.js"></script>
+  <script src="js/i18n.js"></script>
   <script type="module" src="js/app.js"></script>
 </body>
 </html>

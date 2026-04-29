@@ -383,3 +383,28 @@ body {
   0% { transform: rotate(0deg); }
   100% { transform: rotate(360deg); }
 }
+
+/* Language selector */
+#language-selector {
+  display: flex;
+  gap: 4px;
+}
+
+.lang-btn {
+  padding: 4px 8px;
+  border: 1px solid rgba(255,255,255,0.3);
+  background: rgba(255,255,255,0.15);
+  color: white;
+  border-radius: 4px;
+  cursor: pointer;
+  font-size: 11px;
+  backdrop-filter: blur(4px);
+}
+
+.lang-btn:hover {
+  background: rgba(255,255,255,0.25);
+}
+
+.lang-btn.active {
+  background: rgba(255,255,255,0.3);
+}

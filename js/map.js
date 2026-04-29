@@ -65,56 +65,56 @@ export async function loadStations() {
     
     console.log('Loaded', data.features.length, 'stations');
     
-    // Initialize brand filters with color dots (matching map)
+    // Initialize brand filters with logos
     const brands = [...new Set(data.features.map(f => f.properties.brand).filter(Boolean))].sort();
     const brandContainer = document.getElementById('brand-filters');
-    const brandColors = {
-      'AMI': '#0066CC',
-      'Aucun': '#888888',
-      'Axco': '#FF6600',
-      'Beausoir': '#1E90FF',
-      'Belzile': '#FF4500',
-      'Bélisle': '#228B22',
-      'Canadian Tire': '#FF6600',
-      'Costco': '#0065AD',
-      'Couche-Tard': '#0055A4',
-      'Crevier': '#4169E1',
-      'Eko': '#32CD32',
-      'Esso': '#E31C1C',
-      'Francis': '#FF8C00',
-      'Gaz-O-Bar': '#FF6347',
-      'Harnois': '#FF6600',
-      'Irving': '#E31837',
-      'Le Relais': '#228B22',
-      'Little Tree': '#2E8B57',
-      'MacEwen': '#006400',
-      'Miraco': '#4169E1',
-      'Mobil': '#0066CC',
-      'Nutrinor Énergies': '#FF8C00',
-      'Paddock': '#8B4513',
-      'Paquet': '#FF6347',
-      'Pepco': '#FF4500',
-      'Petro-Canada': '#D00',
-      'Petroplus': '#4169E1',
-      'Pétro-Québec': '#0066CC',
-      'Pétro-T': '#FF6600',
-      'Pétroles Maurice': '#FF8C00',
-      'Quickie': '#FF6347',
-      'Sergaz': '#FF4500',
-      'Shell': '#ED1118',
-      'Sonic': '#FF4500',
-      'Stinson': '#4169E1',
-      'Super Gaz': '#FF6347',
-      'Ultramar': '#1C75BC',
+    const brandLogos = {
+      'AMI': '<svg viewBox="0 0 24 24" width="18" height="18"><circle cx="12" cy="12" r="10" fill="#0066CC"/><text x="12" y="15" font-size="6" text-anchor="middle" fill="white">A</text></svg>',
+      'Aucun': '<svg viewBox="0 0 24 24" width="18" height="18"><circle cx="12" cy="12" r="10" fill="#888"/><text x="12" y="15" font-size="6" text-anchor="middle" fill="white">?</text></svg>',
+      'Axco': '<svg viewBox="0 0 24 24" width="18" height="18"><circle cx="12" cy="12" r="10" fill="#FF6600"/><text x="12" y="15" font-size="6" text-anchor="middle" fill="white">AX</text></svg>',
+      'Beausoir': '<svg viewBox="0 0 24 24" width="18" height="18"><circle cx="12" cy="12" r="10" fill="#1E90FF"/><text x="12" y="15" font-size="5" text-anchor="middle" fill="white">B</text></svg>',
+      'Belzile': '<svg viewBox="0 0 24 24" width="18" height="18"><circle cx="12" cy="12" r="10" fill="#FF4500"/><text x="12" y="15" font-size="6" text-anchor="middle" fill="white">B</text></svg>',
+      'Bélisle': '<svg viewBox="0 0 24 24" width="18" height="18"><circle cx="12" cy="12" r="10" fill="#228B22"/><text x="12" y="15" font-size="6" text-anchor="middle" fill="white">BL</text></svg>',
+      'Canadian Tire': '<svg viewBox="0 0 24 24" width="18" height="18"><circle cx="12" cy="12" r="10" fill="#FF6600"/><text x="12" y="15" font-size="4" text-anchor="middle" fill="white">CT</text></svg>',
+      'Costco': '<svg viewBox="0 0 24 24" width="18" height="18"><circle cx="12" cy="12" r="10" fill="#0065AD"/><text x="12" y="15" font-size="5" text-anchor="middle" fill="white">C</text></svg>',
+      'Couche-Tard': '<svg viewBox="0 0 24 24" width="18" height="18"><circle cx="12" cy="12" r="10" fill="#0055A4"/><text x="12" y="15" font-size="5" text-anchor="middle" fill="white">CT</text></svg>',
+      'Crevier': '<svg viewBox="0 0 24 24" width="18" height="18"><circle cx="12" cy="12" r="10" fill="#4169E1"/><text x="12" y="15" font-size="5" text-anchor="middle" fill="white">C</text></svg>',
+      'Eko': '<svg viewBox="0 0 24 24" width="18" height="18"><circle cx="12" cy="12" r="10" fill="#32CD32"/><text x="12" y="15" font-size="6" text-anchor="middle" fill="white">E</text></svg>',
+      'Esso': '<svg viewBox="0 0 24 24" width="18" height="18"><circle cx="12" cy="12" r="10" fill="#E31C1C"/><text x="12" y="15" font-size="6" text-anchor="middle" fill="white">E</text></svg>',
+      'Francis': '<svg viewBox="0 0 24 24" width="18" height="18"><circle cx="12" cy="12" r="10" fill="#FF8C00"/><text x="12" y="15" font-size="5" text-anchor="middle" fill="white">F</text></svg>',
+      'Gaz-O-Bar': '<svg viewBox="0 0 24 24" width="18" height="18"><circle cx="12" cy="12" r="10" fill="#FF6347"/><text x="12" y="15" font-size="4" text-anchor="middle" fill="white">GB</text></svg>',
+      'Harnois': '<svg viewBox="0 0 24 24" width="18" height="18"><circle cx="12" cy="12" r="10" fill="#FF6600"/><text x="12" y="15" font-size="5" text-anchor="middle" fill="white">H</text></svg>',
+      'Irving': '<svg viewBox="0 0 24 24" width="18" height="18"><circle cx="12" cy="12" r="10" fill="#E31837"/><text x="12" y="15" font-size="5" text-anchor="middle" fill="white">I</text></svg>',
+      'Le Relais': '<svg viewBox="0 0 24 24" width="18" height="18"><circle cx="12" cy="12" r="10" fill="#228B22"/><text x="12" y="15" font-size="4" text-anchor="middle" fill="white">LR</text></svg>',
+      'Little Tree': '<svg viewBox="0 0 24 24" width="18" height="18"><circle cx="12" cy="12" r="10" fill="#2E8B57"/><text x="12" y="15" font-size="4" text-anchor="middle" fill="white">LT</text></svg>',
+      'MacEwen': '<svg viewBox="0 0 24 24" width="18" height="18"><circle cx="12" cy="12" r="10" fill="#006400"/><text x="12" y="15" font-size="5" text-anchor="middle" fill="white">M</text></svg>',
+      'Miraco': '<svg viewBox="0 0 24 24" width="18" height="18"><circle cx="12" cy="12" r="10" fill="#4169E1"/><text x="12" y="15" font-size="5" text-anchor="middle" fill="white">M</text></svg>',
+      'Mobil': '<svg viewBox="0 0 24 24" width="18" height="18"><circle cx="12" cy="12" r="10" fill="#0066CC"/><text x="12" y="15" font-size="5" text-anchor="middle" fill="white">M</text></svg>',
+      'Nutrinor Énergies': '<svg viewBox="0 0 24 24" width="18" height="18"><circle cx="12" cy="12" r="10" fill="#FF8C00"/><text x="12" y="15" font-size="4" text-anchor="middle" fill="white">N</text></svg>',
+      'Paddock': '<svg viewBox="0 0 24 24" width="18" height="18"><circle cx="12" cy="12" r="10" fill="#8B4513"/><text x="12" y="15" font-size="5" text-anchor="middle" fill="white">P</text></svg>',
+      'Paquet': '<svg viewBox="0 0 24 24" width="18" height="18"><circle cx="12" cy="12" r="10" fill="#FF6347"/><text x="12" y="15" font-size="5" text-anchor="middle" fill="white">P</text></svg>',
+      'Pepco': '<svg viewBox="0 0 24 24" width="18" height="18"><circle cx="12" cy="12" r="10" fill="#FF4500"/><text x="12" y="15" font-size="5" text-anchor="middle" fill="white">P</text></svg>',
+      'Petro-Canada': '<svg viewBox="0 0 24 24" width="18" height="18"><circle cx="12" cy="12" r="10" fill="#D00"/><text x="12" y="15" font-size="4" text-anchor="middle" fill="white">P</text></svg>',
+      'Petroplus': '<svg viewBox="0 0 24 24" width="18" height="18"><circle cx="12" cy="12" r="10" fill="#4169E1"/><text x="12" y="15" font-size="5" text-anchor="middle" fill="white">P</text></svg>',
+      'Pétro-Québec': '<svg viewBox="0 0 24 24" width="18" height="18"><circle cx="12" cy="12" r="10" fill="#0066CC"/><text x="12" y="15" font-size="4" text-anchor="middle" fill="white">PQ</text></svg>',
+      'Pétro-T': '<svg viewBox="0 0 24 24" width="18" height="18"><circle cx="12" cy="12" r="10" fill="#FF6600"/><text x="12" y="15" font-size="5" text-anchor="middle" fill="white">PT</text></svg>',
+      'Pétroles Maurice': '<svg viewBox="0 0 24 24" width="18" height="18"><circle cx="12" cy="12" r="10" fill="#FF8C00"/><text x="12" y="15" font-size="4" text-anchor="middle" fill="white">PM</text></svg>',
+      'Quickie': '<svg viewBox="0 0 24 24" width="18" height="18"><circle cx="12" cy="12" r="10" fill="#FF6347"/><text x="12" y="15" font-size="5" text-anchor="middle" fill="white">Q</text></svg>',
+      'Sergaz': '<svg viewBox="0 0 24 24" width="18" height="18"><circle cx="12" cy="12" r="10" fill="#FF4500"/><text x="12" y="15" font-size="5" text-anchor="middle" fill="white">S</text></svg>',
+      'Shell': '<svg viewBox="0 0 24 24" width="18" height="18"><circle cx="12" cy="12" r="10" fill="#ED1118"/><text x="12" y="15" font-size="6" text-anchor="middle" fill="white">S</text></svg>',
+      'Sonic': '<svg viewBox="0 0 24 24" width="18" height="18"><circle cx="12" cy="12" r="10" fill="#FF4500"/><text x="12" y="15" font-size="5" text-anchor="middle" fill="white">S</text></svg>',
+      'Stinson': '<svg viewBox="0 0 24 24" width="18" height="18"><circle cx="12" cy="12" r="10" fill="#4169E1"/><text x="12" y="15" font-size="5" text-anchor="middle" fill="white">S</text></svg>',
+      'Super Gaz': '<svg viewBox="0 0 24 24" width="18" height="18"><circle cx="12" cy="12" r="10" fill="#FF6347"/><text x="12" y="15" font-size="4" text-anchor="middle" fill="white">SG</text></svg>',
+      'Ultramar': '<svg viewBox="0 0 24 24" width="18" height="18"><circle cx="12" cy="12" r="10" fill="#1C75BC"/><text x="12" y="15" font-size="5" text-anchor="middle" fill="white">U</text></svg>',
     };
     
     brands.slice(0, 12).forEach(brand => {
       const label = document.createElement('label');
       label.style.cssText = 'display:flex;align-items:center;gap:4px;font-size:12px;padding:2px 0';
-      const color = brandColors[brand] || '#666';
+      const logo = brandLogos[brand] || '<svg viewBox="0 0 24 24" width="18" height="18"><circle cx="12" cy="12" r="10" fill="#666"/><text x="12" y="15" font-size="6" text-anchor="middle" fill="white">?</text></svg>';
       label.innerHTML = `
         <input type="checkbox" class="brand-filter" value="${brand}" checked>
-        <span style="width:18px;height:18px;min-width:18px;background:${color};border-radius:50%;display:inline-block;"></span>
+        ${logo}
         <span>${brand}</span>
       `;
       brandContainer.appendChild(label);
@@ -208,52 +208,7 @@ function addStationLayers() {
     });
   }
 
-  // Brand colors for markers
-  const brandMarkerColors = {
-    'AMI': '#0066CC',
-    'Aucun': '#888888',
-    'Axco': '#FF6600',
-    'Beausoir': '#1E90FF',
-    'Belzile': '#FF4500',
-    'Bélisle': '#228B22',
-    'Canadian Tire': '#FF6600',
-    'Costco': '#0065AD',
-    'Couche-Tard': '#0055A4',
-    'Crevier': '#4169E1',
-    'Eko': '#32CD32',
-    'Esso': '#E31C1C',
-    'Francis': '#FF8C00',
-    'Gaz-O-Bar': '#FF6347',
-    'Harnois': '#FF6600',
-    'Irving': '#E31837',
-    'Le Relais': '#228B22',
-    'Little Tree': '#2E8B57',
-    'MacEwen': '#006400',
-    'Miraco': '#4169E1',
-    'Mobil': '#0066CC',
-    'Nutrinor Énergies': '#FF8C00',
-    'Paddock': '#8B4513',
-    'Paquet': '#FF6347',
-    'Pepco': '#FF4500',
-    'Petro-Canada': '#D00',
-    'Petroplus': '#4169E1',
-    'Pétro-Québec': '#0066CC',
-    'Pétro-T': '#FF6600',
-    'Pétroles Maurice': '#FF8C00',
-    'Quickie': '#FF6347',
-    'Sergaz': '#FF4500',
-    'Shell': '#ED1118',
-    'Sonic': '#FF4500',
-    'Stinson': '#4169E1',
-    'Super Gaz': '#FF6347',
-    'Ultramar': '#1C75BC',
-  };
-    
-    function getBrandColor(brand) {
-      return brandMarkerColors[brand] || '#666666';
-    }
-    
-    // Individual stations (zoom >= 10)
+  // Individual stations (zoom >= 10) - color by price
     if (!map.getLayer('unclustered-points')) {
       map.addLayer({
         id: 'unclustered-points',
@@ -261,23 +216,13 @@ function addStationLayers() {
         source: 'stations',
         filter: ['!', ['has', 'point_count']],
         paint: {
-          'circle-color': ['get', 'brand', ['get', 'brand'], getBrandColor],
           'circle-color': [
-            'match',
-            ['get', 'brand'],
-            'Shell', '#ED1118',
-            'Petro-Canada', '#D00',
-            'Couche-Tard', '#0055A4',
-            'Canadian Tire', '#FF6600',
-            'Costco', '#0065AD',
-            'Irving', '#E31837',
-            'Ultramar', '#1C75BC',
-            'Mobil', '#0066CC',
-            'Esso', '#E31C1C',
-            'Harnois', '#FF6600',
-            'Axco', '#FF6600',
-            'Crevier', '#4169E1',
-            '#666666'
+            'interpolate',
+            ['linear'],
+            ['get', 'regular_price'],
+            165, '#16a34a',  // Green - cheap
+            180, '#eab308',  // Yellow - medium
+            200, '#dc2626'   // Red - expensive
           ],
           'circle-radius': [
             'interpolate',
