@@ -10,7 +10,7 @@ def process_stations():
             data = json.loads(f.read())
     except:
         with open('stations.geojson', 'r', encoding='utf-8') as f:
-        data = json.loads(f.read())
+            data = json.loads(f.read())
     
     print(f"Total features: {len(data['features'])}")
     
