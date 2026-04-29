@@ -20,8 +20,8 @@ jobs:
         env:
           MAPBOX_TOKEN: ${{ secrets.MAPBOX_TOKEN }}
         run: |
-          python -c "import urllib.request; urllib.request.urlretrieve('https://regieessencequebec.ca/stations.geojson.gz', 'stations.geojson.gz')"
-          python scripts/process_data.py
+           python -c "import urllib.request; urllib.request.urlretrieve('https://regieessencequebec.ca/stations.geojson', 'stations.geojson')"
+           python scripts/process_data.py
 
       - name: Commit and push if changed
         run: |

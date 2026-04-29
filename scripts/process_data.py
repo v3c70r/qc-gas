@@ -3,8 +3,13 @@ import json
 import os
 
 def process_stations():
-    # Read compressed GeoJSON
-    with gzip.open('stations.geojson.gz', 'rb') as f:
+    # Read GeoJSON
+    import gzip
+    try:
+        with gzip.open('stations.geojson.gz', 'rb') as f:
+            data = json.loads(f.read())
+    except:
+        with open('stations.geojson', 'r', encoding='utf-8') as f:
         data = json.loads(f.read())
     
     print(f"Total features: {len(data['features'])}")
