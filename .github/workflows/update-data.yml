@@ -9,24 +9,15 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - name: Setup Python
-        uses: actions/setup-python@v5
-        with:
-          python-version: '3.11'
-
-      - name: Download and process data
-        continue-on-error: true
-        run: |
-           python scripts/download_data.py || echo "No new data or download failed"
-           python scripts/process_data.py || echo "Processing failed"
+      - name: Use existing local data
+        run: echo "Using local data files - no external API fetch"
 
       - name: Commit and push if changed
-        continue-on-error: true
         run: |
           git config --global user.name 'github-actions[bot]'
           git config --global user.email 'github-actions[bot]@users.noreply.github.com'
           git add data/stations.json data/stats.json
-          git diff-index --quiet HEAD || git commit -m "Update gas prices data [skip ci]" || echo "Nothing to commit"
+          git diff-index --quiet HEAD || git commit -m "Use local data files [skip ci]" || echo "Nothing to commit"
           git push https://x-access-token:${GITHUB_TOKEN}@github.com/${GITHUB_REPOSITORY}.git || echo "Push failed or no changes"
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
