@@ -65,18 +65,61 @@ export async function loadStations() {
     
     console.log('Loaded', data.features.length, 'stations');
     
-    // Initialize brand filters
+    // Initialize brand filters with logos
     const brands = [...new Set(data.features.map(f => f.properties.brand).filter(Boolean))].sort();
     const brandContainer = document.getElementById('brand-filters');
-    brands.slice(0, 10).forEach(brand => {
+    const brandLogos = {
+      'AMI': '<svg viewBox="0 0 24 24" width="16" height="16"><circle cx="12" cy="12" r="10" fill="#0066CC"/></svg>',
+      'Aucun': '<svg viewBox="0 0 24 24" width="16" height="16"><circle cx="12" cy="12" r="10" fill="#888"/></svg>',
+      'Axco': '<svg viewBox="0 0 24 24" width="16" height="16"><circle cx="12" cy="12" r="10" fill="#FF6600"/></svg>',
+      'Beausoir': '<svg viewBox="0 0 24 24" width="16" height="16"><circle cx="12" cy="12" r="10" fill="#1E90FF"/></svg>',
+      'Belzile': '<svg viewBox="0 0 24 24" width="16" height="16"><circle cx="12" cy="12" r="10" fill="#FF4500"/></svg>',
+      'Bélisle': '<svg viewBox="0 0 24 24" width="16" height="16"><circle cx="12" cy="12" r="10" fill="#228B22"/></svg>',
+      'Canadian Tire': '<svg viewBox="0 0 24 24" width="16" height="16"><circle cx="12" cy="12" r="10" fill="#FF6600"/></svg>',
+      'Costco': '<svg viewBox="0 0 24 24" width="16" height="16"><circle cx="12" cy="12" r="10" fill="#0065AD"/></svg>',
+      'Couche-Tard': '<svg viewBox="0 0 24 24" width="16" height="16"><circle cx="12" cy="12" r="10" fill="#0055A4"/></svg>',
+      'Crevier': '<svg viewBox="0 0 24 24" width="16" height="16"><circle cx="12" cy="12" r="10" fill="#4169E1"/></svg>',
+      'Eko': '<svg viewBox="0 0 24 24" width="16" height="16"><circle cx="12" cy="12" r="10" fill="#32CD32"/></svg>',
+      'Esso': '<svg viewBox="0 0 24 24" width="16" height="16"><circle cx="12" cy="12" r="10" fill="#E31C1C"/></svg>',
+      'Francis': '<svg viewBox="0 0 24 24" width="16" height="16"><circle cx="12" cy="12" r="10" fill="#FF8C00"/></svg>',
+      'Gaz-O-Bar': '<svg viewBox="0 0 24 24" width="16" height="16"><circle cx="12" cy="12" r="10" fill="#FF6347"/></svg>',
+      'Harnois': '<svg viewBox="0 0 24 24" width="16" height="16"><circle cx="12" cy="12" r="10" fill="#FF6600"/></svg>',
+      'Intergaz': '<svg viewBox="0 0 24 24" width="16" height="16"><circle cx="12" cy="12" r="10" fill="#FFD700"/></svg>',
+      'Irving': '<svg viewBox="0 0 24 24" width="16" height="16"><circle cx="12" cy="12" r="10" fill="#E31837"/></svg>',
+      'Le Relais': '<svg viewBox="0 0 24 24" width="16" height="16"><circle cx="12" cy="12" r="10" fill="#228B22"/></svg>',
+      'Little Tree': '<svg viewBox="0 0 24 24" width="16" height="16"><circle cx="12" cy="12" r="10" fill="#2E8B57"/></svg>',
+      'MacEwen': '<svg viewBox="0 0 24 24" width="16" height="16"><circle cx="12" cy="12" r="10" fill="#006400"/></svg>',
+      'Miraco': '<svg viewBox="0 0 24 24" width="16" height="16"><circle cx="12" cy="12" r="10" fill="#4169E1"/></svg>',
+      'Mobil': '<svg viewBox="0 0 24 24" width="16" height="16"><circle cx="12" cy="12" r="10" fill="#0066CC"/></svg>',
+      'Nutrinor Énergies': '<svg viewBox="0 0 24 24" width="16" height="16"><circle cx="12" cy="12" r="10" fill="#FF8C00"/></svg>',
+      'Paddock': '<svg viewBox="0 0 24 24" width="16" height="16"><circle cx="12" cy="12" r="10" fill="#8B4513"/></svg>',
+      'Paquet': '<svg viewBox="0 0 24 24" width="16" height="16"><circle cx="12" cy="12" r="10" fill="#FF6347"/></svg>',
+      'Pepco': '<svg viewBox="0 0 24 24" width="16" height="16"><circle cx="12" cy="12" r="10" fill="#FF4500"/></svg>',
+      'Petro-Canada': '<svg viewBox="0 0 24 24" width="16" height="16"><circle cx="12" cy="12" r="10" fill="#D00"/></svg>',
+      'Petroplus': '<svg viewBox="0 0 24 24" width="16" height="16"><circle cx="12" cy="12" r="10" fill="#4169E1"/></svg>',
+      'Pétro-Québec': '<svg viewBox="0 0 24 24" width="16" height="16"><circle cx="12" cy="12" r="10" fill="#0066CC"/></svg>',
+      'Pétro-T': '<svg viewBox="0 0 24 24" width="16" height="16"><circle cx="12" cy="12" r="10" fill="#FF6600"/></svg>',
+      'Pétroles Maurice': '<svg viewBox="0 0 24 24" width="16" height="16"><circle cx="12" cy="12" r="10" fill="#FF8C00"/></svg>',
+      'Quickie': '<svg viewBox="0 0 24 24" width="16" height="16"><circle cx="12" cy="12" r="10" fill="#FF6347"/></svg>',
+      'Sergaz': '<svg viewBox="0 0 24 24" width="16" height="16"><circle cx="12" cy="12" r="10" fill="#FF4500"/></svg>',
+      'Shell': '<svg viewBox="0 0 24 24" width="16" height="16"><circle cx="12" cy="12" r="10" fill="#ED1118"/></svg>',
+      'Sonic': '<svg viewBox="0 0 24 24" width="16" height="16"><circle cx="12" cy="12" r="10" fill="#FF4500"/></svg>',
+      'Stinson': '<svg viewBox="0 0 24 24" width="16" height="16"><circle cx="12" cy="12" r="10" fill="#4169E1"/></svg>',
+      'Super Gaz': '<svg viewBox="0 0 24 24" width="16" height="16"><circle cx="12" cy="12" r="10" fill="#FF6347"/></svg>',
+      'Ultramar': '<svg viewBox="0 0 24 24" width="16" height="16"><circle cx="12" cy="12" r="10" fill="#1C75BC"/></svg>',
+    };
+    
+    brands.slice(0, 12).forEach(brand => {
       const label = document.createElement('label');
       label.style.display = 'flex';
       label.style.alignItems = 'center';
-      label.style.gap = '6px';
-      label.style.fontSize = '13px';
+      label.style.gap = '4px';
+      label.style.fontSize = '12px';
+      const logo = brandLogos[brand] || '<svg viewBox="0 0 24 24" width="16" height="16"><circle cx="12" cy="12" r="10" fill="#666"/></svg>';
       label.innerHTML = `
         <input type="checkbox" class="brand-filter" value="${brand}" checked>
-        ${brand}
+        ${logo}
+        <span>${brand}</span>
       `;
       brandContainer.appendChild(label);
     });
