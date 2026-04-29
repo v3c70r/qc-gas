@@ -354,5 +354,5 @@ function showPopup(feature) {
     .addTo(map);
 }
 
-export { map, currentStations, MONTREAL_CENTER, rangeRadius, loadStations };
+export { map, currentStations, MONTREAL_CENTER, rangeRadius };
 
