@@ -65,60 +65,56 @@ export async function loadStations() {
     
     console.log('Loaded', data.features.length, 'stations');
     
-    // Initialize brand filters with logos
+    // Initialize brand filters with color dots (matching map)
     const brands = [...new Set(data.features.map(f => f.properties.brand).filter(Boolean))].sort();
     const brandContainer = document.getElementById('brand-filters');
-    const brandLogos = {
-      'AMI': '<svg viewBox="0 0 24 24" width="16" height="16"><circle cx="12" cy="12" r="10" fill="#0066CC"/></svg>',
-      'Aucun': '<svg viewBox="0 0 24 24" width="16" height="16"><circle cx="12" cy="12" r="10" fill="#888"/></svg>',
-      'Axco': '<svg viewBox="0 0 24 24" width="16" height="16"><circle cx="12" cy="12" r="10" fill="#FF6600"/></svg>',
-      'Beausoir': '<svg viewBox="0 0 24 24" width="16" height="16"><circle cx="12" cy="12" r="10" fill="#1E90FF"/></svg>',
-      'Belzile': '<svg viewBox="0 0 24 24" width="16" height="16"><circle cx="12" cy="12" r="10" fill="#FF4500"/></svg>',
-      'Bélisle': '<svg viewBox="0 0 24 24" width="16" height="16"><circle cx="12" cy="12" r="10" fill="#228B22"/></svg>',
-      'Canadian Tire': '<svg viewBox="0 0 24 24" width="16" height="16"><circle cx="12" cy="12" r="10" fill="#FF6600"/></svg>',
-      'Costco': '<svg viewBox="0 0 24 24" width="16" height="16"><circle cx="12" cy="12" r="10" fill="#0065AD"/></svg>',
-      'Couche-Tard': '<svg viewBox="0 0 24 24" width="16" height="16"><circle cx="12" cy="12" r="10" fill="#0055A4"/></svg>',
-      'Crevier': '<svg viewBox="0 0 24 24" width="16" height="16"><circle cx="12" cy="12" r="10" fill="#4169E1"/></svg>',
-      'Eko': '<svg viewBox="0 0 24 24" width="16" height="16"><circle cx="12" cy="12" r="10" fill="#32CD32"/></svg>',
-      'Esso': '<svg viewBox="0 0 24 24" width="16" height="16"><circle cx="12" cy="12" r="10" fill="#E31C1C"/></svg>',
-      'Francis': '<svg viewBox="0 0 24 24" width="16" height="16"><circle cx="12" cy="12" r="10" fill="#FF8C00"/></svg>',
-      'Gaz-O-Bar': '<svg viewBox="0 0 24 24" width="16" height="16"><circle cx="12" cy="12" r="10" fill="#FF6347"/></svg>',
-      'Harnois': '<svg viewBox="0 0 24 24" width="16" height="16"><circle cx="12" cy="12" r="10" fill="#FF6600"/></svg>',
-      'Intergaz': '<svg viewBox="0 0 24 24" width="16" height="16"><circle cx="12" cy="12" r="10" fill="#FFD700"/></svg>',
-      'Irving': '<svg viewBox="0 0 24 24" width="16" height="16"><circle cx="12" cy="12" r="10" fill="#E31837"/></svg>',
-      'Le Relais': '<svg viewBox="0 0 24 24" width="16" height="16"><circle cx="12" cy="12" r="10" fill="#228B22"/></svg>',
-      'Little Tree': '<svg viewBox="0 0 24 24" width="16" height="16"><circle cx="12" cy="12" r="10" fill="#2E8B57"/></svg>',
-      'MacEwen': '<svg viewBox="0 0 24 24" width="16" height="16"><circle cx="12" cy="12" r="10" fill="#006400"/></svg>',
-      'Miraco': '<svg viewBox="0 0 24 24" width="16" height="16"><circle cx="12" cy="12" r="10" fill="#4169E1"/></svg>',
-      'Mobil': '<svg viewBox="0 0 24 24" width="16" height="16"><circle cx="12" cy="12" r="10" fill="#0066CC"/></svg>',
-      'Nutrinor Énergies': '<svg viewBox="0 0 24 24" width="16" height="16"><circle cx="12" cy="12" r="10" fill="#FF8C00"/></svg>',
-      'Paddock': '<svg viewBox="0 0 24 24" width="16" height="16"><circle cx="12" cy="12" r="10" fill="#8B4513"/></svg>',
-      'Paquet': '<svg viewBox="0 0 24 24" width="16" height="16"><circle cx="12" cy="12" r="10" fill="#FF6347"/></svg>',
-      'Pepco': '<svg viewBox="0 0 24 24" width="16" height="16"><circle cx="12" cy="12" r="10" fill="#FF4500"/></svg>',
-      'Petro-Canada': '<svg viewBox="0 0 24 24" width="16" height="16"><circle cx="12" cy="12" r="10" fill="#D00"/></svg>',
-      'Petroplus': '<svg viewBox="0 0 24 24" width="16" height="16"><circle cx="12" cy="12" r="10" fill="#4169E1"/></svg>',
-      'Pétro-Québec': '<svg viewBox="0 0 24 24" width="16" height="16"><circle cx="12" cy="12" r="10" fill="#0066CC"/></svg>',
-      'Pétro-T': '<svg viewBox="0 0 24 24" width="16" height="16"><circle cx="12" cy="12" r="10" fill="#FF6600"/></svg>',
-      'Pétroles Maurice': '<svg viewBox="0 0 24 24" width="16" height="16"><circle cx="12" cy="12" r="10" fill="#FF8C00"/></svg>',
-      'Quickie': '<svg viewBox="0 0 24 24" width="16" height="16"><circle cx="12" cy="12" r="10" fill="#FF6347"/></svg>',
-      'Sergaz': '<svg viewBox="0 0 24 24" width="16" height="16"><circle cx="12" cy="12" r="10" fill="#FF4500"/></svg>',
-      'Shell': '<svg viewBox="0 0 24 24" width="16" height="16"><circle cx="12" cy="12" r="10" fill="#ED1118"/></svg>',
-      'Sonic': '<svg viewBox="0 0 24 24" width="16" height="16"><circle cx="12" cy="12" r="10" fill="#FF4500"/></svg>',
-      'Stinson': '<svg viewBox="0 0 24 24" width="16" height="16"><circle cx="12" cy="12" r="10" fill="#4169E1"/></svg>',
-      'Super Gaz': '<svg viewBox="0 0 24 24" width="16" height="16"><circle cx="12" cy="12" r="10" fill="#FF6347"/></svg>',
-      'Ultramar': '<svg viewBox="0 0 24 24" width="16" height="16"><circle cx="12" cy="12" r="10" fill="#1C75BC"/></svg>',
+    const brandColors = {
+      'AMI': '#0066CC',
+      'Aucun': '#888888',
+      'Axco': '#FF6600',
+      'Beausoir': '#1E90FF',
+      'Belzile': '#FF4500',
+      'Bélisle': '#228B22',
+      'Canadian Tire': '#FF6600',
+      'Costco': '#0065AD',
+      'Couche-Tard': '#0055A4',
+      'Crevier': '#4169E1',
+      'Eko': '#32CD32',
+      'Esso': '#E31C1C',
+      'Francis': '#FF8C00',
+      'Gaz-O-Bar': '#FF6347',
+      'Harnois': '#FF6600',
+      'Irving': '#E31837',
+      'Le Relais': '#228B22',
+      'Little Tree': '#2E8B57',
+      'MacEwen': '#006400',
+      'Miraco': '#4169E1',
+      'Mobil': '#0066CC',
+      'Nutrinor Énergies': '#FF8C00',
+      'Paddock': '#8B4513',
+      'Paquet': '#FF6347',
+      'Pepco': '#FF4500',
+      'Petro-Canada': '#D00',
+      'Petroplus': '#4169E1',
+      'Pétro-Québec': '#0066CC',
+      'Pétro-T': '#FF6600',
+      'Pétroles Maurice': '#FF8C00',
+      'Quickie': '#FF6347',
+      'Sergaz': '#FF4500',
+      'Shell': '#ED1118',
+      'Sonic': '#FF4500',
+      'Stinson': '#4169E1',
+      'Super Gaz': '#FF6347',
+      'Ultramar': '#1C75BC',
     };
     
     brands.slice(0, 12).forEach(brand => {
       const label = document.createElement('label');
-      label.style.display = 'flex';
-      label.style.alignItems = 'center';
-      label.style.gap = '4px';
-      label.style.fontSize = '12px';
-      const logo = brandLogos[brand] || '<svg viewBox="0 0 24 24" width="16" height="16"><circle cx="12" cy="12" r="10" fill="#666"/></svg>';
+      label.style.cssText = 'display:flex;align-items:center;gap:4px;font-size:12px;padding:2px 0';
+      const color = brandColors[brand] || '#666';
       label.innerHTML = `
         <input type="checkbox" class="brand-filter" value="${brand}" checked>
-        ${logo}
+        <span style="width:18px;height:18px;min-width:18px;background:${color};border-radius:50%;display:inline-block;"></span>
         <span>${brand}</span>
       `;
       brandContainer.appendChild(label);
@@ -212,36 +208,91 @@ function addStationLayers() {
     });
   }
 
-  // Individual stations (zoom >= 10)
-  if (!map.getLayer('unclustered-points')) {
-    map.addLayer({
-      id: 'unclustered-points',
-      type: 'circle',
-      source: 'stations',
-      filter: ['!', ['has', 'point_count']],
-      paint: {
-        'circle-color': [
-          'interpolate',
-          ['linear'],
-          ['get', 'regular_price'],
-          165, '#16a34a',  // Green for cheap
-          180, '#eab308',  // Yellow for medium
-          200, '#dc2626'   // Red for expensive
-        ],
-        'circle-radius': [
-          'interpolate',
-          ['linear'],
-          ['zoom'],
-          10, 6,
-          15, 8,
-          20, 10
-        ],
-        'circle-stroke-color': '#ffffff',
-        'circle-stroke-width': 1.5,
-        'circle-opacity': 0.9
-      }
-    });
-  }
+  // Brand colors for markers
+  const brandMarkerColors = {
+    'AMI': '#0066CC',
+    'Aucun': '#888888',
+    'Axco': '#FF6600',
+    'Beausoir': '#1E90FF',
+    'Belzile': '#FF4500',
+    'Bélisle': '#228B22',
+    'Canadian Tire': '#FF6600',
+    'Costco': '#0065AD',
+    'Couche-Tard': '#0055A4',
+    'Crevier': '#4169E1',
+    'Eko': '#32CD32',
+    'Esso': '#E31C1C',
+    'Francis': '#FF8C00',
+    'Gaz-O-Bar': '#FF6347',
+    'Harnois': '#FF6600',
+    'Irving': '#E31837',
+    'Le Relais': '#228B22',
+    'Little Tree': '#2E8B57',
+    'MacEwen': '#006400',
+    'Miraco': '#4169E1',
+    'Mobil': '#0066CC',
+    'Nutrinor Énergies': '#FF8C00',
+    'Paddock': '#8B4513',
+    'Paquet': '#FF6347',
+    'Pepco': '#FF4500',
+    'Petro-Canada': '#D00',
+    'Petroplus': '#4169E1',
+    'Pétro-Québec': '#0066CC',
+    'Pétro-T': '#FF6600',
+    'Pétroles Maurice': '#FF8C00',
+    'Quickie': '#FF6347',
+    'Sergaz': '#FF4500',
+    'Shell': '#ED1118',
+    'Sonic': '#FF4500',
+    'Stinson': '#4169E1',
+    'Super Gaz': '#FF6347',
+    'Ultramar': '#1C75BC',
+  };
+    
+    function getBrandColor(brand) {
+      return brandMarkerColors[brand] || '#666666';
+    }
+    
+    // Individual stations (zoom >= 10)
+    if (!map.getLayer('unclustered-points')) {
+      map.addLayer({
+        id: 'unclustered-points',
+        type: 'circle',
+        source: 'stations',
+        filter: ['!', ['has', 'point_count']],
+        paint: {
+          'circle-color': ['get', 'brand', ['get', 'brand'], getBrandColor],
+          'circle-color': [
+            'match',
+            ['get', 'brand'],
+            'Shell', '#ED1118',
+            'Petro-Canada', '#D00',
+            'Couche-Tard', '#0055A4',
+            'Canadian Tire', '#FF6600',
+            'Costco', '#0065AD',
+            'Irving', '#E31837',
+            'Ultramar', '#1C75BC',
+            'Mobil', '#0066CC',
+            'Esso', '#E31C1C',
+            'Harnois', '#FF6600',
+            'Axco', '#FF6600',
+            'Crevier', '#4169E1',
+            '#666666'
+          ],
+          'circle-radius': [
+            'interpolate',
+            ['linear'],
+            ['zoom'],
+            10, 6,
+            15, 8,
+            20, 10
+          ],
+          'circle-stroke-color': '#ffffff',
+          'circle-stroke-width': 1.5,
+          'circle-opacity': 0.9
+        }
+      });
+    }
 
   // Cluster click event
   map.on('click', 'clusters', (e) => {
