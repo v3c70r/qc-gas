@@ -1,5 +1,5 @@
 // Application entry point
-import { initMap, MONTREAL_CENTER } from './map.js';
+import { initMap, loadStations, MONTREAL_CENTER } from './map.js';
 import { initFilters, initGeolocation, initResetView, initSidebarToggle } from './filters.js';
 
 function initApp() {

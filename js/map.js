@@ -55,7 +55,7 @@ export function initMap() {
 }
 
 // Load stations data
-async function loadStations() {
+export async function loadStations() {
   document.getElementById('loading').classList.add('active');
   
   try {
@@ -354,5 +354,5 @@ function showPopup(feature) {
     .addTo(map);
 }
 
-export { map, currentStations, MONTREAL_CENTER, rangeRadius };
+export { map, currentStations, MONTREAL_CENTER, rangeRadius, loadStations };
 
