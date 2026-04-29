@@ -51,6 +51,9 @@ function initGeolocation() {
       return;
     }
     
+    btn.disabled = true;
+    btn.textContent = '⏳ Localisation...';
+    
     navigator.geolocation.getCurrentPosition(
       (position) => {
         const { latitude, longitude } = position.coords;
@@ -60,10 +63,28 @@ function initGeolocation() {
         map.setZoom(12);
         updateStats();
         updateStationList();
+        btn.disabled = false;
+        btn.textContent = '📍 Ma position';
       },
       (error) => {
         console.error('Geolocation error:', error);
-        alert('Impossible de déterminer votre position');
+        btn.disabled = false;
+        btn.textContent = '📍 Ma position';
+        
+        let message = 'Impossible de déterminer votre position';
+        if (error.code === error.PERMISSION_DENIED) {
+          message = 'Accès à la localisation refusé. Veuillez l\'activer dans les paramètres du navigateur.';
+        } else if (error.code === error.POSITION_UNAVAILABLE) {
+          message = 'Position non available. Veuillez réessayer.';
+        } else if (error.code === error.TIMEOUT) {
+          message = 'Délai d\'attente dépassé. Veuillez réessayer.';
+        }
+        alert(message);
+      },
+      {
+        enableHighAccuracy: true,
+        timeout: 10000,
+        maximumAge: 300000
       }
     );
   });

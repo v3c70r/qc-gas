@@ -16,11 +16,11 @@ let currentStations = [];
 let rangeRadius = 5; // km
 let pulseAnimationId = null;
 
-// Initialize map
+// Initialize map with modern light style
 export function initMap() {
   map = new mapboxgl.Map({
     container: 'map',
-    style: 'mapbox://styles/mapbox/streets-v12',
+    style: 'mapbox://styles/mapbox/light-v11',
     center: MONTREAL_CENTER,
     zoom: 10,
     attributionControl: true,
@@ -136,17 +136,19 @@ function addStationLayers() {
         'circle-color': [
           'step',
           ['get', 'point_count'],
-          '#51bbd6', 10,
-          '#f1f075', 30,
-          '#f28cb1'
+          '#6366f1', 10,   // Indigo for small clusters
+          '#8b5cf6', 30,   // Violet for medium
+          '#a78bfa'       // Light purple for large
         ],
         'circle-radius': [
           'step',
           ['get', 'point_count'],
-          20, 10,
-          30, 30,
-          40
-        ]
+          18, 10,
+          28, 30,
+          36
+        ],
+        'circle-stroke-color': '#ffffff',
+        'circle-stroke-width': 2
       }
     });
 
@@ -158,7 +160,11 @@ function addStationLayers() {
       filter: ['has', 'point_count'],
       layout: {
         'text-field': ['get', 'point_count_abbreviated'],
-        'text-size': 12
+        'text-size': 11,
+        'text-font': ['DIN Pro Bold', 'Arial Unicode MS Bold']
+      },
+      paint: {
+        'text-color': '#ffffff'
       }
     });
   }
@@ -175,20 +181,21 @@ function addStationLayers() {
           'interpolate',
           ['linear'],
           ['get', 'regular_price'],
-          159, '#28a745',
-          180, '#ffc107',
-          200, '#dc3545'
+          165, '#16a34a',  // Green for cheap
+          180, '#eab308',  // Yellow for medium
+          200, '#dc2626'   // Red for expensive
         ],
         'circle-radius': [
           'interpolate',
           ['linear'],
           ['zoom'],
-          10, 5,
+          10, 6,
           15, 8,
-          20, 12
+          20, 10
         ],
         'circle-stroke-color': '#ffffff',
-        'circle-stroke-width': 2
+        'circle-stroke-width': 1.5,
+        'circle-opacity': 0.9
       }
     });
   }
