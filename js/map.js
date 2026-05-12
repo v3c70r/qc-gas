@@ -1,9 +1,11 @@
 // Mapbox initialization and map configuration
+import { t, applyTranslations, getStoredLanguage } from './i18n.js';
+import { translations } from './i18n.js';
+
 const mapboxToken = import.meta.env.VITE_MAPBOX_ACCESS_TOKEN;
 
 if (!mapboxToken) {
-  console.error('MAPBOX_TOKEN is not set. Please add VITE_MAPBOX_ACCESS_TOKEN to your .env file.');
-  document.body.innerHTML = '<div style="padding:40px;text-align:center;font-family:sans-serif;"><h1>Configuration Error</h1><p>Please set <code>VITE_MAPBOX_ACCESS_TOKEN</code> in your <code>.env</code> file.</p></div>';
+  document.body.innerHTML = `<div style="padding:40px;text-align:center;font-family:sans-serif;"><h1>Configuration Error</h1><p>${t('noToken')}</p></div>`;
 }
 
 mapboxgl.accessToken = mapboxToken;
@@ -133,8 +135,7 @@ export async function loadStations() {
     addRangeCircle();
     
     // Update UI
-    document.getElementById('data-status').textContent = 
-      `Données: ${data.metadata.total_stations} stations | ${new Date().toLocaleString('fr-CA')}`;
+    document.getElementById('data-status').textContent = t('dataLoading') + ' ' + data.metadata.total_stations + ' ' + t('stations');
     
   } catch (error) {
     console.error('Error loading stations:', error);
@@ -370,27 +371,20 @@ function toDeg(rad) { return rad * 180 / Math.PI; }
 function showPopup(feature) {
   const props = feature.properties;
   const priceInfo = [];
-  
-  if (props.regular_price) priceInfo.push(`Régulier: ${props.regular_price.toFixed(1)}¢`);
-  if (props.super_price) priceInfo.push(`Super: ${props.super_price.toFixed(1)}¢`);
-  if (props.diesel_price) priceInfo.push(`Diesel: ${props.diesel_price.toFixed(1)}¢`);
-  
-  const popupContent = `
-    <div style="padding: 8px; min-width: 200px;">
-      <h3 style="margin: 0 0 8px 0; font-size: 14px;">${props.name || 'Station'}</h3>
-      <p style="margin: 4px 0; font-size: 12px; color: #666;">${props.brand}</p>
-      <p style="margin: 4px 0; font-size: 12px;">${props.address}</p>
-      <div style="margin-top: 8px; padding: 8px; background: #f8f9fa; border-radius: 4px; font-size: 11px;">
-        ${priceInfo.join('<br>')}
-      </div>
-    </div>
-  `;
-  
-  const popup = new mapboxgl.Popup({
-    closeButton: true,
-    closeOnClick: true,
-    anchor: 'bottom'
-  })
+
+  const dict = translations[getLanguage()];
+  if (props.regular_price) priceInfo.push(`${dict.regular}: ${props.regular_price.toFixed(1)}¢`);
+  if (props.super_price) priceInfo.push(`${dict.super}: ${props.super_price.toFixed(1)}¢`);
+  if (props.diesel_price) priceInfo.push(`${dict.diesel}: ${props.diesel_price.toFixed(1)}¢`);
+
+  const popupContent = `<div style="padding:8px;min-width:200px;">
+    <h3 style="margin:0 0 8px 0;font-size:14px;font-weight:600;">${props.name || dict.station}</h3>
+    <p style="margin:4px 0;font-size:12px;color:#64748b;">${props.brand}</p>
+    <p style="margin:4px 0;font-size:12px;color:#334155;">${props.address}</p>
+    <div style="margin-top:8px;padding:8px;background:#f8fafc;border-radius:6px;font-size:11px;">${priceInfo.join('<br>')}</div>
+  </div>`;
+
+  new mapboxgl.Popup({ closeButton: true, closeOnClick: true, anchor: 'bottom', maxWidth: '280px' })
     .setLngLat(feature.geometry.coordinates)
     .setHTML(popupContent)
     .addTo(map);

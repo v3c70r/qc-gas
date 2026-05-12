@@ -1,5 +1,6 @@
 import { updateStats, updateStationList } from './stats.js';
 import { map, MONTREAL_CENTER } from './map.js';
+import { t, setLanguage, onLanguageChange, applyTranslations } from './i18n.js';
 
 let filterPanelOpen = false;
 
@@ -56,7 +57,7 @@ function initFilters() {
   showMoreBtn.addEventListener('click', () => {
     const isHidden = moreBrands.style.display === 'none';
     moreBrands.style.display = isHidden ? 'block' : 'none';
-    showMoreBtn.textContent = isHidden ? '− Moins' : '+ Plus de marques';
+    showMoreBtn.textContent = isHidden ? t('showLessBrands') : t('showMoreBrands');
   });
 
   document.querySelectorAll('.radius-btn').forEach(btn => {
@@ -73,7 +74,7 @@ function initGeolocation() {
 
   btn.addEventListener('click', () => {
     if (!navigator.geolocation) {
-      alert('Geolocation n\'est pas supporté par votre navigateur');
+      alert(t('geolocationError'));
       return;
     }
 
@@ -94,11 +95,11 @@ function initGeolocation() {
         btn.disabled = false;
         btn.style.opacity = '1';
         const messages = {
-          1: 'Accès à la localisation refusé. Veuillez l\'activer dans les paramètres.',
-          2: 'Position non disponible. Veuillez réessayer.',
-          3: 'Délai dépassé. Veuillez réessayer.'
+          1: t('geolocationDenied'),
+          2: t('geolocationUnavailable'),
+          3: t('geolocationTimeout')
         };
-        alert(messages[error.code] || 'Erreur de localisation.');
+        alert(messages[error.code] || t('geolocationError'));
       },
       { enableHighAccuracy: true, timeout: 10000, maximumAge: 300000 }
     );

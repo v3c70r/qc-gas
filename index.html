@@ -14,22 +14,22 @@
         <div class="handle-bar"></div>
         <div class="sidebar-header">
           <span class="sidebar-title" data-i18n="results">Résultats</span>
-          <span class="station-count-badge" id="sidebar-station-count">0 stations</span>
+          <span class="station-count-badge" id="sidebar-station-count" data-count="0">0 stations</span>
         </div>
       </div>
 
       <div id="sidebar-content">
         <div class="quick-stats" id="quick-stats">
           <div class="quick-stat-item">
-            <span class="quick-stat-label">Régulier</span>
+            <span class="quick-stat-label" data-i18n="regular">Régulier</span>
             <span class="quick-stat-value lowest" id="quick-regular">—</span>
           </div>
           <div class="quick-stat-item">
-            <span class="quick-stat-label">Super</span>
+            <span class="quick-stat-label" data-i18n="super">Super</span>
             <span class="quick-stat-value" id="quick-super">—</span>
           </div>
           <div class="quick-stat-item">
-            <span class="quick-stat-label">Diesel</span>
+            <span class="quick-stat-label" data-i18n="diesel">Diesel</span>
             <span class="quick-stat-value" id="quick-diesel">—</span>
           </div>
         </div>
@@ -48,7 +48,7 @@
           <div class="control-group">
             <label data-i18n="brand">Marque</label>
             <div class="filter-row" id="brand-filters"></div>
-            <button class="show-more-btn" id="show-more-brands">+ Plus de marques</button>
+            <button class="show-more-btn" id="show-more-brands" data-i18n="showMoreBrands">+ Plus de marques</button>
             <div class="more-brands" id="more-brands" style="display:none;"></div>
           </div>
 
@@ -103,11 +103,11 @@
 
     <div id="map-container">
       <div id="header">
-        <h1 id="title">⛽ Essence Québec</h1>
-        <div id="data-status" class="data-status">Données: en chargement...</div>
+        <h1 id="title" data-i18n="title">⛽ Essence Québec</h1>
+        <div id="data-status" class="data-status" data-i18n="dataLoading">Données: en chargement...</div>
       </div>
 
-      <div id="locate-btn" class="map-fab">
+      <div id="locate-btn" class="map-fab" title="定位 / Locate">
         <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
           <circle cx="12" cy="12" r="3"></circle>
           <path d="M12 2v4m0 12v4M2 12h4m12 0h4"></path>
@@ -126,14 +126,14 @@
 
       <div id="loading">
         <div class="spinner"></div>
-        <div id="loading-text">Chargement...</div>
+        <div id="loading-text" data-i18n="loading">Chargement...</div>
       </div>
 
       <div id="legend">
         <div class="legend-bar"></div>
         <div class="legend-labels">
-          <span>1.65$</span>
-          <span>2.00$</span>
+          <span data-i18n="lowPrice">1.65$</span>
+          <span data-i18n="highPrice">2.00$</span>
         </div>
       </div>
 
@@ -142,7 +142,7 @@
   </div>
 
   <script src="https://api.mapbox.com/mapbox-gl-js/v3.6.0/mapbox-gl.js"></script>
-  <script src="js/i18n.js"></script>
+  <script type="module" src="js/i18n.js"></script>
   <script type="module" src="js/app.js"></script>
 </body>
 </html>

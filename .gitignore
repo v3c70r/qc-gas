@@ -53,3 +53,11 @@ package-lock.json
 .temp/
 *.tmp
 *.temp
+
+# ==========================================
+# Test Outputs
+# ==========================================
+tests/reports/
+tests/screenshots/
+test-results/
+playwright-report/

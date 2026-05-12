@@ -1,8 +1,14 @@
 import { initMap, loadStations, MONTREAL_CENTER } from './map.js';
 import { initFilters, initGeolocation, initSidebarToggle } from './filters.js';
+import { getStoredLanguage, createLanguageSelector, applyTranslations } from './i18n.js';
 
 function initApp() {
   console.log('Initializing Gas Price Quebec App...');
+
+  const lang = getStoredLanguage();
+  createLanguageSelector();
+  applyTranslations(lang);
+
   initMap();
   initFilters();
   initGeolocation();

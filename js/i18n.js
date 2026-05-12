@@ -1,156 +1,242 @@
 export const translations = {
   'zh-Hans': {
-    searchRadius: '搜索半径',
-    priceRange: '价格区间',
+    results: '结果',
+    stations_count: '{n} 个加油站',
+    filters: '筛选',
     brand: '品牌',
-    fuelType: '燃油类型',
+    fuel: '燃油类型',
+    priceRange: '价格区间 (¢/L)',
+    region: '地区',
+    radius: '半径',
+    stations: '加油站',
+    sortByPrice: '按价格排序',
+    noStations: '未找到加油站',
     regular: '普通',
     super: '高级',
     diesel: '柴油',
-    region: '地区',
-    allRegions: '所有地区',
-    statsTitle: '半径统计',
-    stations: '加油站',
-    stationsSorted: '加油站 (按价格排序)',
-    currentLocation: '📍 我的位置',
-    resetView: '↺ 重置',
-    dataLoading: '数据: 加载中...',
-    loading: '加载数据中...',
-    pricePerLitre: '每升价格',
-    low: '低 (≤1.70$)',
-    high: '高 (≥1.95$)',
+    allRegions: '全部',
+    showMoreBrands: '+ 更多品牌',
+    showLessBrands: '− 收起',
     title: '⛽ 魁北克油价',
-    noData: '无数据',
-    loadingError: '加载错误',
-    priceLabel: '$/L'
+    dataLoading: '数据: 加载中...',
+    loading: '加载中...',
+    lowPrice: '低价 (≤1.65$)',
+    highPrice: '高价 (≥2.00$)',
+    locateMe: '定位',
+    reset: '重置',
+    geolocationError: '无法获取您的位置',
+    geolocationDenied: '位置访问被拒绝。请在浏览器设置中开启。',
+    geolocationUnavailable: '位置不可用，请重试。',
+    geolocationTimeout: '请求超时，请重试。',
+    station: '加油站',
+    address: '地址',
+    loadingError: '数据加载错误',
+    cheapest: '最低价',
+    km: '公里',
+    pricePerLitre: '每升价格',
+    minPrice: '最低价',
+    maxPrice: '最高价',
+    mapError: '地图加载失败',
+    noToken: '请在 .env 文件中设置 VITE_MAPBOX_ACCESS_TOKEN'
   },
   'en-CA': {
-    searchRadius: 'Search radius',
-    priceRange: 'Price range',
+    results: 'Results',
+    stations_count: '{n} stations',
+    filters: 'Filters',
     brand: 'Brand',
-    fuelType: 'Fuel type',
+    fuel: 'Fuel type',
+    priceRange: 'Price range (¢/L)',
+    region: 'Region',
+    radius: 'Radius',
+    stations: 'Stations',
+    sortByPrice: 'sorted by price',
+    noStations: 'No stations found',
     regular: 'Regular',
     super: 'Premium',
     diesel: 'Diesel',
-    region: 'Region',
-    allRegions: 'All regions',
-    statsTitle: 'Radius statistics',
-    stations: 'Stations',
-    stationsSorted: 'Stations (sorted by price)',
-    currentLocation: '📍 My location',
-    resetView: '↺ Reset',
-    dataLoading: 'Data: loading...',
-    loading: 'Loading data...',
-    pricePerLitre: 'Price per litre',
-    low: 'Low (≤1.70$)',
-    high: 'High (≥1.95$)',
+    allRegions: 'All',
+    showMoreBrands: '+ More brands',
+    showLessBrands: '− Less',
     title: '⛽ Québec Gas Prices',
-    noData: 'No data',
-    loadingError: 'Loading error',
-    priceLabel: '$/L'
+    dataLoading: 'Data: loading...',
+    loading: 'Loading...',
+    lowPrice: 'Low (≤1.65$)',
+    highPrice: 'High (≥2.00$)',
+    locateMe: 'Locate',
+    reset: 'Reset',
+    geolocationError: 'Geolocation is not supported by your browser',
+    geolocationDenied: 'Location access denied. Please enable it in browser settings.',
+    geolocationUnavailable: 'Location unavailable. Please try again.',
+    geolocationTimeout: 'Request timed out. Please try again.',
+    station: 'Station',
+    address: 'Address',
+    loadingError: 'Data loading error',
+    cheapest: 'Best price',
+    km: 'km',
+    pricePerLitre: 'Price per litre',
+    minPrice: 'Min',
+    maxPrice: 'Max',
+    mapError: 'Map failed to load',
+    noToken: 'Please set VITE_MAPBOX_ACCESS_TOKEN in your .env file'
   },
   'fr-CA': {
-    searchRadius: 'Rayon de recherche',
-    priceRange: 'Plage de prix',
+    results: 'Résultats',
+    stations_count: '{n} stations',
+    filters: 'Filtres',
     brand: 'Marque',
-    fuelType: 'Type de carburant',
+    fuel: 'Type de carburant',
+    priceRange: 'Plage de prix (¢/L)',
+    region: 'Région',
+    radius: 'Rayon',
+    stations: 'Stations',
+    sortByPrice: 'trié par prix',
+    noStations: 'Aucune station trouvée',
     regular: 'Régulier',
     super: 'Super',
     diesel: 'Diesel',
-    region: 'Région',
-    allRegions: 'Tous les régions',
-    statsTitle: 'Statistiques du rayon',
-    stations: 'Stations',
-    stationsSorted: 'Stations (trié par prix)',
-    currentLocation: '📍 Ma position',
-    resetView: '↺ Réinitialiser',
-    dataLoading: 'Données: en chargement...',
-    loading: 'Chargement des données...',
-    pricePerLitre: 'Prix au litre',
-    low: 'Bas (≤1.70$)',
-    high: 'Élevé (≥1.95$)',
+    allRegions: 'Toutes',
+    showMoreBrands: '+ Plus de marques',
+    showLessBrands: '− Moins',
     title: '⛽ Prix de l\'essence Québec',
-    noData: 'Pas de données',
-    loadingError: 'Erreur de chargement',
-    priceLabel: '$/L'
+    dataLoading: 'Données: en chargement...',
+    loading: 'Chargement...',
+    lowPrice: 'Bas (≤1.65$)',
+    highPrice: 'Élevé (≥2.00$)',
+    locateMe: 'Localiser',
+    reset: 'Réinitialiser',
+    geolocationError: 'Geolocation n\'est pas supporté par votre navigateur',
+    geolocationDenied: 'Accès à la localisation refusé. Veuillez l\'activer dans les paramètres.',
+    geolocationUnavailable: 'Position non disponible. Veuillez réessayer.',
+    geolocationTimeout: 'Délai dépassé. Veuillez réessayer.',
+    station: 'Station',
+    address: 'Adresse',
+    loadingError: 'Erreur de chargement des données',
+    cheapest: 'Meilleur prix',
+    km: 'km',
+    pricePerLitre: 'Prix au litre',
+    minPrice: 'Min',
+    maxPrice: 'Max',
+    mapError: 'Échec du chargement de la carte',
+    noToken: 'Veuillez définir VITE_MAPBOX_ACCESS_TOKEN dans votre fichier .env'
   }
 };
 
 export const languages = [
-  { code: 'zh-Hans', name: '中文', flag: '🇨🇳' },
-  { code: 'en-CA', name: 'English', flag: '🇨🇦' },
-  { code: 'fr-CA', name: 'Français', flag: '🇨🇦' }
+  { code: 'en-CA', name: 'EN', flag: '' },
+  { code: 'fr-CA', name: 'FR', flag: '' },
+  { code: 'zh-Hans', name: '中文', flag: '' }
 ];
+
+let currentLang = 'fr-CA';
+const listeners = [];
 
 export function getStoredLanguage() {
   const stored = localStorage.getItem('language');
-  if (stored && translations[stored]) return stored;
-  const browserLang = navigator.language || navigator.userLanguage;
-  if (browserLang.startsWith('zh')) return 'zh-Hans';
-  if (browserLang.startsWith('en')) return 'en-CA';
-  return 'fr-CA';
+  if (stored && translations[stored]) {
+    currentLang = stored;
+    return stored;
+  }
+  const browserLang = navigator.language || '';
+  if (browserLang.startsWith('zh')) currentLang = 'zh-Hans';
+  else if (browserLang.startsWith('en')) currentLang = 'en-CA';
+  else currentLang = 'fr-CA';
+  return currentLang;
+}
+
+export function getLanguage() {
+  return currentLang;
 }
 
 export function setLanguage(code) {
   if (!translations[code]) return;
+  currentLang = code;
   localStorage.setItem('language', code);
   document.documentElement.lang = code;
   applyTranslations(code);
+  listeners.forEach(fn => fn(code));
+}
+
+export function onLanguageChange(fn) {
+  listeners.push(fn);
+}
+
+export function t(key) {
+  const dict = translations[currentLang];
+  return dict && dict[key] ? dict[key] : key;
+}
+
+export function tf(key, vars) {
+  let text = t(key);
+  if (vars) {
+    Object.keys(vars).forEach(k => {
+      text = text.replace(`{${k}}`, vars[k]);
+    });
+  }
+  return text;
 }
 
 export function applyTranslations(code) {
-  const t = translations[code];
-  if (!t) return;
-  
-  const el = id => document.getElementById(id);
-  
-  if (el('search-radius-label')) el('search-radius-label').textContent = t.searchRadius;
-  if (el('price-range-label')) el('price-range-label').textContent = t.priceRange;
-  if (el('brand-label')) el('brand-label').textContent = t.brand;
-  if (el('fuel-type-label')) el('fuel-type-label').textContent = t.fuelType;
-  if (el('region-label')) el('region-label').textContent = t.region;
-  if (el('stats-title')) el('stats-title').textContent = t.statsTitle;
-  if (el('station-list-label')) el('station-list-label').textContent = t.stationsSorted;
-  if (el('title')) el('title').textContent = t.title;
-  if (el('current-location')) el('current-location').textContent = t.currentLocation;
-  if (el('reset-view')) el('reset-view').textContent = t.resetView;
-  if (el('data-status')) el('data-status').textContent = t.dataLoading;
-  if (el('loading-text')) el('loading-text').textContent = t.loading;
-  if (el('legend-title')) el('legend-title').textContent = t.pricePerLitre;
-  if (el('legend-low')) el('legend-low').textContent = t.low;
-  if (el('legend-high')) el('legend-high').textContent = t.high;
-  
-  document.querySelectorAll('.stat-label[data-i18n]').forEach(el => {
+  const lang = code || currentLang;
+  const dict = translations[lang];
+  if (!dict) return;
+
+  document.querySelectorAll('[data-i18n]').forEach(el => {
     const key = el.dataset.i18n;
-    if (t[key]) el.textContent = t[key];
+    if (dict[key]) el.textContent = dict[key];
   });
-  
-  document.querySelectorAll('.fuel-filter-label').forEach(el => {
-    const fuel = el.dataset.fuel;
-    if (fuel === 'regular') el.textContent = t.regular;
-    if (fuel === 'super') el.textContent = t.super;
-    if (fuel === 'diesel') el.textContent = t.diesel;
+
+  document.querySelectorAll('[data-i18n-placeholder]').forEach(el => {
+    const key = el.dataset.i18nPlaceholder;
+    if (dict[key]) el.placeholder = dict[key];
   });
-  
+
   const regionSelect = document.getElementById('region-filter');
   if (regionSelect && regionSelect.firstElementChild) {
-    regionSelect.firstElementChild.textContent = t.allRegions;
+    regionSelect.firstElementChild.textContent = dict.allRegions;
   }
+
+  const fuelLabels = {
+    'regular': dict.regular,
+    'super': dict.super,
+    'diesel': dict.diesel
+  };
+  document.querySelectorAll('.fuel-chip-label').forEach(el => {
+    const fuel = el.dataset.fuel;
+    if (fuelLabels[fuel]) el.textContent = fuelLabels[fuel];
+  });
+
+  const countEl = document.getElementById('sidebar-station-count');
+  if (countEl && countEl.dataset.count !== undefined) {
+    countEl.textContent = tf('stations_count', { n: countEl.dataset.count });
+  }
+
+  const noStationsEl = document.querySelector('#station-list > div[no-stations]');
+  if (noStationsEl) noStationsEl.textContent = dict.noStations;
 }
 
-export function createLanguageSelector(currentLang) {
-  const container = document.getElementById('language-selector');
-  if (!container) return;
-  
-  container.innerHTML = languages.map(lang => 
-    `<button class="lang-btn ${lang.code === currentLang ? 'active' : ''}" data-lang="${lang.code}">${lang.flag} ${lang.name}</button>`
-  ).join('');
-  
-  container.querySelectorAll('.lang-btn').forEach(btn => {
-    btn.addEventListener('click', () => {
-      setLanguage(btn.dataset.lang);
-      container.querySelectorAll('.lang-btn').forEach(b => b.classList.remove('active'));
-      btn.classList.add('active');
-    });
+export function createLanguageSelector() {
+  const existing = document.getElementById('lang-selector');
+  if (existing) existing.remove();
+
+  const selector = document.createElement('div');
+  selector.id = 'lang-selector';
+  selector.style.cssText = 'display:flex;gap:2px;background:rgba(255,255,255,0.15);padding:3px;border-radius:6px;';
+
+  languages.forEach(lang => {
+    const btn = document.createElement('button');
+    btn.textContent = lang.name;
+    btn.dataset.lang = lang.code;
+    btn.style.cssText = `padding:4px 8px;border:none;background:transparent;color:${currentLang === lang.code ? '#fff' : 'rgba(255,255,255,0.7)'};font-size:12px;font-weight:${currentLang === lang.code ? '700' : '400'};cursor:pointer;border-radius:4px;transition:all 0.15s;`;
+    btn.addEventListener('click', () => setLanguage(lang.code));
+    selector.appendChild(btn);
   });
+
+  const header = document.getElementById('header');
+  if (header) {
+    const container = document.createElement('div');
+    container.id = 'lang-selector-wrap';
+    container.style.cssText = 'display:flex;align-items:center;gap:8px;';
+    container.appendChild(selector);
+    header.appendChild(container);
+  }
 }

@@ -1,4 +1,5 @@
 import { map, MONTREAL_CENTER, currentStations } from './map.js';
+import { translations, getLanguage } from './i18n.js';
 
 function haversineDistance(lng1, lat1, lng2, lat2) {
   const R = 6371;
@@ -53,7 +54,9 @@ function updateStats() {
     if (props.diesel_price !== null) stats.diesel.push(props.diesel_price);
   });
 
-  document.getElementById('sidebar-station-count').textContent = filtered.length + ' stations';
+  const countEl = document.getElementById('sidebar-station-count');
+  countEl.textContent = tf('stations_count', { n: filtered.length });
+  countEl.dataset.count = filtered.length;
   updateQuickStat('quick-regular', stats.regular);
   updateQuickStat('quick-super', stats.super);
   updateQuickStat('quick-diesel', stats.diesel);
@@ -137,7 +140,7 @@ function updateStationList(filteredStations = null) {
   list.innerHTML = '';
 
   if (filteredStations.length === 0) {
-    list.innerHTML = '<div style="padding:20px;text-align:center;color:#94a3b8;font-size:13px;">Aucune station trouvée</div>';
+    list.innerHTML = `<div style="padding:20px;text-align:center;color:#94a3b8;font-size:13px;" no-stations>${tf('noStations')}</div>`;
     return;
   }
 
@@ -166,21 +169,29 @@ function updateStationList(filteredStations = null) {
 
     item.addEventListener('click', () => {
       map.flyTo({ center: feat.geometry.coordinates, zoom: 15, duration: 800 });
-      showPopup(feat);
+      updatePopup(feat);
     });
     list.appendChild(item);
   });
 }
 
-function showPopup(feature) {
+export function showPopup(feature) {
+  updatePopup(feature);
+}
+
+function updatePopup(feature) {
   const props = feature.properties;
   const priceInfo = [];
-  if (props.regular_price) priceInfo.push(`Régulier: ${props.regular_price.toFixed(1)}¢`);
-  if (props.super_price) priceInfo.push(`Super: ${props.super_price.toFixed(1)}¢`);
-  if (props.diesel_price) priceInfo.push(`Diesel: ${props.diesel_price.toFixed(1)}¢`);
+  const lang = getLanguage();
+  const dict = translations[lang];
+  const stationLabel = dict?.station || 'Station';
+
+  if (props.regular_price) priceInfo.push(`${dict?.regular || 'Régulier'}: ${props.regular_price.toFixed(1)}¢`);
+  if (props.super_price) priceInfo.push(`${dict?.super || 'Super'}: ${props.super_price.toFixed(1)}¢`);
+  if (props.diesel_price) priceInfo.push(`${dict?.diesel || 'Diesel'}: ${props.diesel_price.toFixed(1)}¢`);
 
   const popupContent = `<div style="padding:8px;min-width:200px;">
-    <h3 style="margin:0 0 8px 0;font-size:14px;font-weight:600;">${props.name || 'Station'}</h3>
+    <h3 style="margin:0 0 8px 0;font-size:14px;font-weight:600;">${props.name || stationLabel}</h3>
     <p style="margin:4px 0;font-size:12px;color:#64748b;">${props.brand}</p>
     <p style="margin:4px 0;font-size:12px;color:#334155;">${props.address}</p>
     <div style="margin-top:8px;padding:8px;background:#f8fafc;border-radius:6px;font-size:11px;">${priceInfo.join('<br>')}</div>
@@ -192,4 +203,4 @@ function showPopup(feature) {
     .addTo(map);
 }
 
-export { filterStations, updateStats, updateLowestPriceHighlight, updateStationList, showPopup };
+export { filterStations, updateStats, updateLowestPriceHighlight, updateStationList };
