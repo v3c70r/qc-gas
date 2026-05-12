@@ -34,7 +34,8 @@ export function initMap() {
 
   // Add scale control
   map.addControl(new mapboxgl.ScaleControl({
-    unit: 'metric'
+    unit: 'metric',
+    maxWidth: 100
   }));
 
   // Add navigation control

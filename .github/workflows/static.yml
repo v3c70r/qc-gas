@@ -5,6 +5,8 @@ on:
     branches: ["master"]
     paths:
       - 'src/**'
+      - 'js/**'
+      - 'css/**'
       - 'index.html'
       - 'vite.config.**'
       - 'package.json'
