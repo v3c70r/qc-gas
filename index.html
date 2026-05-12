@@ -9,117 +9,135 @@
 </head>
 <body>
   <div id="app">
-    <div id="sidebar" class="collapsed">
+    <div id="sidebar">
+      <div id="sidebar-handle">
+        <div class="handle-bar"></div>
+        <div class="sidebar-header">
+          <span class="sidebar-title" data-i18n="results">Résultats</span>
+          <span class="station-count-badge" id="sidebar-station-count">0 stations</span>
+        </div>
+      </div>
+
       <div id="sidebar-content">
-        <div class="control-group">
-          <label id="search-radius-label">Rayon de recherche</label>
-          <div class="range-selector">
-            <button class="top-btn range-btn active" data-radius="5">5 km</button>
-            <button class="top-btn range-btn" data-radius="10">10 km</button>
-            <button class="top-btn range-btn" data-radius="25">25 km</button>
-            <button class="top-btn range-btn" data-radius="50">50 km</button>
+        <div class="quick-stats" id="quick-stats">
+          <div class="quick-stat-item">
+            <span class="quick-stat-label">Régulier</span>
+            <span class="quick-stat-value lowest" id="quick-regular">—</span>
+          </div>
+          <div class="quick-stat-item">
+            <span class="quick-stat-label">Super</span>
+            <span class="quick-stat-value" id="quick-super">—</span>
+          </div>
+          <div class="quick-stat-item">
+            <span class="quick-stat-label">Diesel</span>
+            <span class="quick-stat-value" id="quick-diesel">—</span>
           </div>
         </div>
 
-        <div class="control-group">
-          <label id="price-range-label">Plage de prix</label>
-          <div style="display: flex; align-items: center; gap: 10px;">
-            <input type="range" class="range-slider" id="min-price" min="159" max="239" value="159" step="0.1">
-            <input type="range" class="range-slider" id="max-price" min="159" max="239" value="239" step="0.1">
+        <div class="filter-toggle" id="filter-toggle">
+          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+            <polygon points="22 3 2 3 10 12.46 10 19 14 21 14 12.46 22 3"></polygon>
+          </svg>
+          <span data-i18n="filters">Filtres</span>
+          <svg class="chevron" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+            <polyline points="6 9 12 15 18 9"></polyline>
+          </svg>
+        </div>
+
+        <div class="filter-panel" id="filter-panel">
+          <div class="control-group">
+            <label data-i18n="brand">Marque</label>
+            <div class="filter-row" id="brand-filters"></div>
+            <button class="show-more-btn" id="show-more-brands">+ Plus de marques</button>
+            <div class="more-brands" id="more-brands" style="display:none;"></div>
           </div>
-          <div style="font-size: 12px; color: #666;">
-            <span id="price-min-label">1.59</span> $ - <span id="price-max-label">2.39</span> $
+
+          <div class="control-group">
+            <label data-i18n="fuel">Type de carburant</label>
+            <div class="fuel-grid">
+              <label class="fuel-chip">
+                <input type="checkbox" class="fuel-filter" value="regular" checked>
+                <span class="fuel-chip-label" data-fuel="regular">Régulier</span>
+              </label>
+              <label class="fuel-chip">
+                <input type="checkbox" class="fuel-filter" value="super" checked>
+                <span class="fuel-chip-label" data-fuel="super">Super</span>
+              </label>
+              <label class="fuel-chip">
+                <input type="checkbox" class="fuel-filter" value="diesel" checked>
+                <span class="fuel-chip-label" data-fuel="diesel">Diesel</span>
+              </label>
+            </div>
+          </div>
+
+          <div class="control-group">
+            <label data-i18n="priceRange">Plage de prix (¢/L)</label>
+            <div class="price-range-wrap">
+              <input type="range" class="price-slider" id="min-price" min="150" max="240" value="150" step="1">
+              <div class="price-range-values">
+                <span id="min-price-val">1.50$</span>
+                <span>—</span>
+                <span id="max-price-val">2.40$</span>
+              </div>
+              <input type="range" class="price-slider" id="max-price" min="150" max="240" value="240" step="1">
+            </div>
+          </div>
+
+          <div class="control-group">
+            <label data-i18n="region">Région</label>
+            <select class="region-select" id="region-filter">
+              <option value="">Toutes</option>
+            </select>
           </div>
         </div>
 
-        <div class="control-group">
-          <label id="brand-label">Marque</label>
-          <div class="filter-row" id="brand-filters">
+        <div class="station-list-section">
+          <div class="section-header" id="station-list-header">
+            <span data-i18n="stations">Stations</span>
+            <span class="sort-hint" data-i18n="sortByPrice">trié par prix</span>
           </div>
-        </div>
-
-        <div class="control-group">
-          <label id="fuel-type-label">Type de carburant</label>
-          <div class="filter-row">
-            <label style="display: flex; align-items: center; gap: 6px; font-size: 13px;">
-              <input type="checkbox" class="fuel-filter" value="regular" checked>
-              <span class="fuel-filter-label" data-fuel="regular">Régular</span>
-            </label>
-            <label style="display: flex; align-items: center; gap: 6px; font-size: 13px;">
-              <input type="checkbox" class="fuel-filter" value="super" checked>
-              <span class="fuel-filter-label" data-fuel="super">Super</span>
-            </label>
-            <label style="display: flex; align-items: center; gap: 6px; font-size: 13px;">
-              <input type="checkbox" class="fuel-filter" value="diesel" checked>
-              <span class="fuel-filter-label" data-fuel="diesel">Diesel</span>
-            </label>
-          </div>
-        </div>
-
-        <div class="control-group">
-          <label id="region-label">Région</label>
-          <select class="filter-btn" id="region-filter" style="width: 100%; padding: 6px;">
-            <option value="">Tous les régions</option>
-          </select>
-        </div>
-
-        <div id="stats-panel">
-          <h3 id="stats-title">Statistiques du rayon</h3>
-          <div class="stat-item">
-            <span class="stat-label" data-i18n="stations">Stations</span>
-            <span class="stat-value" id="station-count">0</span>
-          </div>
-          <div class="stat-item">
-            <span class="stat-label" data-i18n="regular">Régulier</span>
-            <span class="stat-value" id="regular-stats">-</span>
-          </div>
-          <div class="stat-item">
-            <span class="stat-label" data-i18n="super">Super</span>
-            <span class="stat-value" id="super-stats">-</span>
-          </div>
-          <div class="stat-item">
-            <span class="stat-label" data-i18n="diesel">Diesel</span>
-            <span class="stat-value" id="diesel-stats">-</span>
-          </div>
-        </div>
-
-        <div class="control-group">
-          <label id="station-list-label">Stations (trié par prix)</label>
-          <div id="station-list">
-          </div>
+          <div id="station-list"></div>
         </div>
       </div>
     </div>
 
     <div id="map-container">
-      <div id="toggle-sidebar">
-        <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-          <rect x="3" y="3" width="18" height="18" rx="2" ry="2"></rect>
-          <line x1="9" y1="3" x2="9" y2="21"></line>
+      <div id="header">
+        <h1 id="title">⛽ Essence Québec</h1>
+        <div id="data-status" class="data-status">Données: en chargement...</div>
+      </div>
+
+      <div id="locate-btn" class="map-fab">
+        <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+          <circle cx="12" cy="12" r="3"></circle>
+          <path d="M12 2v4m0 12v4M2 12h4m12 0h4"></path>
         </svg>
       </div>
-      <div id="header">
-        <h1 id="title">⛽ Prix de l'essence Québec</h1>
-        <div class="top-controls">
-          <button class="top-btn" id="current-location">📍 Ma position</button>
-          <button class="top-btn" id="reset-view">↺ Réinitialiser</button>
+
+      <div id="radius-control" class="map-overlay-control">
+        <div class="radius-label" data-i18n="radius">Rayon</div>
+        <div class="radius-buttons">
+          <button class="radius-btn" data-radius="5">5km</button>
+          <button class="radius-btn" data-radius="10">10km</button>
+          <button class="radius-btn active" data-radius="25">25km</button>
+          <button class="radius-btn" data-radius="50">50km</button>
         </div>
-        <div class="status" id="data-status">Données: en chargement...</div>
-        <div id="language-selector"></div>
       </div>
+
       <div id="loading">
         <div class="spinner"></div>
-        <div id="loading-text">Chargement des données...</div>
+        <div id="loading-text">Chargement...</div>
       </div>
+
       <div id="legend">
-        <div id="legend-title">Prix au litre</div>
         <div class="legend-bar"></div>
-        <div class="legend-text">
-          <span id="legend-low">Bas (≤1.70$)</span>
-          <span id="legend-high">Élevé (≥1.95$)</span>
+        <div class="legend-labels">
+          <span>1.65$</span>
+          <span>2.00$</span>
         </div>
       </div>
-      <div id="map" style="width: 100%; height: 100%;"></div>
+
+      <div id="map"></div>
     </div>
   </div>
 
