@@ -68,9 +68,8 @@ export async function loadStations() {
     // Initialize brand filters with logos
     const brands = [...new Set(data.features.map(f => f.properties.brand).filter(Boolean))].sort();
     const brandContainer = document.getElementById('brand-filters');
-    const brandContainer = document.getElementById('brand-filters');
     const moreBrands = document.getElementById('more-brands');
-    const brandLogos = {
+    const brandColors = {
       'AMI': '#0066CC', 'Aucun': '#888888', 'Axco': '#FF6600', 'Beausoir': '#1E90FF',
       'Belzile': '#FF4500', 'Bélisle': '#228B22', 'Canadian Tire': '#FF6600', 'Costco': '#0065AD',
       'Couche-Tard': '#0055A4', 'Crevier': '#4169E1', 'Eko': '#32CD32', 'Esso': '#E31C1C',
@@ -81,7 +80,7 @@ export async function loadStations() {
       'Pétro-T': '#FF6600', 'Pétroles Maurice': '#FF8C00', 'Quickie': '#FF6347', 'Sergaz': '#FF4500',
       'Shell': '#ED1118', 'Sonic': '#FF4500', 'Stinson': '#4169E1', 'Super Gaz': '#FF6347', 'Ultramar': '#1C75BC',
     };
-    const abbrs = {
+    const brandAbbrs = {
       'AMI': 'AMI', 'Aucun': '?', 'Axco': 'AX', 'Beausoir': 'B', 'Belzile': 'B', 'Bélisle': 'BL',
       'Canadian Tire': 'CT', 'Costco': 'C', 'Couche-Tard': 'CT', 'Crevier': 'C', 'Eko': 'E', 'Esso': 'E',
       'Francis': 'F', 'Gaz-O-Bar': 'GB', 'Harnois': 'H', 'Irving': 'I', 'Le Relais': 'LR', 'Little Tree': 'LT',
@@ -92,8 +91,8 @@ export async function loadStations() {
     };
 
     brands.slice(0, 14).forEach(brand => {
-      const color = brandLogos[brand] || '#666';
-      const abbr = abbrs[brand] || brand.substring(0, 2).toUpperCase();
+      const color = brandColors[brand] || '#666';
+      const abbr = brandAbbrs[brand] || brand.substring(0, 2).toUpperCase();
       const item = document.createElement('label');
       item.className = 'brand-filter-item active';
       item.innerHTML = `<input type="checkbox" class="brand-filter" value="${brand}" checked>
@@ -104,8 +103,8 @@ export async function loadStations() {
 
     if (brands.length > 14) {
       brands.slice(14).forEach(brand => {
-        const color = brandLogos[brand] || '#666';
-        const abbr = abbrs[brand] || brand.substring(0, 2).toUpperCase();
+        const color = brandColors[brand] || '#666';
+        const abbr = brandAbbrs[brand] || brand.substring(0, 2).toUpperCase();
         const item = document.createElement('label');
         item.className = 'brand-filter-item active';
         item.style.margin = '4px';
