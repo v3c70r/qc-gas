@@ -30,8 +30,6 @@ function waitForMapboxGL() {
   });
 }
 
-mapboxgl.accessToken = mapboxToken;
-
 // Montréal West Island center
 const MONTREAL_CENTER = [-73.7, 45.45];
 
@@ -43,6 +41,7 @@ let pulseAnimationId = null;
 // Initialize map with modern light style
 export async function initMap() {
   await waitForMapboxGL();
+  mapboxgl.accessToken = mapboxToken;
 
   map = new mapboxgl.Map({
     container: 'map',
