@@ -227,28 +227,48 @@ export function applyTranslations(code) {
 }
 
 export function createLanguageSelector() {
-  const existing = document.getElementById('lang-selector');
+  const existing = document.getElementById('lang-selector-wrap');
   if (existing) existing.remove();
+
+  const wrap = document.createElement('div');
+  wrap.id = 'lang-selector-wrap';
+  wrap.style.cssText = 'display:flex;align-items:center;gap:8px;';
 
   const selector = document.createElement('div');
   selector.id = 'lang-selector';
-  selector.style.cssText = 'display:flex;gap:2px;background:rgba(255,255,255,0.15);padding:3px;border-radius:6px;';
+  selector.style.cssText = 'display:flex;gap:0;background:#f1f5f9;border:1px solid #e2e8f0;border-radius:8px;overflow:hidden;box-shadow:0 1px 3px rgba(0,0,0,0.06);';
 
-  languages.forEach(lang => {
-    const btn = document.createElement('button');
-    btn.textContent = lang.name;
-    btn.dataset.lang = lang.code;
-    btn.style.cssText = `padding:4px 8px;border:none;background:transparent;color:${currentLang === lang.code ? '#fff' : 'rgba(255,255,255,0.7)'};font-size:12px;font-weight:${currentLang === lang.code ? '700' : '400'};cursor:pointer;border-radius:4px;transition:all 0.15s;`;
-    btn.addEventListener('click', () => setLanguage(lang.code));
-    selector.appendChild(btn);
-  });
-
-  const header = document.getElementById('header');
-  if (header) {
-    const container = document.createElement('div');
-    container.id = 'lang-selector-wrap';
-    container.style.cssText = 'display:flex;align-items:center;gap:8px;';
-    container.appendChild(selector);
-    header.appendChild(container);
+  function renderButtons() {
+    selector.innerHTML = '';
+    languages.forEach(lang => {
+      const active = currentLang === lang.code;
+      const btn = document.createElement('button');
+      btn.textContent = lang.name;
+      btn.dataset.lang = lang.code;
+      btn.style.cssText = `padding:5px 10px;border:none;background:${active ? '#fff' : 'transparent'};color:${active ? '#1a73e8' : '#475569'};font-size:12px;font-weight:${active ? '700' : '500'};cursor:pointer;transition:all 0.15s;border-radius:0;`;
+      btn.addEventListener('mouseenter', () => {
+        if (!btn.classList.contains('active')) btn.style.background = '#e2e8f0';
+      });
+      btn.addEventListener('mouseleave', () => {
+        if (!btn.classList.contains('active')) btn.style.background = 'transparent';
+      });
+      btn.addEventListener('click', () => setLanguage(lang.code));
+      if (active) btn.classList.add('active');
+      selector.appendChild(btn);
+      // Divider between buttons
+      if (lang !== languages[languages.length - 1]) {
+        const divider = document.createElement('div');
+        divider.style.cssText = 'width:1px;background:#e2e8f0;';
+        selector.appendChild(divider);
+      }
+    });
   }
+
+  renderButtons();
+  // Re-render when language changes (updates active state)
+  onLanguageChange(() => renderButtons());
+
+  wrap.appendChild(selector);
+  const header = document.getElementById('header');
+  if (header) header.appendChild(wrap);
 }
