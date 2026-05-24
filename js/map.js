@@ -10,21 +10,25 @@ if (!mapboxToken) {
 }
 
 // ── Async Mapbox GL loader ──
-function waitForMapboxGL() {
+function waitForMapboxGL(timeoutMs = 15000) {
   if (window.mapboxgl) return Promise.resolve();
   return new Promise((resolve, reject) => {
+    const start = Date.now();
     const check = () => {
       if (window.mapboxgl) return resolve();
-      // Fallback: inject if async script failed
+      if (Date.now() - start > timeoutMs) {
+        return reject(new Error('Mapbox GL failed to load after ' + timeoutMs + 'ms'));
+      }
+      // Fallback: inject if script tag missing
       if (!document.querySelector('script[src*="mapbox-gl"]')) {
         const s = document.createElement('script');
         s.src = 'https://api.mapbox.com/mapbox-gl-js/v3.6.0/mapbox-gl.js';
         s.onload = () => check();
-        s.onerror = reject;
+        s.onerror = () => reject(new Error('Mapbox GL script failed to load'));
         document.head.appendChild(s);
         return;
       }
-      setTimeout(check, 50);
+      setTimeout(check, 100);
     };
     check();
   });
@@ -40,7 +44,13 @@ let pulseAnimationId = null;
 
 // Initialize map with modern light style
 export async function initMap() {
-  await waitForMapboxGL();
+  try {
+    await waitForMapboxGL();
+  } catch (err) {
+    console.error(err);
+    document.getElementById('map').innerHTML = `<div style="display:flex;align-items:center;justify-content:center;height:100%;color:#94a3b8;font-family:sans-serif;font-size:14px;text-align:center;padding:20px;">${t('mapError')}</div>`;
+    return;
+  }
   mapboxgl.accessToken = mapboxToken;
 
   map = new mapboxgl.Map({
