@@ -26,6 +26,7 @@ function initFilters() {
   // Brand filter changes
   document.addEventListener('change', (e) => {
     if (e.target.classList.contains('brand-filter')) {
+      if (window.__brandBatchUpdate) return; // skip during batch toggle
       const item = e.target.closest('.brand-filter-item');
       if (item) item.classList.toggle('active', e.target.checked);
       syncBrandToggle();
