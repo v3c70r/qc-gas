@@ -238,35 +238,41 @@ export function createLanguageSelector() {
   selector.id = 'lang-selector';
   selector.style.cssText = 'display:flex;gap:0;background:#f1f5f9;border:1px solid #e2e8f0;border-radius:8px;overflow:hidden;box-shadow:0 1px 3px rgba(0,0,0,0.06);';
 
-  function renderButtons() {
-    selector.innerHTML = '';
-    languages.forEach(lang => {
-      const active = currentLang === lang.code;
-      const btn = document.createElement('button');
-      btn.textContent = lang.name;
-      btn.dataset.lang = lang.code;
-      btn.style.cssText = `padding:5px 10px;border:none;background:${active ? '#fff' : 'transparent'};color:${active ? '#1a73e8' : '#475569'};font-size:12px;font-weight:${active ? '700' : '500'};cursor:pointer;transition:all 0.15s;border-radius:0;`;
-      btn.addEventListener('mouseenter', () => {
-        if (!btn.classList.contains('active')) btn.style.background = '#e2e8f0';
-      });
-      btn.addEventListener('mouseleave', () => {
-        if (!btn.classList.contains('active')) btn.style.background = 'transparent';
-      });
-      btn.addEventListener('click', () => setLanguage(lang.code));
-      if (active) btn.classList.add('active');
-      selector.appendChild(btn);
-      // Divider between buttons
-      if (lang !== languages[languages.length - 1]) {
-        const divider = document.createElement('div');
-        divider.style.cssText = 'width:1px;background:#e2e8f0;';
-        selector.appendChild(divider);
-      }
+  languages.forEach((lang, i) => {
+    const btn = document.createElement('button');
+    btn.textContent = lang.name;
+    btn.dataset.lang = lang.code;
+    btn.style.cssText = 'padding:5px 10px;border:none;background:transparent;color:#475569;font-size:12px;font-weight:500;cursor:pointer;transition:all 0.15s;border-radius:0;';
+    btn.addEventListener('mouseenter', () => {
+      if (!btn.classList.contains('active')) btn.style.background = '#e2e8f0';
+    });
+    btn.addEventListener('mouseleave', () => {
+      if (!btn.classList.contains('active')) btn.style.background = 'transparent';
+    });
+    btn.addEventListener('click', () => setLanguage(lang.code));
+    selector.appendChild(btn);
+
+    // Divider between buttons
+    if (i < languages.length - 1) {
+      const divider = document.createElement('div');
+      divider.style.cssText = 'width:1px;background:#e2e8f0;';
+      selector.appendChild(divider);
+    }
+  });
+
+  // Update button styles when language changes (in-place, no innerHTML)
+  function updateLangButtons() {
+    selector.querySelectorAll('button').forEach(btn => {
+      const active = btn.dataset.lang === currentLang;
+      btn.classList.toggle('active', active);
+      btn.style.background = active ? '#fff' : 'transparent';
+      btn.style.color = active ? '#1a73e8' : '#475569';
+      btn.style.fontWeight = active ? '700' : '500';
     });
   }
 
-  renderButtons();
-  // Re-render when language changes (updates active state)
-  onLanguageChange(() => renderButtons());
+  updateLangButtons();
+  onLanguageChange(() => updateLangButtons());
 
   wrap.appendChild(selector);
   const header = document.getElementById('header');
