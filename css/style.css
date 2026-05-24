@@ -547,14 +547,16 @@ body {
 @media (min-width: 768px) and (max-width: 1023px) {
   #sidebar { width: 280px; }
   #sidebar.collapsed { transform: translateX(-100%); }
-  #map-container { margin-left: 280px; }
+  #map-container { margin-left: 280px; transition: margin-left 0.3s ease; }
+  #sidebar.collapsed ~ #map-container { margin-left: 0; }
 }
 
 /* Desktop */
 @media (min-width: 1024px) {
   #sidebar { width: 320px; }
-  #map-container { margin-left: 320px; }
+  #map-container { margin-left: 320px; transition: margin-left 0.3s ease; }
   #sidebar.collapsed { transform: translateX(-100%); }
+  #sidebar.collapsed ~ #map-container { margin-left: 0; }
 }
 
 /* Focus states */

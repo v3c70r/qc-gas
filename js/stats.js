@@ -1,5 +1,6 @@
 import { map, MONTREAL_CENTER, currentStations } from './map.js';
-import { translations, getLanguage } from './i18n.js';
+import { tf, translations, getLanguage } from './i18n.js';
+import { brandColor, brandAbbr } from './constants.js';
 
 function haversineDistance(lng1, lat1, lng2, lat2) {
   const R = 6371;
@@ -33,8 +34,22 @@ function filterStations() {
     const distance = haversineDistance(MONTREAL_CENTER[0], MONTREAL_CENTER[1], coords[0], coords[1]);
     if (distance > radiusKm) return false;
     if (selectedBrands.size > 0 && !selectedBrands.has(props.brand)) return false;
-    if (props.regular_price !== null && (props.regular_price < priceMin || props.regular_price > priceMax)) return false;
     if (selectedRegion && props.region !== selectedRegion) return false;
+
+    // Price range: must have at least one selected fuel with a price in range
+    let priceInRange = false;
+    if (selectedFuelTypes.regular && props.regular_price !== null) {
+      priceInRange = priceInRange || (props.regular_price >= priceMin && props.regular_price <= priceMax);
+    }
+    if (selectedFuelTypes.super && props.super_price !== null) {
+      priceInRange = priceInRange || (props.super_price >= priceMin && props.super_price <= priceMax);
+    }
+    if (selectedFuelTypes.diesel && props.diesel_price !== null) {
+      priceInRange = priceInRange || (props.diesel_price >= priceMin && props.diesel_price <= priceMax);
+    }
+    if (!priceInRange) return false;
+
+    // Must have at least one selected fuel with any price
     const hasSelectedFuel =
       (selectedFuelTypes.regular && props.regular_price !== null) ||
       (selectedFuelTypes.super && props.super_price !== null) ||
@@ -112,28 +127,6 @@ function pulseLowestPrice() {
   animate();
 }
 
-const brandColors = {
-  'AMI': '#0066CC', 'Aucun': '#888888', 'Axco': '#FF6600', 'Beausoir': '#1E90FF',
-  'Belzile': '#FF4500', 'Bélisle': '#228B22', 'Canadian Tire': '#FF6600', 'Costco': '#0065AD',
-  'Couche-Tard': '#0055A4', 'Crevier': '#4169E1', 'Eko': '#32CD32', 'Esso': '#E31C1C',
-  'Francis': '#FF8C00', 'Gaz-O-Bar': '#FF6347', 'Harnois': '#FF6600', 'Irving': '#E31837',
-  'Le Relais': '#228B22', 'Little Tree': '#2E8B57', 'MacEwen': '#006400', 'Miraco': '#4169E1',
-  'Mobil': '#0066CC', 'Nutrinor Énergies': '#FF8C00', 'Paddock': '#8B4513', 'Paquet': '#FF6347',
-  'Pepco': '#FF4500', 'Petro-Canada': '#D00', 'Petroplus': '#4169E1', 'Pétro-Québec': '#0066CC',
-  'Pétro-T': '#FF6600', 'Pétroles Maurice': '#FF8C00', 'Quickie': '#FF6347', 'Sergaz': '#FF4500',
-  'Shell': '#ED1118', 'Sonic': '#FF4500', 'Stinson': '#4169E1', 'Super Gaz': '#FF6347', 'Ultramar': '#1C75BC',
-};
-
-const abbrs = {
-  'AMI': 'AMI', 'Aucun': '?', 'Axco': 'AX', 'Beausoir': 'B', 'Belzile': 'B',
-  'Bélisle': 'BL', 'Canadian Tire': 'CT', 'Costco': 'C', 'Couche-Tard': 'CT', 'Crevier': 'C',
-  'Eko': 'E', 'Esso': 'E', 'Francis': 'F', 'Gaz-O-Bar': 'GB', 'Harnois': 'H', 'Irving': 'I',
-  'Le Relais': 'LR', 'Little Tree': 'LT', 'MacEwen': 'M', 'Miraco': 'M', 'Mobil': 'M',
-  'Nutrinor Énergies': 'N', 'Paddock': 'P', 'Paquet': 'P', 'Pepco': 'P', 'Petro-Canada': 'P',
-  'Petroplus': 'P', 'Pétro-Québec': 'PQ', 'Pétro-T': 'PT', 'Pétroles Maurice': 'PM',
-  'Quickie': 'Q', 'Sergaz': 'S', 'Shell': 'S', 'Sonic': 'S', 'Stinson': 'S', 'Super Gaz': 'SG', 'Ultramar': 'U',
-};
-
 function updateStationList(filteredStations = null) {
   if (filteredStations === null) filteredStations = filterStations();
   const list = document.getElementById('station-list');
@@ -150,8 +143,8 @@ function updateStationList(filteredStations = null) {
   filteredStations.slice(0, 30).forEach(feat => {
     const props = feat.properties;
     const distance = haversineDistance(MONTREAL_CENTER[0], MONTREAL_CENTER[1], feat.geometry.coordinates[0], feat.geometry.coordinates[1]);
-    const color = brandColors[props.brand] || '#666';
-    const abbr = abbrs[props.brand] || props.brand?.substring(0, 2).toUpperCase() || '?';
+    const color = brandColor(props.brand);
+    const abbr = brandAbbr(props.brand);
     const isBest = props.regular_price === cheapestPrice;
 
     const item = document.createElement('div');

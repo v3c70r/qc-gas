@@ -1,6 +1,15 @@
 import { updateStats, updateStationList } from './stats.js';
-import { map, MONTREAL_CENTER } from './map.js';
-import { t, setLanguage, onLanguageChange, applyTranslations } from './i18n.js';
+import { map, MONTREAL_CENTER, rangeRadius, addRangeCircle } from './map.js';
+import { t } from './i18n.js';
+
+// ── Debounce helper ──
+function debounce(fn, delay) {
+  let timer;
+  return function (...args) {
+    clearTimeout(timer);
+    timer = setTimeout(() => fn.apply(this, args), delay);
+  };
+}
 
 let filterPanelOpen = false;
 
@@ -14,19 +23,16 @@ function initFilters() {
     filterPanel.classList.toggle('open', filterPanelOpen);
   });
 
+  // Brand filter changes
   document.addEventListener('change', (e) => {
     if (e.target.classList.contains('brand-filter')) {
-      document.querySelectorAll('.brand-filter-item').forEach(item => {
-        const cb = item.querySelector('input');
-        item.classList.toggle('active', cb.checked);
-      });
+      const item = e.target.closest('.brand-filter-item');
+      if (item) item.classList.toggle('active', e.target.checked);
       updateStats();
     }
     if (e.target.classList.contains('fuel-filter')) {
-      document.querySelectorAll('.fuel-chip').forEach(chip => {
-        const cb = chip.querySelector('input');
-        chip.classList.toggle('active', cb.checked);
-      });
+      const chip = e.target.closest('.fuel-chip');
+      if (chip) chip.classList.toggle('active', e.target.checked);
       updateStats();
     }
   });
@@ -49,8 +55,9 @@ function initFilters() {
     updateStats();
   }
 
-  minSlider.addEventListener('input', updatePriceLabels);
-  maxSlider.addEventListener('input', updatePriceLabels);
+  const debouncedPriceUpdate = debounce(updatePriceLabels, 150);
+  minSlider.addEventListener('input', debouncedPriceUpdate);
+  maxSlider.addEventListener('input', debouncedPriceUpdate);
 
   const showMoreBtn = document.getElementById('show-more-brands');
   const moreBrands = document.getElementById('more-brands');
@@ -64,6 +71,10 @@ function initFilters() {
     btn.addEventListener('click', () => {
       document.querySelectorAll('.radius-btn').forEach(b => b.classList.remove('active'));
       btn.classList.add('active');
+      // Sync the shared radius variable and redraw the circle on the map
+      const newRadius = parseFloat(btn.dataset.radius);
+      rangeRadius.value = newRadius;
+      addRangeCircle();
       updateStats();
     });
   });
@@ -117,13 +128,13 @@ function initSidebarToggle() {
     startY = e.touches[0].clientY;
     const isCollapsed = sidebar.classList.contains('collapsed');
     startTransform = isCollapsed ? sidebar.offsetHeight - 60 : 0;
-  });
+  }, { passive: true });
 
   handle.addEventListener('touchmove', (e) => {
     const deltaY = startY - e.touches[0].clientY;
     const newTransform = Math.max(0, Math.min(sidebar.offsetHeight - 60, startTransform + deltaY));
     sidebar.style.transform = `translateY(${sidebar.offsetHeight - 60 - newTransform}px)`;
-  });
+  }, { passive: true });
 
   handle.addEventListener('touchend', () => {
     const currentTransform = sidebar.style.transform;

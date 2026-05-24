@@ -1,11 +1,33 @@
 // Mapbox initialization and map configuration
-import { t, applyTranslations, getStoredLanguage } from './i18n.js';
-import { translations } from './i18n.js';
+import { t, tf, onLanguageChange } from './i18n.js';
+import { brandColor, brandAbbr } from './constants.js';
+import { updateStats } from './stats.js';
 
 const mapboxToken = import.meta.env.VITE_MAPBOX_ACCESS_TOKEN;
 
 if (!mapboxToken) {
   document.body.innerHTML = `<div style="padding:40px;text-align:center;font-family:sans-serif;"><h1>Configuration Error</h1><p>${t('noToken')}</p></div>`;
+}
+
+// ── Async Mapbox GL loader ──
+function waitForMapboxGL() {
+  if (window.mapboxgl) return Promise.resolve();
+  return new Promise((resolve, reject) => {
+    const check = () => {
+      if (window.mapboxgl) return resolve();
+      // Fallback: inject if async script failed
+      if (!document.querySelector('script[src*="mapbox-gl"]')) {
+        const s = document.createElement('script');
+        s.src = 'https://api.mapbox.com/mapbox-gl-js/v3.6.0/mapbox-gl.js';
+        s.onload = () => check();
+        s.onerror = reject;
+        document.head.appendChild(s);
+        return;
+      }
+      setTimeout(check, 50);
+    };
+    check();
+  });
 }
 
 mapboxgl.accessToken = mapboxToken;
@@ -15,11 +37,13 @@ const MONTREAL_CENTER = [-73.7, 45.45];
 
 let map;
 let currentStations = [];
-let rangeRadius = 5; // km
+export const rangeRadius = { value: 5 }; // km, shared mutable reference
 let pulseAnimationId = null;
 
 // Initialize map with modern light style
-export function initMap() {
+export async function initMap() {
+  await waitForMapboxGL();
+
   map = new mapboxgl.Map({
     container: 'map',
     style: 'mapbox://styles/mapbox/light-v11',
@@ -57,6 +81,22 @@ export function initMap() {
   });
 }
 
+// Station count for i18n reactivity
+let stationCount = 0;
+
+function updateDataStatus() {
+  const el = document.getElementById('data-status');
+  if (stationCount > 0) {
+    el.textContent = tf('dataLoaded', { n: stationCount });
+  } else {
+    el.textContent = t('dataLoading');
+  }
+  el.dataset.count = stationCount;
+}
+
+// Listen for language changes to keep data-status in sync
+onLanguageChange(() => updateDataStatus());
+
 // Load stations data
 export async function loadStations() {
   document.getElementById('loading').classList.add('active');
@@ -65,6 +105,7 @@ export async function loadStations() {
     const response = await fetch('data/stations.json');
     const data = await response.json();
     currentStations = data;
+    stationCount = data.metadata.total_stations;
     
     console.log('Loaded', data.features.length, 'stations');
     
@@ -72,30 +113,10 @@ export async function loadStations() {
     const brands = [...new Set(data.features.map(f => f.properties.brand).filter(Boolean))].sort();
     const brandContainer = document.getElementById('brand-filters');
     const moreBrands = document.getElementById('more-brands');
-    const brandColors = {
-      'AMI': '#0066CC', 'Aucun': '#888888', 'Axco': '#FF6600', 'Beausoir': '#1E90FF',
-      'Belzile': '#FF4500', 'Bélisle': '#228B22', 'Canadian Tire': '#FF6600', 'Costco': '#0065AD',
-      'Couche-Tard': '#0055A4', 'Crevier': '#4169E1', 'Eko': '#32CD32', 'Esso': '#E31C1C',
-      'Francis': '#FF8C00', 'Gaz-O-Bar': '#FF6347', 'Harnois': '#FF6600', 'Irving': '#E31837',
-      'Le Relais': '#228B22', 'Little Tree': '#2E8B57', 'MacEwen': '#006400', 'Miraco': '#4169E1',
-      'Mobil': '#0066CC', 'Nutrinor Énergies': '#FF8C00', 'Paddock': '#8B4513', 'Paquet': '#FF6347',
-      'Pepco': '#FF4500', 'Petro-Canada': '#D00', 'Petroplus': '#4169E1', 'Pétro-Québec': '#0066CC',
-      'Pétro-T': '#FF6600', 'Pétroles Maurice': '#FF8C00', 'Quickie': '#FF6347', 'Sergaz': '#FF4500',
-      'Shell': '#ED1118', 'Sonic': '#FF4500', 'Stinson': '#4169E1', 'Super Gaz': '#FF6347', 'Ultramar': '#1C75BC',
-    };
-    const brandAbbrs = {
-      'AMI': 'AMI', 'Aucun': '?', 'Axco': 'AX', 'Beausoir': 'B', 'Belzile': 'B', 'Bélisle': 'BL',
-      'Canadian Tire': 'CT', 'Costco': 'C', 'Couche-Tard': 'CT', 'Crevier': 'C', 'Eko': 'E', 'Esso': 'E',
-      'Francis': 'F', 'Gaz-O-Bar': 'GB', 'Harnois': 'H', 'Irving': 'I', 'Le Relais': 'LR', 'Little Tree': 'LT',
-      'MacEwen': 'M', 'Miraco': 'M', 'Mobil': 'M', 'Nutrinor Énergies': 'N', 'Paddock': 'P', 'Paquet': 'P',
-      'Pepco': 'P', 'Petro-Canada': 'P', 'Petroplus': 'P', 'Pétro-Québec': 'PQ', 'Pétro-T': 'PT',
-      'Pétroles Maurice': 'PM', 'Quickie': 'Q', 'Sergaz': 'S', 'Shell': 'S', 'Sonic': 'S', 'Stinson': 'S',
-      'Super Gaz': 'SG', 'Ultramar': 'U',
-    };
 
     brands.slice(0, 14).forEach(brand => {
-      const color = brandColors[brand] || '#666';
-      const abbr = brandAbbrs[brand] || brand.substring(0, 2).toUpperCase();
+      const color = brandColor(brand);
+      const abbr = brandAbbr(brand);
       const item = document.createElement('label');
       item.className = 'brand-filter-item active';
       item.innerHTML = `<input type="checkbox" class="brand-filter" value="${brand}" checked>
@@ -106,8 +127,8 @@ export async function loadStations() {
 
     if (brands.length > 14) {
       brands.slice(14).forEach(brand => {
-        const color = brandColors[brand] || '#666';
-        const abbr = brandAbbrs[brand] || brand.substring(0, 2).toUpperCase();
+        const color = brandColor(brand);
+        const abbr = brandAbbr(brand);
         const item = document.createElement('label');
         item.className = 'brand-filter-item active';
         item.style.margin = '4px';
@@ -135,7 +156,8 @@ export async function loadStations() {
     addRangeCircle();
     
     // Update UI
-    document.getElementById('data-status').textContent = t('dataLoading') + ' ' + data.metadata.total_stations + ' ' + t('stations');
+    updateDataStatus();
+    updateStats();
     
   } catch (error) {
     console.error('Error loading stations:', error);
@@ -289,7 +311,7 @@ function addRangeCircle() {
   }
 
   // Calculate circle coordinates
-  const circle = createCircle(MONTREAL_CENTER, rangeRadius);
+  const circle = createCircle(MONTREAL_CENTER, rangeRadius.value);
   
   map.addSource('range-circle', {
     type: 'geojson',
@@ -367,28 +389,11 @@ function destination(origin, distanceKm, bearing) {
 function toRad(deg) { return deg * Math.PI / 180; }
 function toDeg(rad) { return rad * 180 / Math.PI; }
 
-// Show popup
+// Show popup (called from unclustered-points click)
 function showPopup(feature) {
-  const props = feature.properties;
-  const priceInfo = [];
-
-  const dict = translations[getLanguage()];
-  if (props.regular_price) priceInfo.push(`${dict.regular}: ${props.regular_price.toFixed(1)}¢`);
-  if (props.super_price) priceInfo.push(`${dict.super}: ${props.super_price.toFixed(1)}¢`);
-  if (props.diesel_price) priceInfo.push(`${dict.diesel}: ${props.diesel_price.toFixed(1)}¢`);
-
-  const popupContent = `<div style="padding:8px;min-width:200px;">
-    <h3 style="margin:0 0 8px 0;font-size:14px;font-weight:600;">${props.name || dict.station}</h3>
-    <p style="margin:4px 0;font-size:12px;color:#64748b;">${props.brand}</p>
-    <p style="margin:4px 0;font-size:12px;color:#334155;">${props.address}</p>
-    <div style="margin-top:8px;padding:8px;background:#f8fafc;border-radius:6px;font-size:11px;">${priceInfo.join('<br>')}</div>
-  </div>`;
-
-  new mapboxgl.Popup({ closeButton: true, closeOnClick: true, anchor: 'bottom', maxWidth: '280px' })
-    .setLngLat(feature.geometry.coordinates)
-    .setHTML(popupContent)
-    .addTo(map);
+  // Delegate to shared popup in stats.js
+  import('./stats.js').then(mod => mod.showPopup(feature));
 }
 
-export { map, currentStations, MONTREAL_CENTER, rangeRadius };
+export { map, currentStations, MONTREAL_CENTER, addRangeCircle };
 

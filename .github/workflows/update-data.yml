@@ -23,9 +23,12 @@ jobs:
       - name: Commit and push if changed
         continue-on-error: true
         run: |
+          sudo apt-get install -y brotli
+          brotli -fZ data/stations.json -o data/stations.json.br
+          brotli -fZ data/stats.json -o data/stats.json.br
           git config --global user.name 'github-actions[bot]'
           git config --global user.email 'github-actions[bot]@users.noreply.github.com'
-          git add data/stations.json data/stats.json
+          git add data/stations.json data/stats.json data/stations.json.br data/stats.json.br
           git diff-index --quiet HEAD || git commit -m "Update gas prices data [skip ci]" || echo "Nothing to commit"
           git push https://x-access-token:${GITHUB_TOKEN}@github.com/${GITHUB_REPOSITORY}.git || echo "Push failed or no changes"
         env:
