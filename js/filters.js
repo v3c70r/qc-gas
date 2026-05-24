@@ -28,6 +28,7 @@ function initFilters() {
     if (e.target.classList.contains('brand-filter')) {
       const item = e.target.closest('.brand-filter-item');
       if (item) item.classList.toggle('active', e.target.checked);
+      syncBrandToggle();
       updateStats();
     }
     if (e.target.classList.contains('fuel-filter')) {
@@ -36,6 +37,21 @@ function initFilters() {
       updateStats();
     }
   });
+
+  // Sync select-all/deselect-all button state
+  function syncBrandToggle() {
+    const btn = document.getElementById('brand-select-all');
+    if (!btn) return;
+    const all = document.querySelectorAll('.brand-filter');
+    const allChecked = all.length > 0 && document.querySelectorAll('.brand-filter:checked').length === all.length;
+    if (allChecked) {
+      btn.textContent = t('deselectAllBrands');
+      btn.classList.add('deselect');
+    } else {
+      btn.textContent = t('selectAllBrands');
+      btn.classList.remove('deselect');
+    }
+  }
 
   document.getElementById('region-filter').addEventListener('change', () => {
     updateStats();

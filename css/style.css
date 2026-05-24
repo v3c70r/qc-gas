@@ -158,6 +158,34 @@ body {
   gap: 6px;
 }
 
+.brand-toggle-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 8px 12px 8px 16px;
+}
+
+.brand-toggle-btn {
+  padding: 5px 12px;
+  border: 1px solid #e2e8f0;
+  background: #f8fafc;
+  border-radius: 6px;
+  font-size: 12px;
+  font-weight: 500;
+  color: #475569;
+  cursor: pointer;
+  transition: all 0.15s;
+}
+
+.brand-toggle-btn:hover { background: #e2e8f0; color: #1e293b; }
+.brand-toggle-btn.deselect { background: #fef2f2; border-color: #fecaca; color: #dc2626; }
+.brand-toggle-btn.deselect:hover { background: #fee2e2; }
+
+.brand-toggle-count {
+  font-size: 11px;
+  color: #94a3b8;
+}
+
 .brand-filter-item {
   display: flex;
   align-items: center;

@@ -118,33 +118,78 @@ export async function loadStations() {
     
     console.log('Loaded', data.features.length, 'stations');
     
-    // Initialize brand filters with logos
-    const brands = [...new Set(data.features.map(f => f.properties.brand).filter(Boolean))].sort();
+    // Initialize brand filters — sorted by popularity (most stations first)
+    const brandCount = {};
+    data.features.forEach(f => {
+      const b = f.properties.brand;
+      if (b) brandCount[b] = (brandCount[b] || 0) + 1;
+    });
+    const brands = Object.entries(brandCount)
+      .sort((a, b) => b[1] - a[1]); // descending by count
     const brandContainer = document.getElementById('brand-filters');
     const moreBrands = document.getElementById('more-brands');
 
-    brands.slice(0, 14).forEach(brand => {
+    // ── Select / deselect all toggle ──
+    const toggleRow = document.createElement('div');
+    toggleRow.className = 'brand-toggle-row';
+    toggleRow.innerHTML = `
+      <button class="brand-toggle-btn" id="brand-select-all" data-i18n="selectAllBrands">${t('selectAllBrands')}</button>
+      <span class="brand-toggle-count">${brands.length} ${t('brand').toLowerCase()}</span>
+    `;
+    brandContainer.parentNode.insertBefore(toggleRow, brandContainer);
+
+    function syncToggleState() {
+      const allChecked = document.querySelectorAll('.brand-filter:checked').length === brands.length;
+      const noneChecked = document.querySelectorAll('.brand-filter:checked').length === 0;
+      const btn = document.getElementById('brand-select-all');
+      if (allChecked) {
+        btn.textContent = t('deselectAllBrands');
+        btn.classList.add('deselect');
+      } else {
+        btn.textContent = t('selectAllBrands');
+        btn.classList.remove('deselect');
+      }
+    }
+
+    document.getElementById('brand-select-all').addEventListener('click', () => {
+      const allChecked = document.querySelectorAll('.brand-filter:checked').length === brands.length;
+      document.querySelectorAll('.brand-filter').forEach(cb => { cb.checked = !allChecked; });
+      document.querySelectorAll('.brand-filter-item').forEach(item => {
+        const cb = item.querySelector('input');
+        item.classList.toggle('active', cb.checked);
+      });
+      syncToggleState();
+      updateStats();
+    });
+
+    // Build brand filter items with count badges
+    function createBrandItem(brand, count, compact) {
       const color = brandColor(brand);
       const abbr = brandAbbr(brand);
       const item = document.createElement('label');
       item.className = 'brand-filter-item active';
+      if (compact) item.style.margin = '4px';
+      const iconSize = compact ? '18px' : '20px';
+      const fontSize = compact ? '7px' : '8px';
+      const countSize = compact ? '10px' : '11px';
       item.innerHTML = `<input type="checkbox" class="brand-filter" value="${brand}" checked>
-        <span style="width:20px;height:20px;border-radius:4px;background:${color};display:inline-flex;align-items:center;justify-content:center;font-size:8px;font-weight:700;color:#fff;">${abbr}</span>
-        <span>${brand}</span>`;
-      brandContainer.appendChild(item);
+        <span style="width:${iconSize};height:${iconSize};border-radius:4px;background:${color};display:inline-flex;align-items:center;justify-content:center;font-size:${fontSize};font-weight:700;color:#fff;flex-shrink:0;">${abbr}</span>
+        <span>${brand}</span>
+        <span class="brand-count" style="margin-left:auto;font-size:${countSize};color:#94a3b8;">${count}</span>`;
+      item.addEventListener('click', (e) => {
+        // Let the label toggle the checkbox naturally, then sync
+        setTimeout(syncToggleState, 0);
+      });
+      return item;
+    }
+
+    brands.slice(0, 14).forEach(([brand, count]) => {
+      brandContainer.appendChild(createBrandItem(brand, count, false));
     });
 
     if (brands.length > 14) {
-      brands.slice(14).forEach(brand => {
-        const color = brandColor(brand);
-        const abbr = brandAbbr(brand);
-        const item = document.createElement('label');
-        item.className = 'brand-filter-item active';
-        item.style.margin = '4px';
-        item.innerHTML = `<input type="checkbox" class="brand-filter" value="${brand}" checked>
-          <span style="width:18px;height:18px;border-radius:3px;background:${color};display:inline-flex;align-items:center;justify-content:center;font-size:7px;font-weight:700;color:#fff;">${abbr}</span>
-          <span>${brand}</span>`;
-        moreBrands.appendChild(item);
+      brands.slice(14).forEach(([brand, count]) => {
+        moreBrands.appendChild(createBrandItem(brand, count, true));
       });
     }
     

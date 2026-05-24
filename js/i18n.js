@@ -38,7 +38,10 @@ export const translations = {
     minPrice: '最低价',
     maxPrice: '最高价',
     mapError: '地图加载失败',
-    noToken: '请在 .env 文件中设置 VITE_MAPBOX_ACCESS_TOKEN'
+    noToken: '请在 .env 文件中设置 VITE_MAPBOX_ACCESS_TOKEN',
+    selectAllBrands: '全选',
+    deselectAllBrands: '取消全选',
+    navigate: '导航'
   },
   'en-CA': {
     results: 'Results',
@@ -79,7 +82,10 @@ export const translations = {
     minPrice: 'Min',
     maxPrice: 'Max',
     mapError: 'Map failed to load',
-    noToken: 'Please set VITE_MAPBOX_ACCESS_TOKEN in your .env file'
+    noToken: 'Please set VITE_MAPBOX_ACCESS_TOKEN in your .env file',
+    selectAllBrands: 'Select all',
+    deselectAllBrands: 'Deselect all',
+    navigate: 'Navigate'
   },
   'fr-CA': {
     results: 'Résultats',
@@ -120,7 +126,10 @@ export const translations = {
     minPrice: 'Min',
     maxPrice: 'Max',
     mapError: 'Échec du chargement de la carte',
-    noToken: 'Veuillez définir VITE_MAPBOX_ACCESS_TOKEN dans votre fichier .env'
+    noToken: 'Veuillez définir VITE_MAPBOX_ACCESS_TOKEN dans votre fichier .env',
+    selectAllBrands: 'Tout sélectionner',
+    deselectAllBrands: 'Tout désélectionner',
+    navigate: 'Itinéraire'
   }
 };
 
