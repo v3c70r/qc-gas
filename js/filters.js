@@ -38,6 +38,12 @@ function initFilters() {
     }
   });
 
+  // Initialize visual state: sync fuel chips with their checkbox state
+  document.querySelectorAll('.fuel-chip').forEach(chip => {
+    const cb = chip.querySelector('input');
+    chip.classList.toggle('active', cb && cb.checked);
+  });
+
   // Sync select-all/deselect-all button state
   function syncBrandToggle() {
     const btn = document.getElementById('brand-select-all');

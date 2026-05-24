@@ -192,6 +192,9 @@ export async function loadStations() {
         moreBrands.appendChild(createBrandItem(brand, count, true));
       });
     }
+
+    // Initial sync — all brands start checked, so button should say "Deselect all"
+    syncToggleState();
     
     // Initialize region filter
     const regionContainer = document.getElementById('region-filter');
