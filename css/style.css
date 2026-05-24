@@ -268,6 +268,7 @@ body {
 .station-list-section {
   flex: 1;
   overflow-y: auto;
+  -webkit-overflow-scrolling: touch;
   padding: 0;
 }
 
@@ -521,7 +522,7 @@ body {
     left: 0;
     right: 0;
     width: 100%;
-    height: 55vh;
+    height: 55dvh;
     border-right: none;
     border-top: 1px solid #e2e8f0;
     border-radius: 16px 16px 0 0;
@@ -536,6 +537,9 @@ body {
 
   #radius-control { bottom: 12px; padding: 6px 10px; }
   .radius-label { display: none; }
+  .radius-btn { min-height: 44px; padding: 10px 12px; }
+  .brand-filter-item { min-height: 44px; padding: 10px 12px; }
+  .fuel-chip { min-height: 44px; padding: 12px 4px; }
 
   #locate-btn { bottom: 70px; right: 12px; width: 40px; height: 40px; }
 
