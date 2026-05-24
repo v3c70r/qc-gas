@@ -153,10 +153,12 @@ export async function loadStations() {
 
     document.getElementById('brand-select-all').addEventListener('click', () => {
       const allChecked = document.querySelectorAll('.brand-filter:checked').length === brands.length;
+      window.__brandBatchUpdate = true;
       document.querySelectorAll('.brand-filter').forEach(cb => { cb.checked = !allChecked; });
+      window.__brandBatchUpdate = false;
       document.querySelectorAll('.brand-filter-item').forEach(item => {
         const cb = item.querySelector('input');
-        item.classList.toggle('active', cb.checked);
+        item.classList.toggle('active', cb && cb.checked);
       });
       syncToggleState();
       updateStats();
