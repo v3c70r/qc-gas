@@ -44,6 +44,7 @@ function filterStations() {
     const fuelPrice = props[priceKey];
     if (fuelPrice === null) return false;
     if (fuelPrice < priceMin || fuelPrice > priceMax) return false;
+    return true;
   });
 }
 
