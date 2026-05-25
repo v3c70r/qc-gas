@@ -173,6 +173,24 @@ function initSidebarToggle() {
     }
     sidebar.style.transform = '';
   });
+
+  // Tap-to-toggle (click without drag) on desktop + mobile
+  handle.addEventListener('click', (e) => {
+    // Only toggle if it was a quick tap (no significant drag happened)
+    sidebar.classList.toggle('collapsed');
+    sidebar.style.transform = '';
+  });
+
+  // After sidebar expands (transition end), re-sync fuel chips —
+  // iOS Safari CSS transform transitions can desync radio button visual state
+  sidebar.addEventListener('transitionend', (e) => {
+    if (e.propertyName === 'transform' && !sidebar.classList.contains('collapsed')) {
+      document.querySelectorAll('.fuel-chip').forEach(chip => {
+        const cb = chip.querySelector('input');
+        if (cb) chip.classList.toggle('active', cb.checked);
+      });
+    }
+  });
 }
 
 export { initFilters, initGeolocation, initSidebarToggle };
