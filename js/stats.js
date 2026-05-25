@@ -24,6 +24,8 @@ function filterStations() {
 
   const selectedFuelTypes = {};
   document.querySelectorAll('.fuel-filter').forEach(cb => { selectedFuelTypes[cb.value] = cb.checked; });
+  // Determine active fuel type (radio: exactly one is always checked)
+  const activeFuel = document.querySelector('.fuel-filter:checked')?.value || 'regular';
 
   const priceMin = parseFloat(document.getElementById('min-price').value);
   const priceMax = parseFloat(document.getElementById('max-price').value);
@@ -37,25 +39,11 @@ function filterStations() {
     if (selectedBrands.size > 0 && !selectedBrands.has(props.brand)) return false;
     if (selectedRegion && props.region !== selectedRegion) return false;
 
-    // Price range: must have at least one selected fuel with a price in range
-    let priceInRange = false;
-    if (selectedFuelTypes.regular && props.regular_price !== null) {
-      priceInRange = priceInRange || (props.regular_price >= priceMin && props.regular_price <= priceMax);
-    }
-    if (selectedFuelTypes.super && props.super_price !== null) {
-      priceInRange = priceInRange || (props.super_price >= priceMin && props.super_price <= priceMax);
-    }
-    if (selectedFuelTypes.diesel && props.diesel_price !== null) {
-      priceInRange = priceInRange || (props.diesel_price >= priceMin && props.diesel_price <= priceMax);
-    }
-    if (!priceInRange) return false;
-
-    // Must have at least one selected fuel with any price
-    const hasSelectedFuel =
-      (selectedFuelTypes.regular && props.regular_price !== null) ||
-      (selectedFuelTypes.super && props.super_price !== null) ||
-      (selectedFuelTypes.diesel && props.diesel_price !== null);
-    return hasSelectedFuel;
+    // Must have the selected fuel type with a price in range
+    const priceKey = activeFuel + '_price';
+    const fuelPrice = props[priceKey];
+    if (fuelPrice === null) return false;
+    if (fuelPrice < priceMin || fuelPrice > priceMax) return false;
   });
 }
 
@@ -102,10 +90,13 @@ function updateLowestPriceHighlight(filteredStations) {
   if (pulseAnimationId) { cancelAnimationFrame(pulseAnimationId); pulseAnimationId = null; }
   if (filteredStations.length === 0) return;
 
+  const activeFuel = document.querySelector('.fuel-filter:checked')?.value || 'regular';
+  const priceKey = activeFuel + '_price';
+
   let lowest = null;
   let lowestPrice = Infinity;
   filteredStations.forEach(feat => {
-    const price = feat.properties.regular_price;
+    const price = feat.properties[priceKey];
     if (price !== null && price < lowestPrice) { lowestPrice = price; lowest = feat; }
   });
   if (!lowest) return;
@@ -138,15 +129,22 @@ function updateStationList(filteredStations = null) {
     return;
   }
 
-  filteredStations.sort((a, b) => (a.properties.regular_price || Infinity) - (b.properties.regular_price || Infinity));
-  const cheapestPrice = filteredStations[0]?.properties.regular_price || Infinity;
+  // Determine active fuel type for price display
+  const activeFuel = document.querySelector('.fuel-filter:checked')?.value || 'regular';
+  const priceKey = activeFuel + '_price';
+  const dict = translations[getLanguage()];
+  const fuelLabel = (dict?.[activeFuel] || activeFuel).toLowerCase();
+
+  filteredStations.sort((a, b) => (a.properties[priceKey] || Infinity) - (b.properties[priceKey] || Infinity));
+  const cheapestPrice = filteredStations[0]?.properties[priceKey] || Infinity;
 
   filteredStations.slice(0, 30).forEach(feat => {
     const props = feat.properties;
     const distance = haversineDistance(MONTREAL_CENTER[0], MONTREAL_CENTER[1], feat.geometry.coordinates[0], feat.geometry.coordinates[1]);
     const color = brandColor(props.brand);
     const abbr = brandAbbr(props.brand);
-    const isBest = props.regular_price === cheapestPrice;
+    const stationPrice = props[priceKey];
+    const isBest = stationPrice === cheapestPrice;
 
     const item = document.createElement('div');
     item.className = 'list-item' + (isBest ? ' best' : '');
@@ -157,7 +155,7 @@ function updateStationList(filteredStations = null) {
         <div class="details">${props.address}</div>
       </div>
       <div class="price-block">
-        <div class="price">${props.regular_price ? props.regular_price.toFixed(1) + '¢' : '—'}</div>
+        <div class="price">${stationPrice ? stationPrice.toFixed(1) + '¢' : '—'}</div>
         <div class="distance">${distance.toFixed(1)} km</div>
       </div>`;
 

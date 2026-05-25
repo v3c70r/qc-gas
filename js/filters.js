@@ -33,8 +33,11 @@ function initFilters() {
       updateStats();
     }
     if (e.target.classList.contains('fuel-filter')) {
-      const chip = e.target.closest('.fuel-chip');
-      if (chip) chip.classList.toggle('active', e.target.checked);
+      // Radio: update all fuel chips' active state
+      document.querySelectorAll('.fuel-chip').forEach(chip => {
+        const cb = chip.querySelector('input');
+        chip.classList.toggle('active', cb && cb.checked);
+      });
       updateStats();
     }
   });
