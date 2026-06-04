@@ -190,11 +190,20 @@ function updatePopup(feature) {
     ? `https://maps.apple.com/?daddr=${lat},${lng}&dirflg=d`
     : `https://www.google.com/maps/dir/?api=1&destination=${lat},${lng}`;
 
+  // Data timestamp from metadata
+  const ts = currentStations?.metadata?.generated_at;
+  let timeStr = '';
+  if (ts) {
+    const d = new Date(ts);
+    timeStr = d.toLocaleString(lang, { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' });
+  }
+
   const popupContent = `<div style="padding:8px;min-width:220px;">
     <h3 style="margin:0 0 4px 0;font-size:14px;font-weight:600;">${props.name || stationLabel}</h3>
     <p style="margin:2px 0;font-size:12px;color:#64748b;">${props.brand}</p>
     <p style="margin:2px 0 8px 0;font-size:12px;color:#334155;">${props.address}</p>
     <div style="margin-bottom:8px;padding:8px;background:#f8fafc;border-radius:6px;font-size:11px;">${priceInfo.join('<br>')}</div>
+    ${timeStr ? `<div style="margin-bottom:8px;font-size:10px;color:#94a3b8;text-align:center;">${tf('dataUpdated', { time: timeStr })}</div>` : ''}
     <a href="${navUrl}" target="_blank" rel="noopener"
        style="display:flex;align-items:center;justify-content:center;gap:6px;width:100%;padding:8px 0;background:#1a73e8;color:#fff;border-radius:6px;font-size:13px;font-weight:600;text-decoration:none;text-align:center;transition:background .15s;"
        onmouseover="this.style.background='#1557b0'" onmouseout="this.style.background='#1a73e8'">

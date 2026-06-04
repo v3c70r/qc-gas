@@ -41,7 +41,8 @@ export const translations = {
     noToken: '请在 .env 文件中设置 VITE_MAPBOX_ACCESS_TOKEN',
     selectAllBrands: '全选',
     deselectAllBrands: '取消全选',
-    navigate: '导航'
+    navigate: '导航',
+    dataUpdated: '更新于 {time}'
   },
   'en-CA': {
     results: 'Results',
@@ -85,7 +86,8 @@ export const translations = {
     noToken: 'Please set VITE_MAPBOX_ACCESS_TOKEN in your .env file',
     selectAllBrands: 'Select all',
     deselectAllBrands: 'Deselect all',
-    navigate: 'Navigate'
+    navigate: 'Navigate',
+    dataUpdated: 'Updated {time}'
   },
   'fr-CA': {
     results: 'Résultats',
@@ -129,7 +131,8 @@ export const translations = {
     noToken: 'Veuillez définir VITE_MAPBOX_ACCESS_TOKEN dans votre fichier .env',
     selectAllBrands: 'Tout sélectionner',
     deselectAllBrands: 'Tout désélectionner',
-    navigate: 'Itinéraire'
+    navigate: 'Itinéraire',
+    dataUpdated: 'Mis à jour le {time}'
   }
 };
 
