@@ -1,6 +1,7 @@
 import { initMap, loadStations, MONTREAL_CENTER } from './map.js';
 import { initFilters, initGeolocation, initSidebarToggle } from './filters.js';
 import { getStoredLanguage, createLanguageSelector, applyTranslations } from './i18n.js';
+import { togglePanel } from './dashboard.js';
 
 function initKeyboardShortcuts() {
   document.addEventListener('keydown', (e) => {
@@ -23,8 +24,17 @@ function initKeyboardShortcuts() {
         if (isMobile && !sidebar.classList.contains('collapsed')) {
           sidebar.classList.add('collapsed');
         }
+        // Also close dashboard panel
+        const panel = document.getElementById('dashboard-panel');
+        if (panel && panel.classList.contains('open')) {
+          togglePanel();
+        }
         break;
       }
+      case 't':
+        e.preventDefault();
+        togglePanel();
+        break;
     }
   });
 }
@@ -41,6 +51,9 @@ function initApp() {
   initGeolocation();
   initSidebarToggle();
   initKeyboardShortcuts();
+
+  // Dashboard trigger button
+  document.getElementById('dashboard-trigger')?.addEventListener('click', togglePanel);
 
   if (window.innerWidth >= 768) {
     document.getElementById('sidebar').classList.remove('collapsed');

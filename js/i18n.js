@@ -42,7 +42,10 @@ export const translations = {
     selectAllBrands: '全选',
     deselectAllBrands: '取消全选',
     navigate: '导航',
-    dataUpdated: '更新于 {time}'
+    dataUpdated: '更新于 {time}',
+    trends: '油价趋势',
+    avg: '平均',
+    close: '关闭'
   },
   'en-CA': {
     results: 'Results',
@@ -87,7 +90,10 @@ export const translations = {
     selectAllBrands: 'Select all',
     deselectAllBrands: 'Deselect all',
     navigate: 'Navigate',
-    dataUpdated: 'Updated {time}'
+    dataUpdated: 'Updated {time}',
+    trends: 'Price trends',
+    avg: 'Average',
+    close: 'Close'
   },
   'fr-CA': {
     results: 'Résultats',
@@ -132,7 +138,10 @@ export const translations = {
     selectAllBrands: 'Tout sélectionner',
     deselectAllBrands: 'Tout désélectionner',
     navigate: 'Itinéraire',
-    dataUpdated: 'Mis à jour le {time}'
+    dataUpdated: 'Mis à jour le {time}',
+    trends: 'Tendances des prix',
+    avg: 'Moyenne',
+    close: 'Fermer'
   }
 };
 
