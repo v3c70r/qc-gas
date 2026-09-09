@@ -2,10 +2,12 @@ name: Issue Agent Triage
 
 on:
   schedule:
-    - cron: '*/10 * * * *'   # every 10 minutes
+    - cron: '*/10 * * * *'   # every 10 minutes (safety net)
   workflow_dispatch:          # manual trigger for testing
   issues:
     types: [opened, edited, reopened]
+  issue_comment:
+    types: [created]          # react instantly to /approve or /reject
 
 permissions:
   issues: write
@@ -27,6 +29,12 @@ jobs:
             const SEEN = 'agent-seen';
             const APPROVED = 'agent-approved';
             const REJECTED = 'agent-rejected';
+
+            // Guard: never re-process our own bot comments (prevents self-trigger loops)
+            if (context.payload.comment && context.payload.comment.user.login === BOT) {
+              console.log('bot-authored comment, skip');
+              return;
+            }
 
             async function ensureLabel(issue, name, color) {
               const has = (issue.labels || []).some(l => l.name === name);
