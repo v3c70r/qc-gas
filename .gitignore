@@ -61,3 +61,8 @@ tests/reports/
 tests/screenshots/
 test-results/
 playwright-report/
+
+# Agent loop
+.agent/tmp/
+.agent/logs/
+.agent/state.json
