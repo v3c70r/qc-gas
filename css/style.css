@@ -914,6 +914,7 @@ select:focus-visible {
   border-radius: 999px;
   padding: 2px 9px;
   font-variant-numeric: tabular-nums;
+  white-space: nowrap;
 }
 .sc-arrow { font-size: 9px; }
 .sc-change.down { background: #ecfdf5; color: #059669; }

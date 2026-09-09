@@ -90,9 +90,7 @@ function sparklineSVG(series, color) {
 // ── Build compact card HTML for the Mapbox popup ──
 function cardHTML(feature) {
   const props = feature.properties;
-  const fuel = popupFuel;
-  const price = props[fuel + '_price'];
-  if (price == null) {
+  if (props[popupFuel + '_price'] == null) {
     // fall back to first available fuel
     for (const f of FUEL_KEYS) {
       if (props[f + '_price'] != null) { popupFuel = f; break; }
@@ -383,7 +381,6 @@ export function formatUpdated(ts) {
 }
 
 function detailChartOptions() {
-  const dict = translations[getLanguage()];
   return {
     responsive: true,
     maintainAspectRatio: false,
