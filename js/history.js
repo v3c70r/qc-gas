@@ -3,6 +3,8 @@
 let historyData = null;
 let historyPromise = null;
 
+const DAY_MS = 24 * 60 * 60 * 1000;
+
 export async function loadHistoryData() {
   if (historyPromise) return historyPromise;
   historyPromise = fetch('data/history.json')
@@ -12,10 +14,31 @@ export async function loadHistoryData() {
   return historyPromise;
 }
 
-function regionDays(region) {
+function tsOf(entry) {
+  const t = new Date(entry.date).getTime();
+  return Number.isNaN(t) ? 0 : t;
+}
+
+function regionPoints(region) {
   if (!historyData) return null;
   const src = (historyData.regions && historyData.regions[region]) || historyData.overall;
-  return src ? src.days : null;
+  if (!src) return null;
+  const points = src.points || src.days || [];
+  return points.slice().sort((a, b) => tsOf(a) - tsOf(b));
+}
+
+/**
+ * Filter a list of intraday samples to the last `days` calendar days,
+ * relative to the newest sample in the list (NOT the wall-clock "now").
+ * This keeps the range buttons meaningful for synthetic historical data.
+ */
+export function filterByDays(points, days) {
+  const list = points || [];
+  if (!list.length) return [];
+  const sorted = list.slice().sort((a, b) => tsOf(a) - tsOf(b));
+  const end = tsOf(sorted[sorted.length - 1]);
+  const cutoff = end - days * DAY_MS;
+  return sorted.filter(p => tsOf(p) >= cutoff);
 }
 
 // Deterministic pseudo-noise per station (stable across calls)
@@ -25,9 +48,9 @@ function noiseFor(seed, i) {
 }
 
 /**
- * Build a plausible daily price series for one station, anchored to its
+ * Build a plausible intraday price series for one station, anchored to its
  * REAL current price and shaped by its region's trend. Oldest → newest.
- * Returns [{ date, price }] or null when unavailable.
+ * Returns [{ date, price }] (full timestamps) or null when unavailable.
  */
 export function getStationHistory(feature, fuel = 'regular', days = 90) {
   if (!historyData) return null;
@@ -36,7 +59,7 @@ export function getStationHistory(feature, fuel = 'regular', days = 90) {
   const current = props[key];
   if (current == null) return null;
 
-  const rd = regionDays(props.region);
+  const rd = regionPoints(props.region);
   if (!rd || rd.length === 0) return null;
 
   const last = rd[rd.length - 1];
@@ -45,20 +68,35 @@ export function getStationHistory(feature, fuel = 'regular', days = 90) {
   const offset = avgNow != null ? current - avgNow : 0;
 
   const seed = (props.name || '').length * 3 + (props.brand || '').length * 7 + 11;
+  let avail = filterByDays(rd, days);
+
+  // When the requested range predates the available history, extrapolate a
+  // flat-ish backwards tail so 6M / 1A ranges still show a full window.
+  const intervalHours = historyData.metadata?.interval_hours || 6;
+  const intervalMs = intervalHours * 60 * 60 * 1000;
+
   const out = [];
 
-  const avail = rd.slice(-Math.min(days, rd.length));
-  // If we need older points than regional data provides, extrapolate a flat-ish tail
-  const missing = days - avail.length;
+  if (avail.length > 0) {
+    const end = tsOf(avail[avail.length - 1]);
+    const cutoff = end - days * DAY_MS;
+    const first = avail[0];
+    const firstTs = tsOf(first);
 
-  if (missing > 0) {
-    const oldestAvg = avail.length && avail[0][fuel] ? avail[0][fuel].avg : current - offset;
-    for (let i = missing; i >= 1; i--) {
-      const d = new Date(avail[0].date + 'T12:00:00');
-      d.setDate(d.getDate() - i);
-      const drift = (missing - i) * 0.04; // slight backward drift
-      const v = oldestAvg - drift + offset + noiseFor(seed, -i) * 1.6;
-      out.push({ date: d.toISOString().slice(0, 10), price: clamp(v) });
+    if (firstTs - cutoff > intervalMs) {
+      const firstAvg = first[fuel] ? first[fuel].avg : current - offset;
+      const extra = [];
+      let t = firstTs - intervalMs;
+      let i = 1;
+      while (t >= cutoff) {
+        const driftDays = (firstTs - t) / DAY_MS;
+        const v = firstAvg - driftDays * 0.02 + offset + noiseFor(seed, -i) * 1.6;
+        extra.push({ date: new Date(t).toISOString(), price: clamp(v) });
+        t -= intervalMs;
+        i++;
+      }
+      extra.reverse();
+      out.push(...extra);
     }
   }
 

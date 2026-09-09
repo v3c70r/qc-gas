@@ -410,8 +410,8 @@ function detailChartOptions() {
 function updateDetailChart(series, color) {
   if (!detailChart || !series || !series.length) return;
   const labels = series.map(s => {
-    const d = new Date(s.date + 'T12:00:00');
-    return d.toLocaleDateString(getLanguage(), { month: 'short', day: 'numeric' });
+    const d = new Date(s.date);
+    return d.toLocaleString(getLanguage(), { month: 'short', day: 'numeric', hour: '2-digit' });
   });
   detailChart.data.labels = labels;
   detailChart.data.datasets[0].data = series.map(s => s.price);
