@@ -181,7 +181,9 @@ function updatePopup(feature) {
     const timeStr = d.toLocaleString(getLanguage(), { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' });
     updatedText = tf('dataUpdated', { time: timeStr });
   }
-  import('./station-card.js').then(mod => mod.showStationCard(feature, map, updatedText));
+  import('./history.js').then(h => h.loadHistoryData().catch(() => null))
+    .then(() => import('./station-card.js'))
+    .then(mod => mod.showStationCard(feature, map, updatedText));
 }
 
 export function openStationDetail(feature) {
@@ -192,7 +194,9 @@ export function openStationDetail(feature) {
     const timeStr = d.toLocaleString(getLanguage(), { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' });
     updatedText = tf('dataUpdated', { time: timeStr });
   }
-  import('./station-card.js').then(mod => mod.openStationDetail(feature, map, updatedText));
+  import('./history.js').then(h => h.loadHistoryData().catch(() => null))
+    .then(() => import('./station-card.js'))
+    .then(mod => mod.openStationDetail(feature, map, updatedText));
 }
 
 export function closeStationDetail() {
