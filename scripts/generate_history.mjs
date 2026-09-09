@@ -62,9 +62,11 @@ function round1(v) {
 function isoAt(dayIndex, hour) {
   const ms = START_MS + dayIndex * DAY_MS + hour * 60 * 60 * 1000;
   const d = new Date(ms);
-  const y = d.getFullYear();
-  const m = String(d.getMonth() + 1).padStart(2, '0');
-  const day = String(d.getDate()).padStart(2, '0');
+  // Use UTC getters so the fixed -04:00 offset is applied independently of the
+  // runner's local timezone, keeping regeneration deterministic everywhere.
+  const y = d.getUTCFullYear();
+  const m = String(d.getUTCMonth() + 1).padStart(2, '0');
+  const day = String(d.getUTCDate()).padStart(2, '0');
   const hh = String(hour).padStart(2, '0');
   return `${y}-${m}-${day}T${hh}:00:00${TZ_OFFSET}`;
 }
