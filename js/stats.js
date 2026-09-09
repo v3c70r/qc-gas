@@ -173,49 +173,30 @@ export function showPopup(feature) {
 }
 
 function updatePopup(feature) {
-  const props = feature.properties;
-  const priceInfo = [];
-  const lang = getLanguage();
-  const dict = translations[lang];
-  const stationLabel = dict?.station || 'Station';
-  const [lng, lat] = feature.geometry.coordinates;
-
-  if (props.regular_price) priceInfo.push(`${dict?.regular || 'Régulier'}: ${props.regular_price.toFixed(1)}¢`);
-  if (props.super_price) priceInfo.push(`${dict?.super || 'Super'}: ${props.super_price.toFixed(1)}¢`);
-  if (props.diesel_price) priceInfo.push(`${dict?.diesel || 'Diesel'}: ${props.diesel_price.toFixed(1)}¢`);
-
-  // Navigation URL: Apple Maps on iOS, Google Maps elsewhere
-  const isIOS = /iPhone|iPad|iPod/.test(navigator.userAgent);
-  const navUrl = isIOS
-    ? `https://maps.apple.com/?daddr=${lat},${lng}&dirflg=d`
-    : `https://www.google.com/maps/dir/?api=1&destination=${lat},${lng}`;
-
-  // Data timestamp from metadata
+  // Delegate to the Apple-stock style station card (popup + expandable panel)
   const ts = currentStations?.metadata?.generated_at;
-  let timeStr = '';
+  let updatedText = '';
   if (ts) {
     const d = new Date(ts);
-    timeStr = d.toLocaleString(lang, { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' });
+    const timeStr = d.toLocaleString(getLanguage(), { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' });
+    updatedText = tf('dataUpdated', { time: timeStr });
   }
+  import('./station-card.js').then(mod => mod.showStationCard(feature, map, updatedText));
+}
 
-  const popupContent = `<div style="padding:8px;min-width:220px;">
-    <h3 style="margin:0 0 4px 0;font-size:14px;font-weight:600;">${props.name || stationLabel}</h3>
-    <p style="margin:2px 0;font-size:12px;color:#64748b;">${props.brand}</p>
-    <p style="margin:2px 0 8px 0;font-size:12px;color:#334155;">${props.address}</p>
-    <div style="margin-bottom:8px;padding:8px;background:#f8fafc;border-radius:6px;font-size:11px;">${priceInfo.join('<br>')}</div>
-    ${timeStr ? `<div style="margin-bottom:8px;font-size:10px;color:#94a3b8;text-align:center;">${tf('dataUpdated', { time: timeStr })}</div>` : ''}
-    <a href="${navUrl}" target="_blank" rel="noopener"
-       style="display:flex;align-items:center;justify-content:center;gap:6px;width:100%;padding:8px 0;background:#1a73e8;color:#fff;border-radius:6px;font-size:13px;font-weight:600;text-decoration:none;text-align:center;transition:background .15s;"
-       onmouseover="this.style.background='#1557b0'" onmouseout="this.style.background='#1a73e8'">
-      <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><path d="M12 2L2 22h20L12 2z"/><line x1="12" y1="22" x2="12" y2="10"/></svg>
-      ${t('navigate')}
-    </a>
-  </div>`;
+export function openStationDetail(feature) {
+  const ts = currentStations?.metadata?.generated_at;
+  let updatedText = '';
+  if (ts) {
+    const d = new Date(ts);
+    const timeStr = d.toLocaleString(getLanguage(), { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' });
+    updatedText = tf('dataUpdated', { time: timeStr });
+  }
+  import('./station-card.js').then(mod => mod.openStationDetail(feature, map, updatedText));
+}
 
-  new mapboxgl.Popup({ closeButton: true, closeOnClick: true, anchor: 'bottom', maxWidth: '280px' })
-    .setLngLat(feature.geometry.coordinates)
-    .setHTML(popupContent)
-    .addTo(map);
+export function closeStationDetail() {
+  import('./station-card.js').then(mod => mod.closeStationDetail());
 }
 
 export { filterStations, updateStats, updateLowestPriceHighlight, updateStationList };

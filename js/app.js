@@ -2,6 +2,7 @@ import { initMap, loadStations, MONTREAL_CENTER } from './map.js';
 import { initFilters, initGeolocation, initSidebarToggle } from './filters.js';
 import { getStoredLanguage, createLanguageSelector, applyTranslations } from './i18n.js';
 import { togglePanel } from './dashboard.js';
+import { loadHistoryData } from './history.js';
 
 function initKeyboardShortcuts() {
   document.addEventListener('keydown', (e) => {
@@ -29,6 +30,11 @@ function initKeyboardShortcuts() {
         if (panel && panel.classList.contains('open')) {
           togglePanel();
         }
+        // Also close station detail panel
+        const sp = document.getElementById('station-panel');
+        if (sp && sp.classList.contains('open')) {
+          import('./station-card.js').then(m => m.closeStationDetail());
+        }
         break;
       }
       case 't':
@@ -51,6 +57,9 @@ function initApp() {
   initGeolocation();
   initSidebarToggle();
   initKeyboardShortcuts();
+
+  // Warm the history cache (used by station cards + trends dashboard)
+  loadHistoryData().catch(() => {});
 
   // Dashboard trigger button
   document.getElementById('dashboard-trigger')?.addEventListener('click', togglePanel);

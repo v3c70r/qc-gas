@@ -45,7 +45,13 @@ export const translations = {
     dataUpdated: '更新于 {time}',
     trends: '油价趋势',
     avg: '平均',
-    close: '关闭'
+    close: '关闭',
+    expand: '展开',
+    high: '最高',
+    low: '最低',
+    lastPrice: '上次',
+    sinceStart: '较期初',
+    noHistory: '暂无价格历史'
   },
   'en-CA': {
     results: 'Results',
@@ -93,7 +99,13 @@ export const translations = {
     dataUpdated: 'Updated {time}',
     trends: 'Price trends',
     avg: 'Average',
-    close: 'Close'
+    close: 'Close',
+    expand: 'Expand',
+    high: 'High',
+    low: 'Low',
+    lastPrice: 'Last',
+    sinceStart: 'since period start',
+    noHistory: 'No price history available'
   },
   'fr-CA': {
     results: 'Résultats',
@@ -141,7 +153,13 @@ export const translations = {
     dataUpdated: 'Mis à jour le {time}',
     trends: 'Tendances des prix',
     avg: 'Moyenne',
-    close: 'Fermer'
+    close: 'Fermer',
+    expand: 'Agrandir',
+    high: 'Maximum',
+    low: 'Minimum',
+    lastPrice: 'Dernier',
+    sinceStart: 'depuis début',
+    noHistory: 'Aucun historique de prix'
   }
 };
 

@@ -2,12 +2,15 @@
 // Slide-over panel with Chart.js time-series for fuel price trends
 
 import { t, tf, translations, getLanguage, onLanguageChange } from './i18n.js';
+import { loadHistoryData } from './history.js';
+import { loadChartJS } from './chartjs.js';
+
+export { loadChartJS };
 
 let chart = null;
 let historyData = null;
 let panelEl = null;
 let panelOpen = false;
-let chartJsLoaded = false;
 
 // Current filter state
 let filterRegion = 'overall';
@@ -16,27 +19,6 @@ let filterFuel = 'regular';
 
 const fuelColors = { regular: '#16a34a', super: '#eab308', diesel: '#dc2626' };
 const regionColors = ['#1a73e8', '#8b5cf6', '#ec4899', '#f59e0b', '#10b981', '#6366f1'];
-
-// ── Load Chart.js dynamically on first use ──
-function loadChartJS() {
-  if (chartJsLoaded) return Promise.resolve();
-  if (window.Chart) { chartJsLoaded = true; return Promise.resolve(); }
-  return new Promise((resolve, reject) => {
-    const script = document.createElement('script');
-    script.src = 'https://cdn.jsdelivr.net/npm/chart.js@4.4.7/dist/chart.umd.min.js';
-    script.onload = () => { chartJsLoaded = true; resolve(); };
-    script.onerror = () => reject(new Error('Chart.js failed to load'));
-    document.head.appendChild(script);
-  });
-}
-
-// ── Fetch historical data ──
-async function loadHistory() {
-  if (historyData) return historyData;
-  const resp = await fetch('data/history.json');
-  historyData = await resp.json();
-  return historyData;
-}
 
 // ── Build dashboard DOM ──
 function createPanel() {
@@ -140,7 +122,7 @@ function buildRegionChips(regions) {
 // ── Render chart ──
 async function renderChart() {
   await loadChartJS();
-  const history = await loadHistory();
+  const history = await loadHistoryData();
   if (!history) return;
 
   const regionData = history.regions[filterRegion] || history.overall;
@@ -252,8 +234,13 @@ function updateStats(avgPrices, days) {
 
 // ── Open/close panel ──
 export async function openPanel() {
+  // Close station detail panel if open (mutual exclusivity)
+  const sp = document.getElementById('station-panel');
+  if (sp && sp.classList.contains('open')) {
+    import('./station-card.js').then(m => m.closeStationDetail());
+  }
   const panel = createPanel();
-  await loadHistory();
+  historyData = await loadHistoryData();
   const history = historyData;
   if (history && history.metadata) {
     buildRegionChips(history.metadata.regions);
