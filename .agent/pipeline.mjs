@@ -66,7 +66,16 @@ function approvedIssues() {
   const out = gh(['issue', 'list', '--state', 'open', `--label=${LABEL_APPROVED}`, '--json', 'number,title,body,labels']);
   return JSON.parse(out);
 }
-function openPrFor(issueNum) {
+// Find an open PR by branch name (reliable; avoids search-index lag)
+function prForBranch(branch) {
+  try {
+    const out = gh(['pr', 'list', '--state', 'open', '--head', branch, '--json', 'number,headRefName,title']);
+    const prs = JSON.parse(out);
+    return prs[0] || null;
+  } catch { return null; }
+}
+function openPrFor(issueNum, branch) {
+  if (branch) { const p = prForBranch(branch); if (p) return p; }
   try {
     const out = gh(['pr', 'list', '--state', 'open', `--search`, `"#${issueNum}" in:body`, '--json', 'number,headRefName,title']);
     const prs = JSON.parse(out);
@@ -95,8 +104,8 @@ async function runImplementer(issue, roundNote = '') {
   try { sh(['git', 'commit', '-m', `Agent A: ${issue.title} (Closes #${issue.number}) [agent]`, '--allow-empty']); } catch {}
   sh(['git', 'push', '-u', 'origin', branch]);
 
-  // ensure PR exists
-  let pr = openPrFor(issue.number);
+  // ensure PR exists (query by branch — search index lags after create)
+  let pr = prForBranch(branch) || openPrFor(issue.number, branch);
   if (!pr) {
     const body = [
       `Closes #${issue.number}`,
@@ -105,10 +114,20 @@ async function runImplementer(issue, roundNote = '') {
       `标题: ${issue.title}`,
     ].join('\n');
     gh(['pr', 'create', '--base', BASE, '--head', branch, '--title', `Agent: ${issue.title}`, '--body', body]);
-    pr = openPrFor(issue.number);
+    // small wait for GH to index the new PR
+    for (let i = 0; i < 5 && !pr; i++) {
+      await new Promise(r => setTimeout(r, 2000));
+      pr = prForBranch(branch);
+    }
   }
-  commentOnPr(pr.number, `🤖 **Agent A 完成实现**，等待 Agent B review。`);
-  s[issue.number] = { status: 'pr_open', pr: pr.number, branch, round: 0, fixes: 0, title: issue.title };
+  if (pr) {
+    commentOnPr(pr.number, `🤖 **Agent A 完成实现**，等待 Agent B review。`);
+    s[issue.number] = { status: 'pr_open', pr: pr.number, branch, round: 0, fixes: 0, title: issue.title };
+  } else {
+    // PR not visible yet — save branch; later phases will requery
+    s[issue.number] = { status: 'pr_open', pr: null, branch, round: 0, fixes: 0, title: issue.title };
+    log(issue.number, 'PR 尚未可查，稍后按分支重查');
+  }
   state.save(s);
   return pr;
 }
@@ -192,24 +211,31 @@ async function processIssue(issue, force = false) {
   const terminal = ['merged', 'rejected', 'failed'];
   if (cur && terminal.includes(cur.status) && !force) return { skipped: cur.status };
 
-  let pr = openPrFor(issue.number);
-  if (cur && cur.pr && !pr) pr = { number: cur.pr }; // stale ref guard
+  const branch = cur?.branch || `agent/${issue.number}`;
+  let pr = prForBranch(branch) || openPrFor(issue.number, branch) || (cur?.pr ? { number: cur.pr } : null);
 
   // 1) IMPLEMENT
-  if (!cur || cur.status === 'pr_open' && (!pr || force)) {
-    // If an open PR already exists, skip to review rather than duplicate
-    if (pr && !force) {
+  if (!cur || (cur.status === 'pr_open' && (!pr || force))) {
+    if (pr && !force && cur) {
       s[issue.number] = { ...cur, status: 'reviewing' };
       state.save(s);
     } else {
       pr = await runImplementer(issue);
+      // PR may not be queryable yet — defer to next pass rather than crash
+      if (!pr) return { skipped: 'waiting_pr' };
     }
   }
 
+  // re-resolve PR after implement phase
+  pr = prForBranch(branch) || openPrFor(issue.number, branch) || (cur?.pr ? { number: cur.pr } : null);
+  if (!pr) return { skipped: 'waiting_pr' };
+
   // 2) REVIEW (loop with A)
   const maxRounds = parseInt(process.env.MAX_REVIEW_ROUNDS || '3', 10);
+  let verdict = 'REQUEST_CHANGES';
   for (let r = 0; r < maxRounds; r++) {
-    const { verdict } = await runReviewRound(issue.number, pr.number);
+    const res = await runReviewRound(issue.number, pr.number);
+    verdict = res.verdict;
     if (verdict === 'APPROVE') { s[issue.number].status = 'approved'; state.save(s); break; }
     // discuss & fix
     const note = `Agent B 要求修改（第 ${r + 1} 轮），请根据 PR #${pr.number} 上 Agent B 的评论修改。`;
@@ -217,7 +243,7 @@ async function processIssue(issue, force = false) {
     s[issue.number].round = r + 1;
     state.save(s);
     await runImplementer(issue, note);   // re-checkout same branch, commit fix
-    pr = openPrFor(issue.number) || pr;
+    pr = prForBranch(branch) || pr;
   }
 
   // 3) TEST
@@ -277,13 +303,14 @@ async function main() {
 
   if (cmd === 'run') {
     const i = process.argv.indexOf('--issue');
+    const force = process.argv.includes('--force');
     const issueNum = i >= 0 ? process.argv[i + 1] : null;
     const list = issueNum ? [{ number: issueNum, title: '', body: '' }] : approvedIssues();
     for (const issue of list) {
       const full = issueNum
         ? (await gh(['issue', 'view', String(issueNum), '--json', 'number,title,body']))
         : issue;
-      await processIssue(typeof full === 'string' ? JSON.parse(full) : full, true);
+      await processIssue(typeof full === 'string' ? JSON.parse(full) : full, force);
     }
     return;
   }
@@ -291,9 +318,9 @@ async function main() {
   if (cmd === 'test') {
     const i = process.argv.indexOf('--issue');
     const issueNum = process.argv[i + 1];
-    const s = state.load();
-    const pr = openPrFor(issueNum) || { number: s[issueNum]?.pr };
-    const t = runTester(issueNum, pr.number, s[issueNum].branch);
+    const s3 = state.load();
+    const pr = prForBranch(s3[issueNum]?.branch || `agent/${issueNum}`) || { number: s3[issueNum]?.pr };
+    const t = runTester(issueNum, pr.number, s3[issueNum].branch);
     console.log(t.pass ? 'PASS' : 'FAIL');
     return;
   }
