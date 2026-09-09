@@ -61,6 +61,8 @@ TEST_ENV_FILE=/abs/.env npm run agent:watch  # 注入 Mapbox token 供测试
 - Actions 使用 `github-actions[bot]` 身份评论；需要真实用户时 @ `v3c70r`。
 - pi 三个角色共用同一模型/账号，通过**独立 session** 与 **role prompt** 隔离。
 - 实现/讨论需要你本机在线并运行 `watch`；离线期间 Actions 只做 triage。
+- ⚠️ **`watch`/`run` 运行时不要在仓库工作区手动改文件**：Agent 会 `git add -A`/`reset` 分支，可能覆盖未提交的本地改动。需要改代码请先暂停 pipeline。
+- 单账号限制：GitHub 不允许自己 approve 自己的 PR，Agent B 批准以**评论记录**代替正式 review（已自动处理）；合并不受影响。
 - 测试若需要 Mapbox token：把 `.env`（含 `VITE_MAPBOX_ACCESS_TOKEN`）路径给 `TEST_ENV_FILE`。
 - 合并策略为 squash；PR body 带 `Closes #N` → 合并后 issue 自动关闭。
 - 版本要求：`pi` 在 PATH、`gh` 已认证（repo+workflow）、Playwright 浏览器已安装。
