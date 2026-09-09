@@ -159,7 +159,9 @@ function runPi(sessionId, prompt, branchHint) {
   const args = ['-p', '--mode', 'text', '--session-id', sessionId,
     '--system-prompt', `You are part of an autonomous agent loop operating on the GitHub repo (cwd). ${cwdNote} Follow the instructions below strictly.`,
     '--append-system-prompt', pfile,
-    '--no-approve'];
+    '--no-approve',
+    // positional user message — pi needs an actual message to act on
+    '现在执行上面给出的完整任务：读所需上下文，用工具完成所有步骤，然后输出总结并结束。'];
   try {
     return execFileSync('pi', args, { cwd: ROOT, encoding: 'utf8', timeout: 0, stdio: ['ignore', 'pipe', 'pipe'] });
   } catch (e) {
