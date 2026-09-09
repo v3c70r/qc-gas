@@ -2,8 +2,10 @@
 // Slide-over panel with Chart.js time-series for fuel price trends
 
 import { t, tf, translations, getLanguage, onLanguageChange } from './i18n.js';
-import { loadHistoryData } from './history.js';
+import { loadHistoryData, filterByDays } from './history.js';
 import { loadChartJS } from './chartjs.js';
+
+const DAY_MS = 24 * 60 * 60 * 1000;
 
 export { loadChartJS };
 
@@ -126,10 +128,10 @@ async function renderChart() {
   if (!history) return;
 
   const regionData = history.regions[filterRegion] || history.overall;
-  const days = regionData.days.slice(-filterDays);
+  const days = filterByDays(regionData.points || regionData.days, filterDays);
   const labels = days.map(d => {
-    const date = new Date(d.date + 'T12:00:00');
-    return date.toLocaleDateString(getLanguage(), { month: 'short', day: 'numeric' });
+    const date = new Date(d.date);
+    return date.toLocaleString(getLanguage(), { month: 'short', day: 'numeric', hour: '2-digit' });
   });
   const avgPrices = days.map(d => d[filterFuel]?.avg ?? null);
   const minPrices = days.map(d => d[filterFuel]?.min ?? null);
@@ -193,6 +195,18 @@ async function renderChart() {
 }
 
 // ── Summary statistics ──
+function windowChange(avgPrices, days, windowDays) {
+  if (!days.length || avgPrices.length !== days.length) return 0;
+  const end = new Date(days[days.length - 1].date).getTime();
+  const cutoff = end - windowDays * DAY_MS;
+  const startIdx = days.findIndex(d => new Date(d.date).getTime() >= cutoff);
+  if (startIdx < 0) return 0;
+  const start = avgPrices[startIdx];
+  const last = avgPrices[avgPrices.length - 1];
+  if (start == null || last == null) return 0;
+  return last - start;
+}
+
 function updateStats(avgPrices, days) {
   const el = document.getElementById('dashboard-stats');
   if (!el) return;
@@ -203,11 +217,9 @@ function updateStats(avgPrices, days) {
   const current = valid[valid.length - 1];
   const avg = valid.reduce((a, b) => a + b, 0) / valid.length;
 
-  // Calculate changes
-  const days7 = valid.slice(-Math.min(7, valid.length));
-  const days30 = valid.slice(-Math.min(30, valid.length));
-  const change7 = days7.length >= 2 ? days7[days7.length - 1] - days7[0] : 0;
-  const change30 = days30.length >= 2 ? days30[days30.length - 1] - days30[0] : 0;
+  // Calculate changes over the last 7 / 30 days of the displayed window
+  const change7 = windowChange(avgPrices, days, 7);
+  const change30 = windowChange(avgPrices, days, 30);
 
   const arrow = (v) => v > 0 ? '↑' : v < 0 ? '↓' : '→';
   const cls = (v) => v > 0 ? 'up' : v < 0 ? 'down' : '';
