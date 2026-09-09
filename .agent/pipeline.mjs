@@ -66,7 +66,15 @@ function approvedIssues() {
   const out = gh(['issue', 'list', '--state', 'open', `--label=${LABEL_APPROVED}`, '--json', 'number,title,body,labels']);
   return JSON.parse(out);
 }
-function openPrFor(issueNum) {
+function prForBranch(branch) {
+  try {
+    const out = gh(['pr', 'list', '--state', 'open', '--head', branch, '--json', 'number,headRefName,title']);
+    const prs = JSON.parse(out);
+    return prs[0] || null;
+  } catch { return null; }
+}
+function openPrFor(issueNum, branch) {
+  if (branch) { const p = prForBranch(branch); if (p) return p; }
   try {
     const out = gh(['pr', 'list', '--state', 'open', `--search`, `"#${issueNum}" in:body`, '--json', 'number,headRefName,title']);
     const prs = JSON.parse(out);
@@ -95,8 +103,8 @@ async function runImplementer(issue, roundNote = '') {
   try { sh(['git', 'commit', '-m', `Agent A: ${issue.title} (Closes #${issue.number}) [agent]`, '--allow-empty']); } catch {}
   sh(['git', 'push', '-u', 'origin', branch]);
 
-  // ensure PR exists
-  let pr = openPrFor(issue.number);
+  // ensure PR exists (query by branch — search index lags after create)
+  let pr = prForBranch(branch);
   if (!pr) {
     const body = [
       `Closes #${issue.number}`,
@@ -105,10 +113,18 @@ async function runImplementer(issue, roundNote = '') {
       `标题: ${issue.title}`,
     ].join('\n');
     gh(['pr', 'create', '--base', BASE, '--head', branch, '--title', `Agent: ${issue.title}`, '--body', body]);
-    pr = openPrFor(issue.number);
+    for (let i = 0; i < 5 && !pr; i++) {
+      await new Promise(r => setTimeout(r, 2000));
+      pr = prForBranch(branch);
+    }
   }
-  commentOnPr(pr.number, `🤖 **Agent A 完成实现**，等待 Agent B review。`);
-  s[issue.number] = { status: 'pr_open', pr: pr.number, branch, round: 0, fixes: 0, title: issue.title };
+  if (pr) {
+    commentOnPr(pr.number, `🤖 **Agent A 完成实现**，等待 Agent B review。`);
+    s[issue.number] = { status: 'pr_open', pr: pr.number, branch, round: 0, fixes: 0, title: issue.title };
+  } else {
+    s[issue.number] = { status: 'pr_open', pr: null, branch, round: 0, fixes: 0, title: issue.title };
+    log(issue.number, 'PR 尚未可查，稍后按分支重查');
+  }
   state.save(s);
   return pr;
 }
@@ -192,32 +208,35 @@ async function processIssue(issue, force = false) {
   const terminal = ['merged', 'rejected', 'failed'];
   if (cur && terminal.includes(cur.status) && !force) return { skipped: cur.status };
 
-  let pr = openPrFor(issue.number);
-  if (cur && cur.pr && !pr) pr = { number: cur.pr }; // stale ref guard
+  const branch = cur?.branch || `agent/${issue.number}`;
+  let pr = prForBranch(branch) || openPrFor(issue.number, branch) || (cur?.pr ? { number: cur.pr } : null);
 
   // 1) IMPLEMENT
-  if (!cur || cur.status === 'pr_open' && (!pr || force)) {
-    // If an open PR already exists, skip to review rather than duplicate
-    if (pr && !force) {
+  if (!cur || (cur.status === 'pr_open' && (!pr || force))) {
+    if (pr && !force && cur) {
       s[issue.number] = { ...cur, status: 'reviewing' };
       state.save(s);
     } else {
       pr = await runImplementer(issue);
+      if (!pr) return { skipped: 'waiting_pr' };
     }
   }
+  pr = prForBranch(branch) || openPrFor(issue.number, branch) || (cur?.pr ? { number: cur.pr } : null);
+  if (!pr) return { skipped: 'waiting_pr' };
 
-  // 2) REVIEW (loop with A)
+  // 2) REVIEW (loop with A) — skip if already approved (resume path)
   const maxRounds = parseInt(process.env.MAX_REVIEW_ROUNDS || '3', 10);
-  for (let r = 0; r < maxRounds; r++) {
-    const { verdict } = await runReviewRound(issue.number, pr.number);
-    if (verdict === 'APPROVE') { s[issue.number].status = 'approved'; state.save(s); break; }
-    // discuss & fix
-    const note = `Agent B 要求修改（第 ${r + 1} 轮），请根据 PR #${pr.number} 上 Agent B 的评论修改。`;
-    s[issue.number].status = 'reviewing';
-    s[issue.number].round = r + 1;
-    state.save(s);
-    await runImplementer(issue, note);   // re-checkout same branch, commit fix
-    pr = openPrFor(issue.number) || pr;
+  if (s[issue.number]?.status !== 'approved') {
+    for (let r = 0; r < maxRounds; r++) {
+      const { verdict } = await runReviewRound(issue.number, pr.number);
+      if (verdict === 'APPROVE') { s[issue.number].status = 'approved'; state.save(s); break; }
+      const note = `Agent B 要求修改（第 ${r + 1} 轮），请根据 PR #${pr.number} 上 Agent B 的评论修改。`;
+      s[issue.number].status = 'reviewing';
+      s[issue.number].round = r + 1;
+      state.save(s);
+      await runImplementer(issue, note);
+      pr = prForBranch(branch) || pr;
+    }
   }
 
   // 3) TEST
@@ -255,8 +274,24 @@ async function processIssue(issue, force = false) {
 }
 
 async function finishMerge(issueNum, prNum) {
-  gh(['pr', 'review', String(prNum), '--approve', '--body', '🤖 Agent B 已批准 + Agent C 测试通过']);
-  try { gh(['pr', 'merge', String(prNum), '--squash', '--delete-branch']); } catch (e) { console.warn('merge failed:', e.message); }
+  // GitHub forbids approving your own PR. If A/B share one account,
+  // record B's approval as a comment instead of a formal review.
+  try {
+    gh(['pr', 'review', String(prNum), '--approve', '--body', '🤖 Agent B 已批准 + Agent C 测试通过']);
+  } catch (e) {
+    commentOnPr(prNum, '🤖 Agent B 已批准（同一 GitHub 账号无法提交正式 approve review，以本评论作为批准记录）+ Agent C 测试通过。');
+  }
+  try {
+    gh(['pr', 'merge', String(prNum), '--squash', '--delete-branch']);
+  } catch (e) {
+    console.warn('merge failed:', e.message);
+    commentOnIssue(issueNum, `❌ 自动合并失败（可能受分支保护限制）：${e.message}. 请手动合并 PR #${prNum}。`);
+    const sf = state.load();
+    sf[issueNum].status = 'needs_human';
+    state.save(sf);
+    log(issueNum, '状态: needs_human (merge blocked)');
+    return;
+  }
   const s = state.load();
   s[issueNum].status = 'merged';
   state.save(s);
@@ -277,13 +312,14 @@ async function main() {
 
   if (cmd === 'run') {
     const i = process.argv.indexOf('--issue');
+    const force = process.argv.includes('--force');
     const issueNum = i >= 0 ? process.argv[i + 1] : null;
     const list = issueNum ? [{ number: issueNum, title: '', body: '' }] : approvedIssues();
     for (const issue of list) {
       const full = issueNum
         ? (await gh(['issue', 'view', String(issueNum), '--json', 'number,title,body']))
         : issue;
-      await processIssue(typeof full === 'string' ? JSON.parse(full) : full, true);
+      await processIssue(typeof full === 'string' ? JSON.parse(full) : full, force);
     }
     return;
   }
