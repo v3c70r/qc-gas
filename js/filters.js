@@ -1,5 +1,5 @@
 import { updateStats, updateStationList } from './stats.js';
-import { map, MONTREAL_CENTER, rangeRadius, addRangeCircle } from './map.js';
+import { map, MONTREAL_CENTER, rangeRadius, addRangeCircle, updateFuelPriceLayer } from './map.js';
 import { t } from './i18n.js';
 
 // ── Debounce helper ──
@@ -39,6 +39,7 @@ function initFilters() {
         chip.classList.toggle('active', cb && cb.checked);
       });
       updateStats();
+      updateFuelPriceLayer();
     }
   });
 
