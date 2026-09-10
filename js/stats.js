@@ -1,7 +1,9 @@
 import { map, MONTREAL_CENTER, currentStations } from './map.js';
-import { tf, translations, getLanguage } from './i18n.js';
+import { tf, translations, getLanguage, t, onLanguageChange } from './i18n.js';
 import { brandColor, brandAbbr } from './constants.js';
-import { t } from './i18n.js';
+import { isFavorite, toggleFavorite, getFavoriteCount, subscribe, STAR_ICON } from './favorites.js';
+
+let favoritesOnly = false;
 
 function haversineDistance(lng1, lat1, lng2, lat2) {
   const R = 6371;
@@ -60,7 +62,10 @@ function updateMapStations(filteredStations) {
 }
 
 function updateStats() {
-  const filtered = filterStations();
+  let filtered = filterStations();
+  if (favoritesOnly) {
+    filtered = filtered.filter(f => isFavorite(f));
+  }
   updateMapStations(filtered);
   const stats = { regular: [], super: [], diesel: [] };
 
@@ -97,9 +102,9 @@ function updateQuickStat(elementId, prices) {
 let pulseAnimationId = null;
 
 function updateLowestPriceHighlight(filteredStations) {
-  if (map.getSource('lowest-price')) map.removeSource('lowest-price');
   if (map.getLayer('lowest-price')) map.removeLayer('lowest-price');
   if (map.getLayer('lowest-price-border')) map.removeLayer('lowest-price-border');
+  if (map.getSource('lowest-price')) map.removeSource('lowest-price');
   if (pulseAnimationId) { cancelAnimationFrame(pulseAnimationId); pulseAnimationId = null; }
   if (filteredStations.length === 0) return;
 
@@ -133,7 +138,10 @@ function pulseLowestPrice() {
 }
 
 function updateStationList(filteredStations = null) {
-  if (filteredStations === null) filteredStations = filterStations();
+  if (filteredStations === null) {
+    filteredStations = filterStations();
+    if (favoritesOnly) filteredStations = filteredStations.filter(f => isFavorite(f));
+  }
   const list = document.getElementById('station-list');
   list.innerHTML = '';
 
@@ -148,8 +156,14 @@ function updateStationList(filteredStations = null) {
   const dict = translations[getLanguage()];
   const fuelLabel = (dict?.[activeFuel] || activeFuel).toLowerCase();
 
-  filteredStations.sort((a, b) => (a.properties[priceKey] || Infinity) - (b.properties[priceKey] || Infinity));
-  const cheapestPrice = filteredStations[0]?.properties[priceKey] || Infinity;
+  // Favorites are pinned above the price sort (acceptance: favorites first).
+  filteredStations.sort((a, b) => {
+    const aFav = isFavorite(a) ? 0 : 1;
+    const bFav = isFavorite(b) ? 0 : 1;
+    if (aFav !== bFav) return aFav - bFav;
+    return (a.properties[priceKey] || Infinity) - (b.properties[priceKey] || Infinity);
+  });
+  const cheapestPrice = filteredStations.reduce((min, f) => Math.min(min, f.properties[priceKey] || Infinity), Infinity);
 
   filteredStations.slice(0, 30).forEach(feat => {
     const props = feat.properties;
@@ -158,6 +172,7 @@ function updateStationList(filteredStations = null) {
     const abbr = brandAbbr(props.brand);
     const stationPrice = props[priceKey];
     const isBest = stationPrice === cheapestPrice;
+    const isFav = isFavorite(feat);
 
     const item = document.createElement('div');
     item.className = 'list-item' + (isBest ? ' best' : '');
@@ -167,10 +182,16 @@ function updateStationList(filteredStations = null) {
         <div class="name">${props.name || props.brand}</div>
         <div class="details">${props.address}</div>
       </div>
+      <button class="fav-star ${isFav ? 'on' : ''}" data-fav aria-label="${isFav ? t('unfavorite') : t('favorite')}" aria-pressed="${isFav}">${STAR_ICON}</button>
       <div class="price-block">
         <div class="price">${stationPrice ? stationPrice.toFixed(1) + '¢' : '—'}</div>
         <div class="distance">${distance.toFixed(1)} km</div>
       </div>`;
+
+    item.querySelector('.fav-star').addEventListener('click', (e) => {
+      e.stopPropagation();
+      toggleFavorite(feat);
+    });
 
     item.addEventListener('click', () => {
       map.flyTo({ center: feat.geometry.coordinates, zoom: 15, duration: 800 });
@@ -213,6 +234,37 @@ export function openStationDetail(feature) {
 
 export function closeStationDetail() {
   import('./station-card.js').then(mod => mod.closeStationDetail());
+}
+
+function updateFavoritesUI() {
+  const countEl = document.getElementById('favorites-count');
+  if (countEl) {
+    countEl.textContent = tf('favoritesCount', { n: getFavoriteCount() });
+  }
+  const toggle = document.getElementById('favorites-toggle');
+  if (toggle) {
+    toggle.classList.toggle('active', favoritesOnly);
+    toggle.setAttribute('aria-pressed', String(favoritesOnly));
+  }
+}
+
+export function initFavorites() {
+  const toggle = document.getElementById('favorites-toggle');
+  if (toggle) {
+    toggle.addEventListener('click', () => {
+      favoritesOnly = !favoritesOnly;
+      updateFavoritesUI();
+      updateStats();
+    });
+  }
+
+  subscribe(() => {
+    updateFavoritesUI();
+    updateStationList();
+  });
+
+  onLanguageChange(updateFavoritesUI);
+  updateFavoritesUI();
 }
 
 export { filterStations, filterStationsAsFeatureCollection, updateMapStations, updateStats, updateLowestPriceHighlight, updateStationList };

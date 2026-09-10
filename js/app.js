@@ -1,5 +1,6 @@
 import { initMap, loadStations, MONTREAL_CENTER } from './map.js';
 import { initFilters, initGeolocation, initSidebarToggle } from './filters.js';
+import { initFavorites } from './stats.js';
 import { getStoredLanguage, createLanguageSelector, applyTranslations } from './i18n.js';
 import { togglePanel } from './dashboard.js';
 import { loadHistoryData } from './history.js';
@@ -56,6 +57,7 @@ function initApp() {
   initFilters();
   initGeolocation();
   initSidebarToggle();
+  initFavorites();
   initKeyboardShortcuts();
 
   // Warm the history cache (used by station cards + trends dashboard)
