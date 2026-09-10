@@ -87,6 +87,7 @@ export async function initMap() {
     MONTREAL_CENTER[0] = e.lngLat.lng;
     MONTREAL_CENTER[1] = e.lngLat.lat;
     addRangeCircle();
+    updateStats();
   });
 }
 

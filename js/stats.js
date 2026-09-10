@@ -36,7 +36,7 @@ function filterStations() {
     const coords = feat.geometry.coordinates;
     const distance = haversineDistance(MONTREAL_CENTER[0], MONTREAL_CENTER[1], coords[0], coords[1]);
     if (distance > radiusKm) return false;
-    if (selectedBrands.size > 0 && !selectedBrands.has(props.brand)) return false;
+    if (selectedBrands.size === 0 || !selectedBrands.has(props.brand)) return false;
     if (selectedRegion && props.region !== selectedRegion) return false;
 
     // Must have the selected fuel type with a price in range
