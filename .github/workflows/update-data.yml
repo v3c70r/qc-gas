@@ -19,6 +19,11 @@ jobs:
         run: |
            python scripts/download_data.py || echo "No new data or download failed"
            python scripts/process_data.py || echo "Processing failed"
+           python scripts/append_history.py || echo "History append failed"
+
+      - name: Enforce data size budget
+        run: |
+          python scripts/check_data_size.py
 
       - name: Commit and push if changed
         continue-on-error: true
@@ -26,9 +31,14 @@ jobs:
           sudo apt-get install -y brotli
           brotli -fZ data/stations.json -o data/stations.json.br
           brotli -fZ data/stats.json -o data/stats.json.br
+          brotli -fZ data/history.json -o data/history.json.br
+          for f in data/history/*.json; do
+            [ -f "$f" ] || continue
+            brotli -fZ "$f" -o "$f.br"
+          done
           git config --global user.name 'github-actions[bot]'
           git config --global user.email 'github-actions[bot]@users.noreply.github.com'
-          git add data/stations.json data/stats.json data/stations.json.br data/stats.json.br
+          git add data/
           git diff-index --quiet HEAD || git commit -m "Update gas prices data [skip ci]" || echo "Nothing to commit"
           git push https://x-access-token:${GITHUB_TOKEN}@github.com/${GITHUB_REPOSITORY}.git || echo "Push failed or no changes"
         env:
