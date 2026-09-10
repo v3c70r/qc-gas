@@ -313,7 +313,7 @@ function addStationLayers() {
         source: 'stations',
         filter: ['!', ['has', 'point_count']],
         paint: {
-          'circle-color': priceColorExpression('regular_price'),
+          'circle-color': priceColorExpression(getActiveFuelPriceKey()),
           'circle-radius': [
             'interpolate',
             ['linear'],
@@ -422,6 +422,16 @@ function addPriceLabelLayer() {
 export function updateFuelPriceLayer() {
   if (!map || !map.getSource || !map.getSource('stations')) return;
   addPriceLabelLayer();
+
+  // Keep the dot color in sync with the selected fuel too, so a diesel label
+  // is not shown on a green dot colored by the regular price.
+  if (map.getLayer('unclustered-points')) {
+    map.setPaintProperty(
+      'unclustered-points',
+      'circle-color',
+      priceColorExpression(getActiveFuelPriceKey())
+    );
+  }
 }
 
 // Add range circle
