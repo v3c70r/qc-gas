@@ -42,6 +42,24 @@ let currentStations = [];
 export const rangeRadius = { value: 5 }; // km, shared mutable reference
 let pulseAnimationId = null;
 
+// ── Fuel selection helpers ──
+function getActiveFuelPriceKey() {
+  const activeFuel = document.querySelector('.fuel-filter:checked')?.value || 'regular';
+  return activeFuel + '_price';
+}
+
+// Price → color gradient shared by the unclustered dots and price labels.
+function priceColorExpression(priceKey) {
+  return [
+    'interpolate',
+    ['linear'],
+    ['get', priceKey],
+    165, '#16a34a',  // Green - cheap
+    180, '#eab308',  // Yellow - medium
+    200, '#dc2626'   // Red - expensive
+  ];
+}
+
 // Initialize map with modern light style
 export async function initMap() {
   try {
@@ -295,14 +313,7 @@ function addStationLayers() {
         source: 'stations',
         filter: ['!', ['has', 'point_count']],
         paint: {
-          'circle-color': [
-            'interpolate',
-            ['linear'],
-            ['get', 'regular_price'],
-            165, '#16a34a',  // Green - cheap
-            180, '#eab308',  // Yellow - medium
-            200, '#dc2626'   // Red - expensive
-          ],
+          'circle-color': priceColorExpression('regular_price'),
           'circle-radius': [
             'interpolate',
             ['linear'],
@@ -317,6 +328,9 @@ function addStationLayers() {
         }
       });
     }
+
+  // Price labels above unclustered points (Airbnb/Zillow-style)
+  addPriceLabelLayer();
 
   // Cluster click event
   map.on('click', 'clusters', (e) => {
@@ -356,6 +370,58 @@ function addStationLayers() {
   map.on('mouseleave', 'unclustered-points', () => {
     map.getCanvas().style.cursor = '';
   });
+}
+
+// Add / rebuild the price label symbol layer for the currently selected fuel.
+function addPriceLabelLayer() {
+  if (!map.getSource('stations')) return;
+  if (map.getLayer('station-price-labels')) {
+    map.removeLayer('station-price-labels');
+  }
+
+  const priceKey = getActiveFuelPriceKey();
+  map.addLayer({
+    id: 'station-price-labels',
+    type: 'symbol',
+    source: 'stations',
+    // Clusters have point_count; only label individual stations. Also hide null
+    // prices so the canvas never renders the literal "null".
+    filter: [
+      'all',
+      ['!', ['has', 'point_count']],
+      ['!=', ['get', priceKey], null]
+    ],
+    minzoom: 11,
+    layout: {
+      'text-field': [
+        'number-format',
+        ['get', priceKey],
+        { 'min-fraction-digits': 1, 'max-fraction-digits': 1 }
+      ],
+      'text-font': ['DIN Pro Bold', 'Arial Unicode MS Bold'],
+      'text-size': [
+        'interpolate',
+        ['linear'],
+        ['zoom'],
+        11, 11,
+        15, 13
+      ],
+      'text-anchor': 'bottom',
+      'text-offset': [0, -0.3],
+      'text-allow-overlap': false
+    },
+    paint: {
+      'text-color': '#1f2937',
+      'text-halo-color': '#ffffff',
+      'text-halo-width': 1.5
+    }
+  });
+}
+
+// Exposed for filters.js so the fuel radio can swap the displayed price in place.
+export function updateFuelPriceLayer() {
+  if (!map || !map.getSource || !map.getSource('stations')) return;
+  addPriceLabelLayer();
 }
 
 // Add range circle
