@@ -2,7 +2,7 @@
 // Slide-over panel with Chart.js time-series for fuel price trends
 
 import { t, tf, translations, getLanguage, onLanguageChange } from './i18n.js';
-import { loadHistoryData, filterByDays } from './history.js';
+import { loadHistoryData, filterByDays, aggregateRegionDaily } from './history.js';
 import { loadChartJS } from './chartjs.js';
 
 const DAY_MS = 24 * 60 * 60 * 1000;
@@ -128,10 +128,15 @@ async function renderChart() {
   if (!history) return;
 
   const regionData = history.regions[filterRegion] || history.overall;
-  const days = filterByDays(regionData.points || regionData.days, filterDays);
+  const source = filterByDays(regionData.points || regionData.days, filterDays);
+  // 7J keeps intraday samples; longer windows are downsampled to daily points.
+  const daily = filterDays > 7;
+  const days = daily ? aggregateRegionDaily(source) : source;
   const labels = days.map(d => {
     const date = new Date(d.date);
-    return date.toLocaleString(getLanguage(), { month: 'short', day: 'numeric', hour: '2-digit' });
+    return daily
+      ? date.toLocaleDateString(getLanguage(), { month: 'short', day: 'numeric' })
+      : date.toLocaleString(getLanguage(), { month: 'short', day: 'numeric', hour: '2-digit' });
   });
   const avgPrices = days.map(d => d[filterFuel]?.avg ?? null);
   const minPrices = days.map(d => d[filterFuel]?.min ?? null);
