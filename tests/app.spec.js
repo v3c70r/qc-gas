@@ -417,6 +417,35 @@ test.describe('Favorites (localStorage)', () => {
     await expect(list.locator('.list-item')).toHaveCount(0);
   });
 
+  test('favorites toggle before stations load does not throw', async ({ page }) => {
+    let release;
+    const gate = new Promise(resolve => { release = resolve; });
+    await page.route('**/data/stations.json', async route => {
+      await gate;
+      await route.continue();
+    });
+
+    const pageErrors = [];
+    page.on('pageerror', err => pageErrors.push(err.message));
+
+    await page.goto(BASE_URL);
+    await page.waitForSelector('#map canvas', { timeout: 15000 });
+    await page.waitForFunction(() => document.getElementById('favorites-count').textContent.trim().length > 1);
+
+    // Fire the favorites toggle and a language switch while stations are still loading.
+    await page.locator('#favorites-toggle').click();
+    await page.locator('#lang-selector button[data-lang="en-CA"]').click();
+
+    release();
+    await page.waitForTimeout(2500);
+
+    // Toggle back off so the normal unfiltered list can render.
+    await page.locator('#favorites-toggle').click();
+    await expect(page.locator('#station-list .list-item').first()).toBeVisible();
+
+    expect(pageErrors).toEqual([]);
+  });
+
   test('favorite star buttons have accessible names', async ({ page }) => {
     await page.waitForTimeout(3000);
     const stars = page.locator('#station-list .fav-star');

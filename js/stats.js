@@ -18,6 +18,10 @@ function haversineDistance(lng1, lat1, lng2, lat2) {
 function toRad(deg) { return deg * Math.PI / 180; }
 
 function filterStations() {
+  // Stations load asynchronously; guard every early call path (language
+  // change, favorites toggle, etc.) until the FeatureCollection is ready.
+  if (!currentStations || !Array.isArray(currentStations.features)) return [];
+
   const radiusBtn = document.querySelector('.radius-btn.active');
   const radiusKm = radiusBtn ? parseFloat(radiusBtn.dataset.radius) : 25;
 
