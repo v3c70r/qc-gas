@@ -333,3 +333,124 @@ test.describe('Accessibility Basic Checks', () => {
     expect(count).toBeGreaterThan(0);
   });
 });
+
+test.describe('Dashboard Region Ranking', () => {
+  const openDashboard = async (page) => {
+    await page.goto(BASE_URL);
+    await page.waitForLoadState('networkidle', { timeout: 15000 }).catch(() => {});
+    await page.locator('#dashboard-trigger').click();
+    await expect(page.locator('#dashboard-panel')).toHaveClass(/open/);
+  };
+
+  const sample = (date, avg, min, max) => ({
+    date,
+    regular: { avg, min, max },
+    super: { avg: avg + 20, min: min + 20, max: max + 20 },
+    diesel: { avg: avg + 30, min: min + 30, max: max + 30 }
+  });
+
+  test('renders 18 regions plus the overall province row', async ({ page }) => {
+    await openDashboard(page);
+    const rows = page.locator('#dashboard-ranking-body tr');
+    await expect(rows.first()).toBeVisible();
+    expect(await rows.count()).toBe(19);
+    await expect(page.locator('#dashboard-ranking-body')).toContainText('Province');
+  });
+
+  test('change column degrades to — when fewer than two samples exist', async ({ page }) => {
+    await page.route('**/data/history.json', async route => {
+      await route.fulfill({
+        json: {
+          regions: {
+            'Montréal': { points: [sample('2026-09-10T18:00:00Z', 199.6, 189.9, 203.9)] },
+            'Québec': { points: [sample('2026-09-10T18:00:00Z', 198.5, 183.9, 200.9)] }
+          },
+          overall: { points: [sample('2026-09-10T18:00:00Z', 196.4, 152.2, 239.3)] },
+          metadata: {
+            generated_at: '2026-09-10T18:00:00Z',
+            latest: '2026-09-10T18:00:00Z',
+            interval_hours: 6,
+            regions: ['Montréal', 'Québec'],
+            source: 'test'
+          }
+        }
+      });
+    });
+
+    await openDashboard(page);
+    const changes = page.locator('#dashboard-ranking-body td.ranking-change');
+    await expect(changes.first()).toBeVisible();
+    expect(await changes.count()).toBe(3);
+    for (let i = 0; i < await changes.count(); i++) {
+      await expect(changes.nth(i)).toHaveText('—');
+    }
+  });
+
+  test('change column shows a day-over-day delta when two samples exist', async ({ page }) => {
+    await page.route('**/data/history.json', async route => {
+      await route.fulfill({
+        json: {
+          regions: {
+            'Montréal': {
+              points: [
+                sample('2026-09-09T12:00:00Z', 190.0, 185.0, 195.0),
+                sample('2026-09-10T12:00:00Z', 195.0, 190.0, 200.0)
+              ]
+            }
+          },
+          overall: {
+            points: [
+              sample('2026-09-09T12:00:00Z', 190.0, 185.0, 195.0),
+              sample('2026-09-10T12:00:00Z', 196.0, 191.0, 201.0)
+            ]
+          },
+          metadata: {
+            generated_at: '2026-09-10T18:00:00Z',
+            latest: '2026-09-10T12:00:00Z',
+            interval_hours: 6,
+            regions: ['Montréal'],
+            source: 'test'
+          }
+        }
+      });
+    });
+
+    await openDashboard(page);
+    const row = page.locator('#dashboard-ranking-body tr').filter({ hasText: 'Montréal' }).first();
+    const change = row.locator('td.ranking-change');
+    await expect(change).toContainText('↑');
+    await expect(change).toContainText('5.0¢');
+  });
+
+  test('clicking a ranking row switches the selected region', async ({ page }) => {
+    await openDashboard(page);
+    const row = page.locator('#dashboard-ranking-body tr').filter({ hasText: 'Montréal' }).first();
+    await row.click();
+    await page.waitForTimeout(300);
+    await expect(page.locator('.dashboard-chip.active')).toContainText('Montréal');
+  });
+
+  test('fuel radio switches ranking values', async ({ page }) => {
+    await openDashboard(page);
+    await page.waitForTimeout(500);
+    const before = await page.locator('#dashboard-ranking-body tr').first().locator('td').nth(1).textContent();
+
+    await page.locator('.dashboard-fuel-radio').nth(2).click();
+    await page.waitForTimeout(500);
+
+    await expect(page.locator('.dashboard-fuel-radio').nth(2)).toHaveClass(/active/);
+    const after = await page.locator('#dashboard-ranking-body tr').first().locator('td').nth(1).textContent();
+    expect(after).not.toBe(before);
+  });
+
+  test('spread column header sorts rows', async ({ page }) => {
+    await openDashboard(page);
+    await page.waitForTimeout(500);
+    await page.locator('#dashboard-ranking-head th[data-sort="spread"]').click();
+    await page.waitForTimeout(300);
+
+    const first = parseFloat(await page.locator('#dashboard-ranking-body tr').first().locator('td').nth(4).textContent());
+    const last = parseFloat(await page.locator('#dashboard-ranking-body tr').last().locator('td').nth(4).textContent());
+    expect(first).toBeLessThanOrEqual(last);
+  });
+});

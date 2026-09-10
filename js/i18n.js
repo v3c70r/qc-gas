@@ -51,7 +51,11 @@ export const translations = {
     low: '最低',
     lastPrice: '上次',
     sinceStart: '较期初',
-    noHistory: '暂无价格历史'
+    noHistory: '暂无价格历史',
+    regionRanking: '区域排行',
+    spread: '价差',
+    vsYesterday: '环比昨日',
+    overall: '全省'
   },
   'en-CA': {
     results: 'Results',
@@ -105,7 +109,11 @@ export const translations = {
     low: 'Low',
     lastPrice: 'Last',
     sinceStart: 'since period start',
-    noHistory: 'No price history available'
+    noHistory: 'No price history available',
+    regionRanking: 'Regional ranking',
+    spread: 'Spread',
+    vsYesterday: 'vs yesterday',
+    overall: 'Province'
   },
   'fr-CA': {
     results: 'Résultats',
@@ -159,7 +167,11 @@ export const translations = {
     low: 'Minimum',
     lastPrice: 'Dernier',
     sinceStart: 'depuis début',
-    noHistory: 'Aucun historique de prix'
+    noHistory: 'Aucun historique de prix',
+    regionRanking: 'Classement régional',
+    spread: 'Écart',
+    vsYesterday: 'vs hier',
+    overall: 'Province'
   }
 };
 
