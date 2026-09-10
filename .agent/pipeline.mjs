@@ -35,6 +35,23 @@ const TMP = path.join(AGENT, 'tmp');
 const LABEL_APPROVED = 'agent-approved';
 const BASE = 'master';
 
+// ── locate the real pi binary ──
+// `npm run` prepends node_modules/.bin to PATH, and a transitive dep also
+// ships a (much older) `pi` CLI that shadows the real one. Skip those dirs.
+let PI_BIN = null;
+function resolvePi() {
+  if (PI_BIN) return PI_BIN;
+  if (process.env.PI_BIN) { PI_BIN = process.env.PI_BIN; return PI_BIN; }
+  const dirs = (process.env.PATH || '').split(path.delimiter)
+    .filter(d => d && !d.includes('node_modules'));
+  for (const d of dirs) {
+    const c = path.join(d, 'pi');
+    if (existsSync(c)) { PI_BIN = c; return PI_BIN; }
+  }
+  PI_BIN = 'pi';
+  return PI_BIN;
+}
+
 // ── tiny helpers ──
 function sh(cmd, opts = {}) {
   const out = execFileSync(cmd[0], cmd.slice(1), {
@@ -179,7 +196,8 @@ function runPi(sessionId, prompt, branchHint) {
     // positional user message — pi needs an actual message to act on
     '现在执行上面给出的完整任务：读所需上下文，用工具完成所有步骤，然后输出总结并结束。'];
   try {
-    return execFileSync('pi', args, { cwd: ROOT, encoding: 'utf8', timeout: 0, stdio: ['ignore', 'pipe', 'pipe'] });
+    const bin = resolvePi();
+    return execFileSync(bin, args, { cwd: ROOT, encoding: 'utf8', timeout: 0, stdio: ['ignore', 'pipe', 'pipe'] });
   } catch (e) {
     // even on nonzero exit, capture stdout
     if (e.stdout) return e.stdout.toString();
