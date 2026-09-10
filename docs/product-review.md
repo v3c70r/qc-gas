@@ -4,80 +4,101 @@
 > Product Manager agent 更新。人类 owner 也会阅读/修订它。
 > Keep it concise (≤ 180 lines), evidence-based, and honest about weaknesses.
 
-_Last updated: 2026-09-10 (seed)_
+_Last updated: 2026-09-10（首次正式运行）_
 
 ## 1. 产品是什么
 
 **Essence Québec**（`https://qgu.io/qc-gas/`）— 面向魁北克司机的**地图优先**油价查询 Web 应用。
 
-- 纯静态站点：Vanilla ES modules + Mapbox GL JS + Vite，部署在 GitHub Pages（自定义域 `qgu.io`）
-- 数据：每小时 GitHub Actions 抓取魁省官方油价数据（`scripts/download_data.py` → `process_data.py`），构建时提交回仓库
-- 规模：约 **2,460 个站点**，18 个行政区域，三种油品（Régulier / Super / Diesel）
-- 多语言：法语（默认）/ 英语 / 简体中文
-- 无后端、无账号、无追踪；前端公开 Mapbox token（已配 URL 限制）
+- 纯静态：Vanilla ES modules + Mapbox GL JS + Vite → GitHub Pages（自定义域 `qgu.io`）
+- 数据源：魁省**Régie de l'énergie** 官方公开 GeoJSON（`https://regieessencequebec.ca/stations.geojson.gz`），
+  由每小时 GitHub Actions 抓取（`scripts/download_data.py` → `process_data.py` → `append_history.py`）并提交回仓库
+- 规模：**2 466 个站点**、18 个行政区域、三种油品（Régulier / Super / Diesel）
+- 字段：name / brand / status / address / **postal_code** / region / 三油品价格（`data/stations.json`）
+- 多语言：法语（默认）/ 英语 / 简体中文；无后端、无账号、无追踪；前端公开 Mapbox token（已配 URL 限制）
 
-## 2. 当前能力清单（features）
+## 2. 当前能力清单（已核对代码）
 
-| 能力 | 说明 |
+| 能力 | 说明（文件） |
 |------|------|
-| 地图浏览 | Mapbox light 底图，聚类圆点（z<10）+ 单点价格渐变圆点（绿→黄→红） |
-| 价格标签 | 单点上方叠加价格数字（Airbnb 风格），随所选油品切换（z≥11 显示） |
-| 筛选 | 品牌（按站点数排序 + 计数徽标 + 全选/反选）、油品（单选 radio）、价格区间、区域、半径 |
-| 筛选作用于地图 | 筛选结果通过 `setData` 真实反映到地图与聚类 |
-| 站点卡片 | 弹出卡片：大字报价、涨跌 chip、sparkline、1W/1M/3M/6M/1A 区间、展开为右侧详情面板（Chart.js） |
-| 价格历史 | 真实 6 小时桶区域级历史（CI 自动记录，分层保留 + brotli 压缩），1W 显示日内粒度、更长区间按天聚合 |
-| 趋势看板 | 右侧滑出面板：区域对比、时间区间、min/avg/涨跌统计 |
-| 导航 | 卡片与详情面板可一键跳转 Google/Apple Maps 路线 |
-| 定位 | 浏览器定位 + 半径圈（5/10/25/50 km） |
-| 体验细节 | 移动端底部抽屉、44px 触控目标、`dvh`、键盘快捷键（f/l/t/Esc）、i18n 三语、`prefers-reduced-motion` |
-| 数据透明度 | 卡片底部显示数据更新时间（来自 metadata.generated_at） |
+| 地图浏览 | Mapbox light-v11；聚类圆点（z<10）+ 价格渐变点 + **站点上方价格标签**（z≥11，Airbnb/Zillow 风格，随油品切换）`js/map.js` |
+| 最低价高亮 | 当前筛选结果中最低价站点脉冲动画 `js/stats.js` |
+| 筛选即所得 | 品牌（计数徽标、top14 + 更多、全选/反选）、油品 radio、价格双滑块(150–240¢)、区域下拉、半径 5/10/25/50km → 全部真实作用于地图 source `js/filters.js`+`js/stats.js` |
+| 站点列表 | 侧栏 top-30，按价格排序，最低价高亮 + 距离 `js/stats.js` |
+| 站点卡片 | Apple-Stocks 风格：大字报价、涨跌 chip、SVG sparkline、油品 pills、1W/1M/3M/6M/1A、mini stats、展开为右侧 Chart.js 详情面板 `js/station-card.js` |
+| 趋势看板 | 右侧滑出：区域 chips（全省+18 区）、油品、7/30/60/90 天、min/avg/7J/30J 涨跌 `js/dashboard.js` |
+| 价格历史 | **真实区域级** 6h 桶（raw 14 天 / daily 12 月 / monthly 永久，brotli + 40MB 守卫）；**站点级为"区域趋势 + 固定偏移"推算** `js/history.js`, `docs/history-data.md` |
+| 导航 | 卡片/详情一键跳转 Google / Apple Maps 路线 `js/station-card.js` |
+| 定位 | 浏览器定位 + 半径圈 `js/filters.js` |
+| 体验 | 移动端底部抽屉、44px 触控目标、`dvh`、键盘快捷键 f/l/t/Esc、三语、`prefers-reduced-motion` |
+| 数据透明度 | 卡片显示数据 `generated_at` 更新时间 `js/stats.js` |
+| 测试 | 仅 Playwright 端到端（`tests/app.spec.js`，约 30 项），无单元测试 |
 
-## 3. 优势（为什么司机愿意用）
+## 3. 优势（为什么魁省司机愿意用）
 
-1. **打开即用**：无登录、无广告、加载轻（冷启动约 120 KB + Mapbox CDN）
-2. **地图优先**：一眼看到"哪里便宜"，价格标签直接显示在地图上（对比多数竞品需要逐个点击）
-3. **真实数据**：源自魁省官方价格数据，每小时更新，并显示更新时间
-4. **省域覆盖**：不只是蒙特利尔，覆盖 18 个区域含偏远地区
-5. **筛选即所得**：品牌/油品/价格/半径筛选真实作用于地图
-6. **历史趋势**：站点卡片与区域看板提供价格历史（1W 日内粒度）
-7. **三语支持**：法语/英语/中文，服务魁省多元人口
-8. **零成本运维**：全静态 + GitHub Actions，无服务器账单
+1. **地图上直接看到价格** + **筛选真实作用到地图**——官方平台恰恰缺这个（见 §5）。
+2. **打开即用**：无登录/无广告/无安装，冷启动轻量 + Mapbox CDN。
+3. **官方一手数据**：与 Régie 同源，含更新时间，覆盖全省含偏远地区。
+4. **历史趋势**：区域级真实历史 + 分层保留，竞品多为 7–14 天。
+5. **三语**：法语/英语/中文——在本轮所有竞品中未见同等三语支持。
+6. **隐私友好、零运维成本**：全静态 + Actions，无服务器账单。
 
-## 4. 劣势 / 技术债 / 风险
+## 4. 劣势 / 技术债 / 风险（与竞品对照后更新）
 
 | 类别 | 问题 | 影响 |
 |------|------|------|
-| 数据 | 站点级真实历史未存储，站点曲线由"区域趋势 + 偏移"推算 | 单站历史不精确 |
-| 数据 | 历史仅区域级聚合（站点级只有当前快照） | 无法回答"这个站上个月多少钱" |
-| 数据 | 依赖上游数据的时效与可用性，无告警 | 上游失效时可能静默变旧 |
-| 功能 | 无"收藏/常去站点"、无价格提醒 | 复访动力弱 |
-| 功能 | 无路线沿途油价（仅按半径） | 长途出行场景弱 |
-| 功能 | 无油耗/行程成本估算（竞品有 L/100km 计算） | 价值感知低一档 |
-| 功能 | 无价格预测/趋势提醒（"建议现在加"） | 差异化不足 |
-| UX | 无搜索框（按地址/城市/邮编定位） | 陌生地点需手动拖地图 |
-| UX | 首屏无引导（新用户不知可点标签/展开卡片） | 功能发现性差 |
-| UX | 聚类点击后行为较简单，无区域摘要卡 | 探索体验一般 |
-| 工程 | 无自动化单元测试（仅 Playwright 端到端 30 项） | 重构风险 |
-| 工程 | `state.round` 计数被覆盖（小 bug） | 仅日志可读性 |
-| 工程 | 无真实用户分析（隐私友好但也无反馈闭环） | 优化靠猜 |
-| 平台 | 无 PWA manifest / 离线支持 / 安装到主屏 | 移动端留存弱 |
+| 功能 | **无搜索**（地址/城市/邮编）| 竞品 gazquebec、Radio-Canada、essence-quebec.ca 均已有；陌生地点需手动拖图 |
+| 功能 | 无收藏/常去站点 | Prix Essence Québec、gasquebec 均有；复访动力弱 |
+| 功能 | 无价格提醒/推送 | Prix Essence Québec 核心卖点；需 service worker |
+| 功能 | 无价格预测（"现在该不该加"）| Prix Essence Québec 有短期预测；CAA 有"真实价格 vs 均价" |
+| 功能 | 无行程油费估算（L/100km×距离）| Prix Essence Québec 有；价值感知低一档 |
+| 功能 | 品牌无**价格对标**（仅计数）| gasquebec 显示"某品牌 vs 全省均价"；achetezlemeilleur 有 bannière 筛选 |
+| 功能 | 无区域排行表（min/avg/max/价差/环比）| achetezlemeilleur、Radio-Canada 有 |
+| 功能 | 站点列表硬截断 30 条 | 大城市无法浏览全部结果 |
+| 数据 | 站点级历史为推算（区域趋势+固定偏移）| 无法回答"这个站上个月多少钱" |
+| 数据 | 上游 <5 分钟更新，我们每小时抓取且无陈旧告警 | 上游失效时会静默变旧（仅显示 generated_at）|
+| 工程 | 无单元测试；仅 E2E | 重构风险 |
+| 工程 | 无真实用户分析 | 优化靠猜（隐私换取）|
+| 平台 | 无 PWA manifest / 离线 / 安装到主屏 | 移动端留存弱（竞品多为原生 App）|
 | 无障碍 | 地图 canvas 内容对屏幕阅读器不可达 | a11y 限制 |
 
-## 5. 竞争格局（初版，待每周更新证据）
+## 5. 竞争格局（2026-09，含证据）
 
-| 竞品 | 形态 | 优势 | 我们的机会 |
-|------|------|------|-----------|
-| *Prix Essence Québec* (iOS/Android) | 原生 App | 行程成本计算、子区域价格、App 商店分发、推送 | 我们无需安装、跨平台、有历史趋势与地图标签 |
-| GasBuddy | 原生 App + 众包 | 用户上报、积分、加油卡、覆盖广 | 我们是官方数据、无广告、隐私友好 |
-| Waze / Google Maps | 超级 App | 导航内嵌油价、巨大用户基数 | 我们聚焦魁省、数据更细、可做趋势分析 |
-| 各省/联邦开放数据站点 | 数据门户 | 权威、原始 | 我们把原始数据变成可用的地图体验 |
+> 关键背景：**2026-04-01 起**魁省强制所有约 2 700 家加油站把价格上报 Régie 的公开平台，
+> 平台更新延迟 <5 分钟；并有"Signaler une inexactitude"逐站纠错按钮。
+> 这使整个赛道的数据源趋同——**竞争点已从"有没有数据"转移到"怎么用数据"。**
 
-> 竞品证据需在后续每周运行中补充 URL 与截图/要点。
+| 竞品 | 形态 | 关键能力 | 我们的机会 |
+|------|------|----------|-----------|
+| **Régie de l'énergie 官方平台** `regieessencequebec.ca` | 官方地图 | 权威、<5min、逐站纠错；**但无筛选**，只能逐个 hover 看价 | 我们有价格标签 + 真实筛选（Protégez-Vous 明确点出官方缺筛选）|
+| **achetezlemeilleur.ca/prix-essence** | 内容站工具 | 2466 站、18 区、秒级更新、全省均价、最贵/最便宜区、最大价差、品牌+区域筛选、**排除 Costco**、区域排行表（Moy/Min/Max/Écart/**vs Hier/vs Moy.**）| 我们缺排行表与环比；其地图交互弱于我们 |
+| **gasquebec.ca** | 纯 Web | 品牌 vs 全省均价、Top3 便宜/最贵城市、**7 天变化**、收藏、城市页、地址/邮编/城市搜索；无安装/账号/广告 | 与我们定位最像；我们缺搜索与品牌对标 |
+| **Radio-Canada 油价看板** | 媒体工具 | 按市镇搜索/定位、区域+油品均价、最贵/最便宜站、每小时更新 | 无逐站地图标签；我们有 |
+| **EssenceQuébec.com / map.essencequebec.com** | 老牌 Web | 20+ 年品牌、红绿气泡、绝对/相对配色模式、区域最低价 | 配色与区域最低价我们已有；无趋势面板 |
+| **Prix Essence Québec（App）** 50K+ 下载 4.7★ | 原生 App（广告+IAP）| 收藏+提醒、短期预测、每日变化、14 天图表、区域/子区域、**行程油费计算** | 我们无需安装、无广告、有地图标签；缺收藏/预测/行程计算 |
+| **CAA-Québec Info Essence** | 会员工具 | "**prix réaliste** vs 均价"，告诉你现在该不该加 | 需外部油价数据，差异化价值高但成本高 |
+| GasBuddy | 众包 App | 覆盖广、社区/积分 | 魁省官方数据时代其时效劣势明显（Reddit 吐槽数据过时）|
 
-## 6. 下周待调研的问题
+> 证据 URL：Régie 上线公告 `regie-energie.qc.ca/fr/nouvelles/communiques/la-regie-de-lenergie-lance-une-plateforme-interactive-pour-suivre-les-prix-de-lessence-partout-au-quebec`；
+> Protégez-Vous「4 outils pour suivre les prix de l'essence」(2026-07-09) `protegez-vous.ca/nouvelles/automobile/4-outils-pour-suivre-les-prix-de-l-essence`；
+> achetezlemeilleur `achetezlemeilleur.ca/prix-essence/`；gasquebec `gasquebec.ca/` 与 `gazquebec.ca/prix-essence-pres-de-moi`；
+> Radio-Canada `ici.radio-canada.ca/info/tableau-de-bord-carte-prix-essence-quebec/`；App 商店 `apps.apple.com/ca/app/prix-essence-québec-info-gaz/id6739227128`；
+> CAA `caaquebec.com/fr/mobilite/info-essence`；官方纠错按钮 `lequotidien.com/affaires/2026/04/01/les-prix-de-lessence-disponibles-en-temps-reel-sur-regie-essence-quebec-4TKZDRIGEREPXDHZP65FLAWKLY/`。
 
-- 竞品的"行程成本计算"具体交互如何？我们做一版需要什么数据（油耗输入即可）？
-- 是否有公开可用的**站点级**历史数据源可接入（避免自行推算）？
-- 魁省开放数据是否提供更细的更新频率或 API？
-- PWA + 价格提醒的实现成本与用户价值比？
-- 地址/邮编搜索用什么低成本方案（Mapbox Geocoding 已在额度内？）？
+## 6. 本轮结论：差异化定位
+
+数据已商品化 → 我们应聚焦**官方平台与媒体工具都做不好的"地图交互 + 决策辅助"**：
+
+1. 官方平台**没有筛选** → 我们的"筛选即所得 + 价格标签"是最硬差异，应继续加深（如品牌价格对标、区域排行）。
+2. 竞品普遍提供**搜索 / 收藏 / 油费估算**三项"日常决策"能力，且都不需要后端——正是我们最缺、也最容易补的。
+3. 隐私、无广告、三语、零运维是我们的长期护城河（gasquebec 虽同为"无安装无账号"，但无三语与历史分层）。
+
+## 7. 下周待调研 / 待验证的问题
+
+- Régie GeoJSON 是否含 **city/municipality** 字段（现 `process_data.py` 只取 Address/PostalCode/Region）？
+  若有，可实现**纯离线城市搜索**，无需任何 Geocoding API 与 token scope 变更。
+- 若走 Mapbox Search Box/Geocoding API：公开 token 能否加 `search:read` 作用域？免费额度与滥用风险？
+  （参考 `.agents/skills/mapbox-search-integration`）
+- 价格提醒的最小可行实现（service worker 定时拉取 + Notification）在纯静态站的可行性与隐私权衡。
+- 站点级历史的低成本持久化（例如只存每日 delta / top-N）是否值得，是否会与 `docs/history-data.md` 预算冲突。
+- 竞品 App 商店评论主题（Reddit 被墙未取到原文；改用 App Store 评论页）。
