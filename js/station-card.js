@@ -409,9 +409,12 @@ function detailChartOptions() {
 
 function updateDetailChart(series, color) {
   if (!detailChart || !series || !series.length) return;
+  const daily = detailRange > 7;
   const labels = series.map(s => {
     const d = new Date(s.date);
-    return d.toLocaleString(getLanguage(), { month: 'short', day: 'numeric', hour: '2-digit' });
+    return daily
+      ? d.toLocaleDateString(getLanguage(), { month: 'short', day: 'numeric' })
+      : d.toLocaleString(getLanguage(), { month: 'short', day: 'numeric', hour: '2-digit' });
   });
   detailChart.data.labels = labels;
   detailChart.data.datasets[0].data = series.map(s => s.price);
