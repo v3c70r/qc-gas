@@ -244,14 +244,18 @@ async function processIssue(issue, force = false) {
 
   // 2) REVIEW (loop with A) — skip if already approved (resume path)
   const maxRounds = parseInt(process.env.MAX_REVIEW_ROUNDS || '3', 10);
-  if (s[issue.number]?.status !== 'approved') {
+  let fresh = state.load();
+  if (!fresh[issue.number]) fresh[issue.number] = {}; // ensure key exists
+  if (fresh[issue.number].status !== 'approved') {
     for (let r = 0; r < maxRounds; r++) {
+      fresh = state.load();
+      if (!fresh[issue.number]) fresh[issue.number] = {};
       const { verdict } = await runReviewRound(issue.number, pr.number);
-      if (verdict === 'APPROVE') { s[issue.number].status = 'approved'; state.save(s); break; }
+      if (verdict === 'APPROVE') { fresh[issue.number].status = 'approved'; state.save(fresh); break; }
       const note = `Agent B 要求修改（第 ${r + 1} 轮），请根据 PR #${pr.number} 上 Agent B 的评论修改。`;
-      s[issue.number].status = 'reviewing';
-      s[issue.number].round = r + 1;
-      state.save(s);
+      fresh[issue.number].status = 'reviewing';
+      fresh[issue.number].round = r + 1;
+      state.save(fresh);
       await runImplementer(issue, note);
       pr = prForBranch(branch) || pr;
     }
@@ -259,8 +263,9 @@ async function processIssue(issue, force = false) {
 
   // 3) TEST
   const s2 = state.load();
-  if (s2[issue.number]?.status !== 'approved') {
+  if (!s2[issue.number] || s2[issue.number].status !== 'approved') {
     // loop exhausted without approval → notify human
+    if (!s2[issue.number]) s2[issue.number] = {};
     commentOnIssue(issue.number, `⚠️ Agent B 与 Agent A 未能在 ${maxRounds} 轮内达成一致，请人工 review PR #${s2[issue.number]?.pr || pr.number}。`);
     s2[issue.number].status = 'needs_human';
     state.save(s2);
@@ -311,6 +316,7 @@ async function finishMerge(issueNum, prNum) {
     return;
   }
   const s = state.load();
+  if (!s[issueNum]) s[issueNum] = {};
   s[issueNum].status = 'merged';
   state.save(s);
   commentOnIssue(issueNum, `🎉 已合并 (PR #${prNum})。issue 将被自动关闭。`);
