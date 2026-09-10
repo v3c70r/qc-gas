@@ -2,7 +2,7 @@
 // Slide-over panel with Chart.js time-series for fuel price trends
 
 import { t, tf, translations, getLanguage, onLanguageChange } from './i18n.js';
-import { loadHistoryData, filterByDays, aggregateRegionDaily } from './history.js';
+import { loadHistoryData, filterByDays, aggregateRegionDaily, buildRegionRanking } from './history.js';
 import { loadChartJS } from './chartjs.js';
 
 const DAY_MS = 24 * 60 * 60 * 1000;
@@ -18,6 +18,10 @@ let panelOpen = false;
 let filterRegion = 'overall';
 let filterDays = 30;
 let filterFuel = 'regular';
+
+// Ranking table sort state
+let rankSortKey = 'avg';
+let rankSortDir = 1;
 
 const fuelColors = { regular: '#16a34a', super: '#eab308', diesel: '#dc2626' };
 const regionColors = ['#1a73e8', '#8b5cf6', '#ec4899', '#f59e0b', '#10b981', '#6366f1'];
@@ -60,6 +64,15 @@ function createPanel() {
       <div class="dashboard-chart-wrap">
         <canvas id="dashboard-chart"></canvas>
       </div>
+      <div class="dashboard-ranking">
+        <div class="dashboard-ranking-title">${t('regionRanking')}</div>
+        <div class="dashboard-ranking-table-wrap">
+          <table class="dashboard-ranking-table" id="dashboard-ranking-table">
+            <thead id="dashboard-ranking-head"></thead>
+            <tbody id="dashboard-ranking-body"></tbody>
+          </table>
+        </div>
+      </div>
       <div class="dashboard-stats" id="dashboard-stats"></div>
     </div>
   `;
@@ -79,8 +92,27 @@ function createPanel() {
       filterFuel = rb.value;
       panelEl.querySelectorAll('.dashboard-fuel-radio').forEach(l => l.classList.remove('active'));
       rb.closest('.dashboard-fuel-radio').classList.add('active');
+      renderRanking();
       renderChart();
     });
+  });
+
+  const rankingTable = panelEl.querySelector('#dashboard-ranking-table');
+  rankingTable.addEventListener('click', (e) => {
+    const th = e.target.closest('.ranking-sortable');
+    if (th) {
+      const key = th.dataset.sort;
+      if (rankSortKey === key) {
+        rankSortDir *= -1;
+      } else {
+        rankSortKey = key;
+        rankSortDir = 1;
+      }
+      renderRanking();
+      return;
+    }
+    const tr = e.target.closest('tbody tr');
+    if (tr && tr.dataset.region) selectRegion(tr.dataset.region);
   });
 
   document.getElementById('map-container').appendChild(panelEl);
@@ -97,12 +129,7 @@ function buildRegionChips(regions) {
   allChip.className = 'dashboard-chip active';
   allChip.textContent = t('allRegions');
   allChip.dataset.region = 'overall';
-  allChip.addEventListener('click', () => {
-    container.querySelectorAll('.dashboard-chip').forEach(c => c.classList.remove('active'));
-    allChip.classList.add('active');
-    filterRegion = 'overall';
-    renderChart();
-  });
+  allChip.addEventListener('click', () => selectRegion('overall'));
   container.appendChild(allChip);
 
   regions.forEach((region, i) => {
@@ -111,14 +138,105 @@ function buildRegionChips(regions) {
     chip.textContent = region;
     chip.dataset.region = region;
     chip.style.borderLeft = `3px solid ${regionColors[i % regionColors.length]}`;
-    chip.addEventListener('click', () => {
-      container.querySelectorAll('.dashboard-chip').forEach(c => c.classList.remove('active'));
-      chip.classList.add('active');
-      filterRegion = region;
-      renderChart();
-    });
+    chip.addEventListener('click', () => selectRegion(region));
     container.appendChild(chip);
   });
+}
+
+// ── Region selection (chips + ranking rows) ──
+function selectRegion(region) {
+  filterRegion = region;
+  const container = document.getElementById('dashboard-region-chips');
+  if (container) {
+    container.querySelectorAll('.dashboard-chip').forEach(c => {
+      c.classList.toggle('active', c.dataset.region === region);
+    });
+  }
+  updateRankingSelection();
+  renderChart();
+}
+
+function updateRankingSelection() {
+  const rows = panelEl?.querySelectorAll('#dashboard-ranking-body tr');
+  if (!rows) return;
+  rows.forEach(tr => tr.classList.toggle('selected', tr.dataset.region === filterRegion));
+}
+
+// ── Region ranking table ──
+function fmt(value) {
+  return value == null ? '—' : `${value.toFixed(1)}¢`;
+}
+
+function changeText(value) {
+  if (value == null) return '—';
+  const arrow = value > 0 ? '↑' : value < 0 ? '↓' : '→';
+  return `${arrow} ${Math.abs(value).toFixed(1)}¢`;
+}
+
+function sortArrow(key) {
+  if (rankSortKey !== key) return '';
+  return rankSortDir === 1 ? ' ▲' : ' ▼';
+}
+
+function sortRanking(rows) {
+  const dir = rankSortDir;
+  return rows.slice().sort((a, b) => {
+    const av = a[rankSortKey];
+    const bv = b[rankSortKey];
+    if (av == null && bv == null) return 0;
+    if (av == null) return 1;
+    if (bv == null) return -1;
+    return (av - bv) * dir;
+  });
+}
+
+function renderRanking() {
+  const table = panelEl?.querySelector('#dashboard-ranking-table');
+  if (!table || !historyData) return;
+  const head = table.querySelector('#dashboard-ranking-head');
+  const body = table.querySelector('#dashboard-ranking-body');
+  if (!head || !body) return;
+
+  const th = (key, label, sortable) => {
+    const cls = sortable
+      ? `ranking-sortable ${rankSortKey === key ? 'sorted' : ''} ${rankSortKey === key && rankSortDir === -1 ? 'desc' : ''}`
+      : '';
+    return `<th class="${cls}" data-sort="${key}">${label}${sortArrow(key)}</th>`;
+  };
+
+  head.innerHTML = `
+    <tr>
+      ${th('region', t('region'), false)}
+      ${th('avg', t('avg'), true)}
+      ${th('min', t('minPrice'), true)}
+      ${th('max', t('maxPrice'), true)}
+      ${th('spread', t('spread'), true)}
+      <th>${t('vsYesterday')}</th>
+    </tr>
+  `;
+
+  const rows = buildRegionRanking(historyData, filterFuel);
+  const sorted = sortRanking(rows);
+  body.innerHTML = '';
+
+  sorted.forEach(row => {
+    const tr = document.createElement('tr');
+    tr.dataset.region = row.region;
+    tr.className = 'dashboard-ranking-row';
+    const regionLabel = row.region === 'overall' ? t('overall') : row.region;
+    const changeCls = row.change == null ? '' : row.change > 0 ? 'up' : row.change < 0 ? 'down' : '';
+    tr.innerHTML = `
+      <td class="ranking-region">${regionLabel}</td>
+      <td class="ranking-num">${fmt(row.avg)}</td>
+      <td class="ranking-num">${fmt(row.min)}</td>
+      <td class="ranking-num">${fmt(row.max)}</td>
+      <td class="ranking-num">${fmt(row.spread)}</td>
+      <td class="ranking-change ${changeCls}">${changeText(row.change)}</td>
+    `;
+    body.appendChild(tr);
+  });
+
+  updateRankingSelection();
 }
 
 // ── Render chart ──
@@ -265,6 +383,7 @@ export async function openPanel() {
   panel.classList.add('open');
   panelOpen = true;
   document.getElementById('map-container').classList.add('dashboard-open');
+  renderRanking();
   renderChart();
 }
 
@@ -289,7 +408,8 @@ onLanguageChange(() => {
       const input = span.parentElement.querySelector('input');
       if (input && dict[input.value]) span.textContent = dict[input.value];
     });
-    // Re-render chart with new locale
+    // Re-render ranking table + chart with new locale
+    renderRanking();
     if (panelOpen && chart) renderChart();
   }
 });

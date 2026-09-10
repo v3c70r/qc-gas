@@ -825,6 +825,78 @@ select:focus-visible {
 .dashboard-stat-item.down .dashboard-stat-value { color: #16a34a; }
 .dashboard-stat-item.up .dashboard-stat-value { color: #dc2626; }
 
+/* Region ranking table */
+.dashboard-ranking {
+  flex-shrink: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+.dashboard-ranking-title {
+  font-size: 11px;
+  font-weight: 600;
+  color: #94a3b8;
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+}
+.dashboard-ranking-table-wrap {
+  max-height: 220px;
+  overflow-y: auto;
+  border: 1px solid #e2e8f0;
+  border-radius: 8px;
+}
+.dashboard-ranking-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 11px;
+  background: #fff;
+}
+.dashboard-ranking-table thead th {
+  position: sticky;
+  top: 0;
+  z-index: 1;
+  background: #f8fafc;
+  color: #64748b;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  padding: 6px 8px;
+  text-align: right;
+  border-bottom: 1px solid #e2e8f0;
+  white-space: nowrap;
+}
+.dashboard-ranking-table thead th:first-child {
+  text-align: left;
+}
+.dashboard-ranking-table thead th.ranking-sortable {
+  cursor: pointer;
+  user-select: none;
+}
+.dashboard-ranking-table thead th.ranking-sortable:hover { color: #1a73e8; }
+.dashboard-ranking-table thead th.ranking-sortable.sorted { color: #1a73e8; }
+.dashboard-ranking-table thead th.ranking-sortable.sorted.desc { color: #b45309; }
+
+.dashboard-ranking-table tbody td {
+  padding: 6px 8px;
+  text-align: right;
+  border-bottom: 1px solid #f1f5f9;
+  color: #334155;
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+.dashboard-ranking-table tbody td:first-child {
+  text-align: left;
+  color: #1e293b;
+  font-weight: 600;
+}
+.dashboard-ranking-row { cursor: pointer; transition: background 0.12s; }
+.dashboard-ranking-row:hover { background: #f8fafc; }
+.dashboard-ranking-row.selected { background: #eff6ff; }
+.dashboard-ranking-row.selected td:first-child { color: #1a73e8; }
+.ranking-change { font-weight: 600; }
+.ranking-change.up { color: #dc2626; }
+.ranking-change.down { color: #16a34a; }
+
 /* Mobile: bottom sheet */
 @media (max-width: 767px) {
   #dashboard-panel {

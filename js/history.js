@@ -186,3 +186,51 @@ export function aggregateRegionDaily(points) {
   }
   return out.sort((a, b) => tsOf(a) - tsOf(b));
 }
+
+/**
+ * Build one row of the region ranking table from the latest recorded sample.
+ * The change is a day-over-day delta computed on the daily-aggregated series,
+ * so it answers "vs yesterday" instead of comparing two 6h buckets on the
+ * same day. Returns null values when data is missing so the UI can degrade.
+ */
+function regionRank(history, region, fuel) {
+  const src = region === 'overall'
+    ? history?.overall
+    : (history?.regions && history.regions[region]);
+  if (!src) return null;
+
+  const points = (src.points || src.days || []).slice().sort((a, b) => tsOf(a) - tsOf(b));
+  const valid = points.filter(p => p?.[fuel] && Number.isFinite(p[fuel].avg));
+  const latest = valid[valid.length - 1];
+
+  const avg = latest ? round1(latest[fuel].avg) : null;
+  const min = latest && Number.isFinite(latest[fuel].min) ? round1(latest[fuel].min) : avg;
+  const max = latest && Number.isFinite(latest[fuel].max) ? round1(latest[fuel].max) : avg;
+  const spread = min != null && max != null ? round1(max - min) : null;
+
+  const daily = aggregateRegionDaily(points);
+  const dailyValid = daily.filter(d => d?.[fuel] && Number.isFinite(d[fuel].avg));
+  let change = null;
+  if (dailyValid.length >= 2) {
+    change = round1(dailyValid[dailyValid.length - 1][fuel].avg - dailyValid[dailyValid.length - 2][fuel].avg);
+  }
+
+  return { region, avg, min, max, spread, change };
+}
+
+/**
+ * Ranking rows for every known region plus the province-wide `overall` row.
+ * Uses `history.metadata.regions` for ordering and tolerates older data
+ * shapes that only expose `history.regions`.
+ */
+export function buildRegionRanking(history, fuel = 'regular') {
+  const regions = history?.metadata?.regions || Object.keys(history?.regions || {});
+  const rows = [];
+  for (const region of regions) {
+    const row = regionRank(history, region, fuel);
+    if (row) rows.push(row);
+  }
+  const overall = regionRank(history, 'overall', fuel);
+  if (overall) rows.push(overall);
+  return rows;
+}

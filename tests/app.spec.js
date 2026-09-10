@@ -333,3 +333,57 @@ test.describe('Accessibility Basic Checks', () => {
     expect(count).toBeGreaterThan(0);
   });
 });
+
+test.describe('Dashboard Region Ranking', () => {
+  test.beforeEach(async ({ page }) => {
+    await page.goto(BASE_URL);
+    await page.waitForLoadState('networkidle', { timeout: 15000 }).catch(() => {});
+    await page.locator('#dashboard-trigger').click();
+    await expect(page.locator('#dashboard-panel')).toHaveClass(/open/);
+  });
+
+  test('renders 18 regions plus the overall province row', async ({ page }) => {
+    const rows = page.locator('#dashboard-ranking-body tr');
+    await expect(rows.first()).toBeVisible();
+    expect(await rows.count()).toBe(19);
+    await expect(page.locator('#dashboard-ranking-body')).toContainText('Province');
+  });
+
+  test('change column degrades to — when fewer than two samples exist', async ({ page }) => {
+    await page.waitForTimeout(500);
+    const changes = page.locator('#dashboard-ranking-body td.ranking-change');
+    expect(await changes.count()).toBe(19);
+    for (let i = 0; i < await changes.count(); i++) {
+      await expect(changes.nth(i)).toHaveText('—');
+    }
+  });
+
+  test('clicking a ranking row switches the selected region', async ({ page }) => {
+    const row = page.locator('#dashboard-ranking-body tr').filter({ hasText: 'Montréal' }).first();
+    await row.click();
+    await page.waitForTimeout(300);
+    await expect(page.locator('.dashboard-chip.active')).toContainText('Montréal');
+  });
+
+  test('fuel radio switches ranking values', async ({ page }) => {
+    await page.waitForTimeout(500);
+    const before = await page.locator('#dashboard-ranking-body tr').first().locator('td').nth(1).textContent();
+
+    await page.locator('.dashboard-fuel-radio').nth(2).click();
+    await page.waitForTimeout(500);
+
+    await expect(page.locator('.dashboard-fuel-radio').nth(2)).toHaveClass(/active/);
+    const after = await page.locator('#dashboard-ranking-body tr').first().locator('td').nth(1).textContent();
+    expect(after).not.toBe(before);
+  });
+
+  test('spread column header sorts rows', async ({ page }) => {
+    await page.waitForTimeout(500);
+    await page.locator('#dashboard-ranking-head th[data-sort="spread"]').click();
+    await page.waitForTimeout(300);
+
+    const first = parseFloat(await page.locator('#dashboard-ranking-body tr').first().locator('td').nth(4).textContent());
+    const last = parseFloat(await page.locator('#dashboard-ranking-body tr').last().locator('td').nth(4).textContent());
+    expect(first).toBeLessThanOrEqual(last);
+  });
+});
