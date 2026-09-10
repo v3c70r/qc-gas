@@ -1,5 +1,0 @@
-[pm 2026-09-10 21:28:12] starting PM run — model=deepseek/deepseek-v4-flash, slots=5 (dry-run)
-[pm 2026-09-10 21:28:15] invoking pi (this may take a few minutes)…
-[pm 2026-09-10 21:30:24] pi finished (exit=0)
-[pm 2026-09-10 21:30:24] no issues created this run
-[pm 2026-09-10 21:30:24] log: /home/qgu/Projects/qc-gas/.agent/pm/logs/2026-09-10.md
