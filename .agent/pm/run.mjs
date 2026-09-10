@@ -151,10 +151,14 @@ function main() {
   const due = isDue(state);
 
   if (CHECK) {
+    const now = new Date();
+    const cur = weeklyTarget(now);
+    const next = now >= cur ? new Date(cur.getTime() + 7 * 864e5) : cur;
     console.log(JSON.stringify({
-      now: new Date().toISOString(),
+      now: now.toISOString(),
       schedule: `weekday=${CFG.weekday} ${CFG.hourUtc}:00 UTC`,
-      nextTarget: weeklyTarget(new Date(Date.now() + 864e5)).toISOString(),
+      currentWeekTarget: cur.toISOString(),
+      nextTarget: next.toISOString(),
       lastRun: state.lastRun || null,
       due, usedThisWeek: used, cap: CFG.cap, slotsLeft: slots,
       model: `${CFG.provider}/${CFG.model}`,
@@ -224,10 +228,16 @@ function main() {
 
     // report created issues
     const created = (out.match(/https:\/\/github\.com\/[^\s)]+\/issues\/\d+/g) || []);
-    state.lastRun = new Date().toISOString();
-    state.lastSlots = slots;
-    state.lastCreated = created;
-    writeFileSync(STATE_FILE, JSON.stringify(state, null, 2));
+    if (!DRY) {
+      state.lastRun = new Date().toISOString();
+      state.lastSlots = slots;
+      state.lastCreated = created;
+      writeFileSync(STATE_FILE, JSON.stringify(state, null, 2));
+    } else {
+      // a dry run must NOT consume this week's real run slot
+      state.lastDryRun = new Date().toISOString();
+      writeFileSync(STATE_FILE, JSON.stringify(state, null, 2));
+    }
     log(created.length ? `created: ${created.join(', ')}` : 'no issues created this run');
     log(`log: ${path.join(LOG_DIR, `${stamp}.md`)}`);
   } finally {
