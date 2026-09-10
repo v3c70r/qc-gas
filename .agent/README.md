@@ -38,10 +38,13 @@ A human-in-the-loop, multi-agent system driven by GitHub **issues** and **PRs**.
 # 3) 在你的机器上启动本机调度：
 npm run agent:watch          # 常驻：处理所有 agent-approved issues
 
-# 常驻运行（推荐 tmux，防止 SSH 断开中断）
-tmux new -s agent            # 新建会话
-npm run agent:watch 2>&1 | tee -a .agent/watch.log   # 同时写日志
+# 常驻运行（推荐：tmux + supervisor 守护，SSH 断开/进程崩溃都不怕）
+tmux new -s agent
+cd ~/Projects/qc-gas && ./.agent/supervisor.sh   # 自动注入 .env、崩溃后 10s 重启
 tmux detach                  # Ctrl-b 然后 d 脱离；tmux attach -t agent 回来
+
+# 不用 supervisor 的最简常驻（崩溃不会自恢复）
+npm run agent:watch 2>&1 | tee -a .agent/watch.log
 
 # 常用命令
 npm run agent:watch -- --once    # 只跑一轮
@@ -61,8 +64,10 @@ PI_BIN=/path/to/pi npm run agent:watch    # 显式指定 pi 二进制
 
 - `watch` 是无限循环，空闲时每 30s 轮询一次并打印带时间戳的心跳，**不会自己退出**。
 - 停止方式：`Ctrl-C`，或使用 `--once` 跑一轮。
+- `.agent/supervisor.sh` 是可选守护脚本：进程异常退出后 10 秒自动重启，并自动注入 `.env`（供 Agent C 真实测试）。
 - **健壮性**：单个 issue 处理失败会被捕获 → 标记 `needs_human` 并继续循环；gh 网络/认证等轮询失败会指数退避重试（最多 5 分钟），不会拖垮进程。
-- 仍会失效的情况：tmux server 被杀、机器休眠、`gh` token 过期。建议用 `tee` 留日志便于事后排查。
+- 仍会失效的情况：tmux server 被杀、**机器休眠/重启**、`gh` token 过期。日志在 `.agent/watch.log`，事后可排查。
+- 机器重启也想自启：可写 `systemd --user` unit（需要 `loginctl enable-linger`），或把 supervisor 放进登录启动项。
 - 每个 issue 处理完会自动切回你原来的分支。
 
 ## 状态机
