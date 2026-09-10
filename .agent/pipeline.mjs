@@ -221,6 +221,19 @@ function buildPrompt(role, ctx) {
 
 // ── state machine per issue ──
 async function processIssue(issue, force = false) {
+  // remember where we started so we can restore the user's branch afterwards
+  let startBranch = null;
+  try { startBranch = sh(['git', 'rev-parse', '--abbrev-ref', 'HEAD']); } catch {}
+  try {
+    return await processIssueInner(issue, force);
+  } finally {
+    if (startBranch && startBranch !== 'HEAD') {
+      try { sh(['git', 'checkout', startBranch]); } catch { /* leave as-is */ }
+    }
+  }
+}
+
+async function processIssueInner(issue, force = false) {
   const s = state.load();
   const cur = s[issue.number];
   const terminal = ['merged', 'rejected', 'failed'];
@@ -358,26 +371,52 @@ async function main() {
     return;
   }
 
-  // watch loop
-  console.log('👀 agent pipeline watch — Ctrl-C 退出');
+  // watch loop — designed to stay alive in tmux; only Ctrl-C / `--once` stops it
+  console.log('👀 agent pipeline watch — Ctrl-C 退出（tmux 中可常驻）');
+  const ts = () => new Date().toISOString().replace('T', ' ').slice(0, 19);
+  let pollFailures = 0;
   for (;;) {
-    const issues = approvedIssues();
-    const s = state.load();
-    const pending = issues.filter(it => {
-      const c = s[it.number];
-      return !c || !['merged', 'failed', 'needs_human', 'rejected'].includes(c.status);
-    });
-    if (pending.length === 0) {
-      console.log(`(idle) 等待新的 agent-approved issue …`);
+    try {
+      const issues = approvedIssues();
+      const s = state.load();
+      const pending = issues.filter(it => {
+        const c = s[it.number];
+        return !c || !['merged', 'failed', 'needs_human', 'rejected'].includes(c.status);
+      });
+      if (pending.length === 0) {
+        console.log(`[${ts()}] 💤 idle — 等待新的 agent-approved issue …`);
+        pollFailures = 0;
+        if (once) return;
+        await new Promise(r => setTimeout(r, 30_000));
+        continue;
+      }
+      for (const issue of pending) {
+        console.log(`[${ts()}] ▶ 处理 issue #${issue.number}: ${issue.title}`);
+        try {
+          await processIssue(issue);
+          console.log(`[${ts()}] ✔ issue #${issue.number} 本轮结束`);
+        } catch (err) {
+          // one bad issue must NOT kill the long-running watcher
+          console.error(`[${ts()}] ✖ issue #${issue.number} 处理失败，循环继续：${err.message}`);
+          log(issue.number, `循环捕获异常（不退出）:\n${err.stack || err.message}`);
+          const sf = state.load();
+          if (!sf[issue.number]) sf[issue.number] = {};
+          sf[issue.number].status = 'needs_human';
+          sf[issue.number].error = String(err.message);
+          state.save(sf);
+          try { commentOnIssue(issue.number, `⚠️ 处理该 issue 时出错，已交给人工：\`${err.message}\``); } catch {}
+        }
+      }
+      pollFailures = 0;
       if (once) return;
-      await new Promise(r => setTimeout(r, 30_000));
-      continue;
+    } catch (err) {
+      // transient gh/network failure → backoff and keep watching
+      pollFailures += 1;
+      const delay = Math.min(300_000, 30_000 * pollFailures);
+      console.error(`[${ts()}] ✖ 轮询失败 (${pollFailures}): ${err.message} — ${delay / 1000}s 后重试`);
+      if (once) throw err;
+      await new Promise(r => setTimeout(r, delay));
     }
-    for (const issue of pending) {
-      console.log(`▶ 处理 issue #${issue.number}: ${issue.title}`);
-      await processIssue(issue);
-    }
-    if (once) return;
   }
 }
 

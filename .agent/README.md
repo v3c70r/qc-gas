@@ -36,12 +36,17 @@ A human-in-the-loop, multi-agent system driven by GitHub **issues** and **PRs**.
 # 1) 确保 Actions workflow 已启用 (push 后自动)
 # 2) 有人创建 issue → Actions 会 @ 你；回复 /approve
 # 3) 在你的机器上启动本机调度：
-npm run agent:watch          # 循环轮询，处理所有 agent-approved issues
+npm run agent:watch          # 常驻：处理所有 agent-approved issues
+
+# 常驻运行（推荐 tmux，防止 SSH 断开中断）
+tmux new -s agent            # 新建会话
+npm run agent:watch 2>&1 | tee -a .agent/watch.log   # 同时写日志
+tmux detach                  # Ctrl-b 然后 d 脱离；tmux attach -t agent 回来
 
 # 常用命令
 npm run agent:watch -- --once    # 只跑一轮
 npm run agent:status             # 查看状态机
-node .agent/pipeline.mjs run --issue 5   # 强制处理单个 issue
+node .agent/pipeline.mjs run --issue 5   # 处理单个 issue（--force 重做实现）
 node .agent/pipeline.mjs test --issue 5  # 只跑 Agent C
 
 # 选项
@@ -49,7 +54,16 @@ MAX_REVIEW_ROUNDS=5 npm run agent:watch   # review 讨论轮数上限 (默认3)
 MAX_TEST_FIXES=1 npm run agent:watch      # 测试失败修复轮数 (默认2)
 TEST_SKIP=1 npm run agent:watch           # 跳过测试直接合并 (demo)
 TEST_ENV_FILE=/abs/.env npm run agent:watch  # 注入 Mapbox token 供测试
+PI_BIN=/path/to/pi npm run agent:watch    # 显式指定 pi 二进制
 ```
+
+### 常驻行为说明
+
+- `watch` 是无限循环，空闲时每 30s 轮询一次并打印带时间戳的心跳，**不会自己退出**。
+- 停止方式：`Ctrl-C`，或使用 `--once` 跑一轮。
+- **健壮性**：单个 issue 处理失败会被捕获 → 标记 `needs_human` 并继续循环；gh 网络/认证等轮询失败会指数退避重试（最多 5 分钟），不会拖垮进程。
+- 仍会失效的情况：tmux server 被杀、机器休眠、`gh` token 过期。建议用 `tee` 留日志便于事后排查。
+- 每个 issue 处理完会自动切回你原来的分支。
 
 ## 状态机
 
