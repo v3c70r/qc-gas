@@ -394,6 +394,29 @@ test.describe('Favorites (localStorage)', () => {
     }
   });
 
+  test('unfavoriting under Favorites only re-syncs map and stats', async ({ page }) => {
+    await page.waitForTimeout(3000);
+    const list = page.locator('#station-list');
+    await expect(list.locator('.list-item').first()).toBeVisible();
+
+    await page.waitForFunction(() => window.__qcGasMap && window.__qcGasMap.getStationFeatureCount() > 0, null, { timeout: 15000 });
+
+    // Favorite one station, then enable Favorites only.
+    await list.locator('.list-item').nth(0).locator('.fav-star').click();
+    await page.locator('#favorites-toggle').click();
+    await expect(page.locator('#favorites-toggle')).toHaveClass(/active/);
+
+    await page.waitForFunction(() => window.__qcGasMap.getStationFeatureCount() === 1, null, { timeout: 10000 });
+    await expect(page.locator('#sidebar-station-count')).toContainText('1');
+
+    // Unfavorite it from the list — map, count and list must all empty out.
+    await list.locator('.list-item').first().locator('.fav-star').click();
+
+    await page.waitForFunction(() => window.__qcGasMap.getStationFeatureCount() === 0, null, { timeout: 10000 });
+    await expect(page.locator('#sidebar-station-count')).toContainText('0');
+    await expect(list.locator('.list-item')).toHaveCount(0);
+  });
+
   test('favorite star buttons have accessible names', async ({ page }) => {
     await page.waitForTimeout(3000);
     const stars = page.locator('#station-list .fav-star');

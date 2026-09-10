@@ -260,10 +260,18 @@ export function initFavorites() {
 
   subscribe(() => {
     updateFavoritesUI();
-    updateStationList();
+    // When "Favorites only" is active, un-favoriting a station must also
+    // re-sync the map source, lowest-price highlight, quick stats and count,
+    // not just the list.
+    if (favoritesOnly) updateStats();
+    else updateStationList();
   });
 
-  onLanguageChange(updateFavoritesUI);
+  onLanguageChange(() => {
+    updateFavoritesUI();
+    // Re-render the list so star aria-labels pick up the new language.
+    updateStationList();
+  });
   updateFavoritesUI();
 }
 

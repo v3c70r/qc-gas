@@ -2,7 +2,7 @@
 // Inspired by Apple Stocks: big quote, change chip, sparkline, range switcher.
 // Popup = compact card; side panel = expanded card (Chart.js area chart).
 
-import { t, tf, translations, getLanguage } from './i18n.js';
+import { t, tf, translations, getLanguage, onLanguageChange } from './i18n.js';
 import { getStationHistory } from './history.js';
 import { loadChartJS } from './chartjs.js';
 import { isFavorite, toggleFavorite, STAR_ICON } from './favorites.js';
@@ -21,6 +21,18 @@ let currentFeature = null;     // feature displayed in popup
 let popupFuel = 'regular';
 let popupRange = 7;
 let popupUpdated = '';
+
+// Keep open popup/detail star labels in sync when the language changes.
+onLanguageChange(() => {
+  if (activePopup && currentFeature) {
+    activePopup.setHTML(cardHTML(currentFeature));
+  }
+  const favBtn = detailEl?.querySelector('.sd-fav');
+  if (favBtn && detailFeature) {
+    const fav = isFavorite(detailFeature);
+    favBtn.setAttribute('aria-label', fav ? t('unfavorite') : t('favorite'));
+  }
+});
 
 // ── Small helpers ──
 function fuelLabel(fuel) {
