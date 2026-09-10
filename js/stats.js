@@ -48,8 +48,20 @@ function filterStations() {
   });
 }
 
+function filterStationsAsFeatureCollection() {
+  return { type: 'FeatureCollection', features: filterStations() };
+}
+
+function updateMapStations(filteredStations) {
+  if (!map || !map.getSource) return;
+  const source = map.getSource('stations');
+  if (!source || typeof source.setData !== 'function') return;
+  source.setData({ type: 'FeatureCollection', features: filteredStations });
+}
+
 function updateStats() {
   const filtered = filterStations();
+  updateMapStations(filtered);
   const stats = { regular: [], super: [], diesel: [] };
 
   filtered.forEach(feat => {
@@ -203,4 +215,4 @@ export function closeStationDetail() {
   import('./station-card.js').then(mod => mod.closeStationDetail());
 }
 
-export { filterStations, updateStats, updateLowestPriceHighlight, updateStationList };
+export { filterStations, filterStationsAsFeatureCollection, updateMapStations, updateStats, updateLowestPriceHighlight, updateStationList };

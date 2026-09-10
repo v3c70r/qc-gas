@@ -454,5 +454,14 @@ function showPopup(feature) {
   import('./stats.js').then(mod => mod.showPopup(feature));
 }
 
+// Test hook: expose the current number of features in the station source.
+window.__qcGasMap = {
+  getStationFeatureCount: () => {
+    const source = map && map.getSource ? map.getSource('stations') : null;
+    if (!source) return -1;
+    return source._data?.features?.length ?? -1;
+  }
+};
+
 export { map, currentStations, MONTREAL_CENTER, addRangeCircle };
 
