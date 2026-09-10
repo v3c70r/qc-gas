@@ -76,3 +76,10 @@ playwright-report/
 # Agent loop runtime (not for VCS)
 .agent/watch.log
 .agent/*.log
+
+# PM agent runtime (not for VCS)
+.agent/pm/state.json
+.agent/pm/logs/
+.agent/pm/context.md
+.agent/pm/wt/
+.agent/pm/supervisor.log
