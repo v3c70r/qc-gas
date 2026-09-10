@@ -50,13 +50,20 @@ test.describe('QC Gas Price App - Regression Tests', () => {
     await filterToggle.click();
     await page.waitForTimeout(300);
 
-    const fuelChip = page.locator('.fuel-chip').first();
-    await expect(fuelChip).toBeVisible();
+    // Fuel type is single-select (radio): clicking another chip switches the active one
+    const regular = page.locator('.fuel-chip').nth(0);
+    const superChip = page.locator('.fuel-chip').nth(1);
+    await expect(regular).toBeVisible();
 
-    const isActiveBefore = await fuelChip.evaluate(el => el.classList.contains('active'));
-    await fuelChip.click();
-    const isActiveAfter = await fuelChip.evaluate(el => el.classList.contains('active'));
-    expect(isActiveBefore).not.toBe(isActiveAfter);
+    await expect(regular).toHaveClass(/active/);
+    await superChip.click();
+    await expect(superChip).toHaveClass(/active/);
+    await expect(regular).not.toHaveClass(/active/);
+
+    // switching back works too
+    await regular.click();
+    await expect(regular).toHaveClass(/active/);
+    await expect(superChip).not.toHaveClass(/active/);
   });
 
   test('radius buttons switch active state', async ({ page }) => {
@@ -168,7 +175,10 @@ test.describe('Desktop Layout', () => {
 
     const header = page.locator('#header');
     const box = await header.boundingBox();
-    expect(box.x).toBeLessThan(100);
+    // On desktop the map (and its overlay header) sits to the RIGHT of the
+    // 320px sidebar, so the header's left edge is expected near x≈332.
+    expect(box.x).toBeGreaterThanOrEqual(320);
+    expect(box.x).toBeLessThan(420);
   });
 });
 
@@ -291,7 +301,9 @@ test.describe('Accessibility Basic Checks', () => {
       const btn = buttons.nth(i);
       const text = await btn.textContent();
       const title = await btn.getAttribute('title');
-      expect(text?.trim() || title).toBeTruthy();
+      const aria = await btn.getAttribute('aria-label');
+      // an accessible name may come from text, title, or aria-label
+      expect(text?.trim() || title || aria).toBeTruthy();
     }
   });
 
