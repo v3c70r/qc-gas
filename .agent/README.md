@@ -53,7 +53,7 @@ node .agent/pipeline.mjs test --issue 5  # 只跑 Agent C
 MAX_REVIEW_ROUNDS=5 npm run agent:watch   # review 讨论轮数上限 (默认3)
 MAX_TEST_FIXES=1 npm run agent:watch      # 测试失败修复轮数 (默认2)
 TEST_SKIP=1 npm run agent:watch           # 跳过测试直接合并 (demo)
-TEST_ENV_FILE=/abs/.env npm run agent:watch  # 注入 Mapbox token 供测试
+TEST_ENV_FILE=$PWD/.env npm run agent:watch  # 注入 Mapbox token 供 Agent C 真实测试
 PI_BIN=/path/to/pi npm run agent:watch    # 显式指定 pi 二进制
 ```
 
