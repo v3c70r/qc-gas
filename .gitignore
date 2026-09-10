@@ -72,3 +72,7 @@ playwright-report/
 .agent/tmp/
 .agent/logs/
 .agent/state.json
+
+# Agent loop runtime (not for VCS)
+.agent/watch.log
+.agent/*.log
