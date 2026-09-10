@@ -36,7 +36,7 @@ function filterStations() {
     const coords = feat.geometry.coordinates;
     const distance = haversineDistance(MONTREAL_CENTER[0], MONTREAL_CENTER[1], coords[0], coords[1]);
     if (distance > radiusKm) return false;
-    if (selectedBrands.size > 0 && !selectedBrands.has(props.brand)) return false;
+    if (selectedBrands.size === 0 || !selectedBrands.has(props.brand)) return false;
     if (selectedRegion && props.region !== selectedRegion) return false;
 
     // Must have the selected fuel type with a price in range
@@ -48,8 +48,20 @@ function filterStations() {
   });
 }
 
+function filterStationsAsFeatureCollection() {
+  return { type: 'FeatureCollection', features: filterStations() };
+}
+
+function updateMapStations(filteredStations) {
+  if (!map || !map.getSource) return;
+  const source = map.getSource('stations');
+  if (!source || typeof source.setData !== 'function') return;
+  source.setData({ type: 'FeatureCollection', features: filteredStations });
+}
+
 function updateStats() {
   const filtered = filterStations();
+  updateMapStations(filtered);
   const stats = { regular: [], super: [], diesel: [] };
 
   filtered.forEach(feat => {
@@ -203,4 +215,4 @@ export function closeStationDetail() {
   import('./station-card.js').then(mod => mod.closeStationDetail());
 }
 
-export { filterStations, updateStats, updateLowestPriceHighlight, updateStationList };
+export { filterStations, filterStationsAsFeatureCollection, updateMapStations, updateStats, updateLowestPriceHighlight, updateStationList };

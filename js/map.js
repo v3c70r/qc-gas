@@ -87,6 +87,7 @@ export async function initMap() {
     MONTREAL_CENTER[0] = e.lngLat.lng;
     MONTREAL_CENTER[1] = e.lngLat.lat;
     addRangeCircle();
+    updateStats();
   });
 }
 
@@ -453,6 +454,15 @@ function showPopup(feature) {
   // Delegate to shared popup in stats.js
   import('./stats.js').then(mod => mod.showPopup(feature));
 }
+
+// Test hook: expose the current number of features in the station source.
+window.__qcGasMap = {
+  getStationFeatureCount: () => {
+    const source = map && map.getSource ? map.getSource('stations') : null;
+    if (!source) return -1;
+    return source._data?.features?.length ?? -1;
+  }
+};
 
 export { map, currentStations, MONTREAL_CENTER, addRangeCircle };
 

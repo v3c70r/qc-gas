@@ -232,6 +232,23 @@ test.describe('Filter Workflows', () => {
     const count = await options.count();
     expect(count).toBeGreaterThan(1);
   });
+
+  test('map source has zero features when all brands deselected', async ({ page }) => {
+    await page.goto(BASE_URL);
+    await page.waitForLoadState('networkidle', { timeout: 15000 }).catch(() => {});
+
+    await page.waitForFunction(() => window.__qcGasMap && window.__qcGasMap.getStationFeatureCount() > 0, null, { timeout: 15000 });
+
+    const filterToggle = page.locator('#filter-toggle');
+    await filterToggle.click();
+    await page.waitForTimeout(300);
+
+    await page.locator('#brand-select-all').click();
+    await page.waitForTimeout(500);
+
+    const count = await page.evaluate(() => window.__qcGasMap.getStationFeatureCount());
+    expect(count).toBe(0);
+  });
 });
 
 test.describe('Visual Regression Screenshots', () => {
