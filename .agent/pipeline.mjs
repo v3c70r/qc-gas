@@ -161,11 +161,22 @@ function runTester(issueNum, prNum, branch) {
   const wt = path.join(TMP, `wt-${issueNum}`);
   rmSync(wt, { recursive: true, force: true });
   mkdirSync(TMP, { recursive: true });
-  sh(['git', 'worktree', 'add', wt, branch]);
-  // reuse node_modules via symlink (vite/esbuild tolerate it)
-  if (!existsSync(path.join(wt, 'node_modules'))) symlinkSync(path.join(ROOT, 'node_modules'), path.join(wt, 'node_modules'), 'dir');
-  if (process.env.TEST_ENV_FILE && existsSync(process.env.TEST_ENV_FILE)) copyFileSync(process.env.TEST_ENV_FILE, path.join(wt, '.env'));
+  // Use a DETACHED worktree at the remote branch: the agent branch is often
+  // still checked out in the main worktree, which makes `worktree add <branch>`
+  // fail with "already used by worktree". Detaching avoids the conflict.
+  try { sh(['git', 'fetch', 'origin', branch, '--quiet']); } catch {}
+  let added = false;
   try {
+    try {
+      sh(['git', 'worktree', 'add', '--detach', wt, `origin/${branch}`]);
+      added = true;
+    } catch {
+      sh(['git', 'worktree', 'add', '--detach', wt, branch]);
+      added = true;
+    }
+    // reuse node_modules via symlink (vite/esbuild tolerate it)
+    if (!existsSync(path.join(wt, 'node_modules'))) symlinkSync(path.join(ROOT, 'node_modules'), path.join(wt, 'node_modules'), 'dir');
+    if (process.env.TEST_ENV_FILE && existsSync(process.env.TEST_ENV_FILE)) copyFileSync(process.env.TEST_ENV_FILE, path.join(wt, '.env'));
     sh(['npm', 'run', 'build'], { cwd: wt });
     const report = sh(['npm', 'test'], { cwd: wt }).split('\n').slice(-60).join('\n');
     log(issueNum, `C: 测试通过 ✅\n${report}`);
@@ -177,7 +188,8 @@ function runTester(issueNum, prNum, branch) {
     commentOnPr(prNum, `🤖 **Agent C 功能测试失败** ❌\n\`\`\`\n${report.slice(0, 3000)}\n\`\`\``);
     return { pass: false };
   } finally {
-    try { sh(['git', 'worktree', 'remove', wt, '--force']); } catch {}
+    if (added) { try { sh(['git', 'worktree', 'remove', wt, '--force']); } catch {} }
+    try { sh(['git', 'worktree', 'prune']); } catch {}
     rmSync(wt, { recursive: true, force: true });
   }
 }
