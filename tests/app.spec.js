@@ -334,6 +334,130 @@ test.describe('Accessibility Basic Checks', () => {
   });
 });
 
+test.describe('Favorites (localStorage)', () => {
+  test.beforeEach(async ({ page }) => {
+    await page.goto(BASE_URL);
+    await page.waitForLoadState('networkidle', { timeout: 15000 }).catch(() => {});
+  });
+
+  test('favorite star toggles and persists after reload', async ({ page }) => {
+    await page.waitForTimeout(3000);
+    const list = page.locator('#station-list');
+    await expect(list.locator('.list-item').first()).toBeVisible();
+
+    const firstStar = list.locator('.list-item .fav-star').first();
+    await expect(firstStar).toHaveAttribute('aria-label', /Favorite|Favori|收藏/);
+    const firstItemName = await list.locator('.list-item .name').first().textContent();
+
+    await firstStar.click();
+    await expect(list.locator('.list-item .fav-star').first()).toHaveClass(/on/);
+    await expect(list.locator('.list-item .name').first()).toContainText(firstItemName);
+
+    await page.reload();
+    await page.waitForTimeout(3000);
+    await expect(page.locator('#station-list .list-item .fav-star').first()).toHaveClass(/on/);
+    await expect(page.locator('#station-list .list-item .name').first()).toContainText(firstItemName);
+  });
+
+  test('favorited stations are pinned above price sort', async ({ page }) => {
+    await page.waitForTimeout(3000);
+    const list = page.locator('#station-list');
+    await expect(list.locator('.list-item').first()).toBeVisible();
+
+    const secondName = await list.locator('.list-item').nth(1).locator('.name').textContent();
+    await list.locator('.list-item').nth(1).locator('.fav-star').click();
+
+    await expect(list.locator('.list-item').first().locator('.name')).toContainText(secondName);
+    await expect(list.locator('.list-item').first().locator('.fav-star')).toHaveClass(/on/);
+  });
+
+  test('favorites only toggle shows only favorites and updates count', async ({ page }) => {
+    await page.waitForTimeout(3000);
+    const list = page.locator('#station-list');
+    await expect(list.locator('.list-item').first()).toBeVisible();
+
+    const favCount = page.locator('#favorites-count');
+    await expect(favCount).toContainText('0');
+
+    await list.locator('.list-item').nth(0).locator('.fav-star').click();
+    await expect(favCount).toContainText('1');
+    await list.locator('.list-item').nth(1).locator('.fav-star').click();
+    await expect(favCount).toContainText('2');
+
+    await page.locator('#favorites-toggle').click();
+    await expect(page.locator('#favorites-toggle')).toHaveClass(/active/);
+
+    const items = list.locator('.list-item');
+    await expect(items).toHaveCount(2);
+    for (let i = 0; i < 2; i++) {
+      await expect(items.nth(i).locator('.fav-star')).toHaveClass(/on/);
+    }
+  });
+
+  test('unfavoriting under Favorites only re-syncs map and stats', async ({ page }) => {
+    await page.waitForTimeout(3000);
+    const list = page.locator('#station-list');
+    await expect(list.locator('.list-item').first()).toBeVisible();
+
+    await page.waitForFunction(() => window.__qcGasMap && window.__qcGasMap.getStationFeatureCount() > 0, null, { timeout: 15000 });
+
+    // Favorite one station, then enable Favorites only.
+    await list.locator('.list-item').nth(0).locator('.fav-star').click();
+    await page.locator('#favorites-toggle').click();
+    await expect(page.locator('#favorites-toggle')).toHaveClass(/active/);
+
+    await page.waitForFunction(() => window.__qcGasMap.getStationFeatureCount() === 1, null, { timeout: 10000 });
+    await expect(page.locator('#sidebar-station-count')).toContainText('1');
+
+    // Unfavorite it from the list — map, count and list must all empty out.
+    await list.locator('.list-item').first().locator('.fav-star').click();
+
+    await page.waitForFunction(() => window.__qcGasMap.getStationFeatureCount() === 0, null, { timeout: 10000 });
+    await expect(page.locator('#sidebar-station-count')).toContainText('0');
+    await expect(list.locator('.list-item')).toHaveCount(0);
+  });
+
+  test('favorites toggle before stations load does not throw', async ({ page }) => {
+    let release;
+    const gate = new Promise(resolve => { release = resolve; });
+    await page.route('**/data/stations.json', async route => {
+      await gate;
+      await route.continue();
+    });
+
+    const pageErrors = [];
+    page.on('pageerror', err => pageErrors.push(err.message));
+
+    await page.goto(BASE_URL);
+    await page.waitForSelector('#map canvas', { timeout: 15000 });
+    await page.waitForFunction(() => document.getElementById('favorites-count').textContent.trim().length > 1);
+
+    // Fire the favorites toggle and a language switch while stations are still loading.
+    await page.locator('#favorites-toggle').click();
+    await page.locator('#lang-selector button[data-lang="en-CA"]').click();
+
+    release();
+    await page.waitForTimeout(2500);
+
+    // Toggle back off so the normal unfiltered list can render.
+    await page.locator('#favorites-toggle').click();
+    await expect(page.locator('#station-list .list-item').first()).toBeVisible();
+
+    expect(pageErrors).toEqual([]);
+  });
+
+  test('favorite star buttons have accessible names', async ({ page }) => {
+    await page.waitForTimeout(3000);
+    const stars = page.locator('#station-list .fav-star');
+    const count = await stars.count();
+    expect(count).toBeGreaterThan(0);
+    for (let i = 0; i < Math.min(count, 3); i++) {
+      const aria = await stars.nth(i).getAttribute('aria-label');
+      expect(aria).toBeTruthy();
+    }
+  });
+});
+
 test.describe('Dashboard Region Ranking', () => {
   const openDashboard = async (page) => {
     await page.goto(BASE_URL);

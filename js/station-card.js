@@ -2,9 +2,10 @@
 // Inspired by Apple Stocks: big quote, change chip, sparkline, range switcher.
 // Popup = compact card; side panel = expanded card (Chart.js area chart).
 
-import { t, tf, translations, getLanguage } from './i18n.js';
+import { t, tf, translations, getLanguage, onLanguageChange } from './i18n.js';
 import { getStationHistory } from './history.js';
 import { loadChartJS } from './chartjs.js';
+import { isFavorite, toggleFavorite, STAR_ICON } from './favorites.js';
 
 const FUEL_KEYS = ['regular', 'super', 'diesel'];
 const RANGES = [
@@ -20,6 +21,18 @@ let currentFeature = null;     // feature displayed in popup
 let popupFuel = 'regular';
 let popupRange = 7;
 let popupUpdated = '';
+
+// Keep open popup/detail star labels in sync when the language changes.
+onLanguageChange(() => {
+  if (activePopup && currentFeature) {
+    activePopup.setHTML(cardHTML(currentFeature));
+  }
+  const favBtn = detailEl?.querySelector('.sd-fav');
+  if (favBtn && detailFeature) {
+    const fav = isFavorite(detailFeature);
+    favBtn.setAttribute('aria-label', fav ? t('unfavorite') : t('favorite'));
+  }
+});
 
 // ── Small helpers ──
 function fuelLabel(fuel) {
@@ -119,11 +132,15 @@ function cardHTML(feature) {
   const badgeCls = flat ? 'flat' : up ? 'up' : 'down';
   const delta = flat ? '0,0' : `${sign}${fmt(Math.abs(diff))},${sign}${fmt(Math.abs(pct))}`;
 
+  const fav = isFavorite(feature);
   return `
   <div class="sc-card" data-sc-card>
     <div class="sc-top">
-      <div class="sc-name">${escapeHtml(props.name || props.brand || '')}</div>
-      <div class="sc-sub">${escapeHtml(props.brand || '')}${props.address ? ' · ' + escapeHtml(props.address) : ''}</div>
+      <div class="sc-title">
+        <div class="sc-name">${escapeHtml(props.name || props.brand || '')}</div>
+        <div class="sc-sub">${escapeHtml(props.brand || '')}${props.address ? ' · ' + escapeHtml(props.address) : ''}</div>
+      </div>
+      <button class="sc-fav ${fav ? 'on' : ''}" data-sc-fav aria-label="${fav ? t('unfavorite') : t('favorite')}" aria-pressed="${fav}">${STAR_ICON}</button>
     </div>
     ${available.length > 1 ? `<div class="sc-pills">${fuelPills}</div>` : ''}
     <div class="sc-quote">
@@ -189,6 +206,12 @@ function wireCardEvents(feature, map) {
   document.addEventListener('click', (e) => {
     if (!activePopup) return;
 
+    const favBtn = e.target.closest('[data-sc-fav]');
+    if (favBtn && activePopup && currentFeature) {
+      toggleFavorite(currentFeature);
+      activePopup.setHTML(cardHTML(currentFeature));
+      return;
+    }
     const fuelBtn = e.target.closest('[data-fuel]');
     if (fuelBtn && activePopup && currentFeature) {
       popupFuel = fuelBtn.dataset.fuel;
@@ -227,11 +250,14 @@ function buildDetailPanel() {
   detailEl.id = 'station-panel';
   detailEl.innerHTML = `
     <div class="sd-head">
-      <div>
+      <div class="sd-head-info">
         <div class="sd-name"></div>
         <div class="sd-sub"></div>
       </div>
-      <button class="sd-close" aria-label="${t('close')}">✕</button>
+      <div class="sd-head-actions">
+        <button class="sd-fav" aria-label="${t('favorite')}" aria-pressed="false">${STAR_ICON}</button>
+        <button class="sd-close" aria-label="${t('close')}">✕</button>
+      </div>
     </div>
     <div class="sd-body">
       <div class="sd-pills"></div>
@@ -250,6 +276,13 @@ function buildDetailPanel() {
   document.getElementById('map-container').appendChild(detailEl);
 
   detailEl.querySelector('.sd-close').addEventListener('click', closeStationDetail);
+
+  detailEl.querySelector('.sd-fav').addEventListener('click', () => {
+    if (detailFeature) {
+      toggleFavorite(detailFeature);
+      renderDetail();
+    }
+  });
 
   // Delegated fuel / range switching inside panel
   detailEl.addEventListener('click', (e) => {
@@ -310,6 +343,15 @@ async function renderDetail() {
   detailEl.querySelector('.sd-name').textContent = props.name || props.brand || '';
   const region = props.region ? ' · ' + props.region : '';
   detailEl.querySelector('.sd-sub').textContent = `${props.brand || ''}${region}`;
+
+  // Favorite star
+  const fav = isFavorite(detailFeature);
+  const favBtn = detailEl.querySelector('.sd-fav');
+  if (favBtn) {
+    favBtn.classList.toggle('on', fav);
+    favBtn.setAttribute('aria-pressed', String(fav));
+    favBtn.setAttribute('aria-label', fav ? t('unfavorite') : t('favorite'));
+  }
 
   // Fuel pills
   detailEl.querySelector('.sd-pills').innerHTML = available.map(f => `
