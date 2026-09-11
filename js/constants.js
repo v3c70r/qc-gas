@@ -29,3 +29,10 @@ export function brandColor(brand) {
 export function brandAbbr(brand) {
   return brandAbbrs[brand] || brand?.substring(0, 2).toUpperCase() || '?';
 }
+
+// Membership-only brands (e.g. Costco) whose fuel price requires a paid card.
+export const membershipBrands = new Set(['Costco']);
+
+export function isMembershipBrand(brand) {
+  return membershipBrands.has(brand);
+}

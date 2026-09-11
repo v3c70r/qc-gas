@@ -58,6 +58,98 @@ function filterStationsAsFeatureCollection() {
   return { type: 'FeatureCollection', features: filterStations() };
 }
 
+function getActiveFuel() {
+  return document.querySelector('.fuel-filter:checked')?.value || 'regular';
+}
+
+function getActiveFuelPriceKey() {
+  return getActiveFuel() + '_price';
+}
+
+// Brand comparison ignores the brand checkboxes (they are the dimension being
+// compared), but respects radius / region / price range / active fuel so the
+// numbers move with the other filters.
+function filterStationsForBrandComparison() {
+  if (!currentStations || !Array.isArray(currentStations.features)) return [];
+
+  const priceKey = getActiveFuelPriceKey();
+  const radiusBtn = document.querySelector('.radius-btn.active');
+  const radiusKm = radiusBtn ? parseFloat(radiusBtn.dataset.radius) : 25;
+  const selectedRegion = document.getElementById('region-filter').value;
+  const priceMin = parseFloat(document.getElementById('min-price').value);
+  const priceMax = parseFloat(document.getElementById('max-price').value);
+
+  return currentStations.features.filter(feat => {
+    const props = feat.properties;
+    const coords = feat.geometry.coordinates;
+    const distance = haversineDistance(MONTREAL_CENTER[0], MONTREAL_CENTER[1], coords[0], coords[1]);
+    if (distance > radiusKm) return false;
+    if (selectedRegion && props.region !== selectedRegion) return false;
+
+    const fuelPrice = props[priceKey];
+    if (fuelPrice === null) return false;
+    if (fuelPrice < priceMin || fuelPrice > priceMax) return false;
+    return true;
+  });
+}
+
+function computeBrandComparison() {
+  const features = filterStationsForBrandComparison();
+  const priceKey = getActiveFuelPriceKey();
+  const brands = {};
+  let total = 0;
+  let totalCount = 0;
+
+  features.forEach(feat => {
+    const props = feat.properties;
+    const brand = props.brand;
+    const price = props[priceKey];
+    if (!brand || price === null) return;
+
+    if (!brands[brand]) brands[brand] = { sum: 0, count: 0 };
+    brands[brand].sum += price;
+    brands[brand].count += 1;
+    total += price;
+    totalCount += 1;
+  });
+
+  return {
+    provinceAvg: totalCount > 0 ? total / totalCount : null,
+    brands
+  };
+}
+
+function updateBrandComparison() {
+  const { provinceAvg, brands } = computeBrandComparison();
+
+  document.querySelectorAll('.brand-filter-item').forEach(item => {
+    const input = item.querySelector('.brand-filter');
+    if (!input) return;
+    const stats = brands[input.value];
+    const countEl = item.querySelector('.brand-count');
+    const avgEl = item.querySelector('.brand-avg');
+    const diffEl = item.querySelector('.brand-diff');
+
+    if (countEl) countEl.textContent = stats ? String(stats.count) : '0';
+
+    if (avgEl) {
+      avgEl.textContent = stats ? (stats.sum / stats.count).toFixed(1) + '¢' : '—';
+    }
+
+    if (diffEl) {
+      if (stats && provinceAvg !== null) {
+        const diff = (stats.sum / stats.count) - provinceAvg;
+        diffEl.textContent = (diff > 0 ? '+' : '') + diff.toFixed(1) + '¢';
+        diffEl.classList.toggle('diff-pos', diff > 0);
+        diffEl.classList.toggle('diff-neg', diff <= 0);
+      } else {
+        diffEl.textContent = '—';
+        diffEl.classList.remove('diff-pos', 'diff-neg');
+      }
+    }
+  });
+}
+
 function updateMapStations(filteredStations) {
   if (!map || !map.getSource) return;
   const source = map.getSource('stations');
@@ -86,6 +178,7 @@ function updateStats() {
   updateQuickStat('quick-regular', stats.regular);
   updateQuickStat('quick-super', stats.super);
   updateQuickStat('quick-diesel', stats.diesel);
+  updateBrandComparison();
   updateLowestPriceHighlight(filtered);
   updateStationList(filtered);
   return filtered;
