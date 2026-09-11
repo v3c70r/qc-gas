@@ -630,6 +630,8 @@ test.describe('Offline Station Search', () => {
 
 test.describe('Trip Fuel Cost Estimator', () => {
   const openDetailPanel = async (page) => {
+    await page.goto(BASE_URL);
+    await page.waitForLoadState('networkidle', { timeout: 15000 }).catch(() => {});
     await page.waitForTimeout(3000);
     const list = page.locator('#station-list');
     await expect(list.locator('.list-item').first()).toBeVisible();
