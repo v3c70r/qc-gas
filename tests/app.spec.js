@@ -251,6 +251,52 @@ test.describe('Filter Workflows', () => {
   });
 });
 
+test.describe('Brand Price Comparison', () => {
+  test('brand rows show station count, average price and diff', async ({ page }) => {
+    await page.goto(BASE_URL);
+    await page.waitForLoadState('networkidle', { timeout: 15000 }).catch(() => {});
+
+    const filterToggle = page.locator('#filter-toggle');
+    await filterToggle.click();
+    await page.waitForTimeout(300);
+
+    const first = page.locator('.brand-filter-item').first();
+    await expect(first).toBeVisible();
+    await expect(first.locator('.brand-count')).toBeVisible();
+    await expect(first.locator('.brand-avg')).toContainText('¢', { timeout: 15000 });
+    await expect(first.locator('.brand-diff')).toContainText('¢');
+  });
+
+  test('brand comparison updates when fuel type changes', async ({ page }) => {
+    await page.goto(BASE_URL);
+    await page.waitForLoadState('networkidle', { timeout: 15000 }).catch(() => {});
+
+    const filterToggle = page.locator('#filter-toggle');
+    await filterToggle.click();
+    await page.waitForTimeout(300);
+
+    const first = page.locator('.brand-filter-item').first();
+    await expect(first.locator('.brand-avg')).toContainText('¢', { timeout: 15000 });
+    const before = await first.locator('.brand-avg').textContent();
+
+    await page.locator('.fuel-chip').nth(1).click();
+    await expect(first.locator('.brand-avg')).not.toHaveText(before, { timeout: 5000 });
+  });
+
+  test('membership brand shows an explanatory hint', async ({ page }) => {
+    await page.goto(BASE_URL);
+    await page.waitForLoadState('networkidle', { timeout: 15000 }).catch(() => {});
+
+    const filterToggle = page.locator('#filter-toggle');
+    await filterToggle.click();
+    await page.waitForTimeout(300);
+
+    const memberships = page.locator('.brand-membership');
+    expect(await memberships.count()).toBeGreaterThan(0);
+    await expect(memberships.first()).toHaveAttribute('title', /Membership|Membre|会员/);
+  });
+});
+
 test.describe('Visual Regression Screenshots', () => {
   test('full page screenshot - desktop', async ({ page }) => {
     await page.setViewportSize({ width: 1280, height: 800 });

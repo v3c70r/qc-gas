@@ -1,6 +1,6 @@
 // Mapbox initialization and map configuration
 import { t, tf, onLanguageChange } from './i18n.js';
-import { brandColor, brandAbbr } from './constants.js';
+import { brandColor, brandAbbr, isMembershipBrand } from './constants.js';
 import { updateStats } from './stats.js';
 
 const mapboxToken = import.meta.env.VITE_MAPBOX_ACCESS_TOKEN;
@@ -125,6 +125,25 @@ function updateDataStatus() {
 // Listen for language changes to keep data-status in sync
 onLanguageChange(() => updateDataStatus());
 
+// Keep brand-item tooltips in sync with the active language (the markup itself
+// is built once in loadStations, so only attribute text needs refreshing).
+function refreshBrandItemLabels() {
+  document.querySelectorAll('.brand-filter-item').forEach(item => {
+    const membership = item.querySelector('.brand-membership');
+    if (membership) {
+      membership.title = t('membershipRequired');
+      membership.setAttribute('aria-label', t('membershipRequired'));
+    }
+    const count = item.querySelector('.brand-count');
+    if (count) count.title = t('stations');
+    const avg = item.querySelector('.brand-avg');
+    if (avg) avg.title = t('brandAvg');
+    const diff = item.querySelector('.brand-diff');
+    if (diff) diff.title = t('brandVsAvg');
+  });
+}
+onLanguageChange(() => refreshBrandItemLabels());
+
 // Load stations data
 export async function loadStations() {
   document.getElementById('loading').classList.add('active');
@@ -192,11 +211,18 @@ export async function loadStations() {
       if (compact) item.style.margin = '4px';
       const iconSize = compact ? '18px' : '20px';
       const fontSize = compact ? '7px' : '8px';
-      const countSize = compact ? '10px' : '11px';
+      const membership = isMembershipBrand(brand)
+        ? `<span class="brand-membership" title="${t('membershipRequired')}" aria-label="${t('membershipRequired')}">🔒</span>`
+        : '';
       item.innerHTML = `<input type="checkbox" class="brand-filter" value="${brand}" checked>
-        <span style="width:${iconSize};height:${iconSize};border-radius:4px;background:${color};display:inline-flex;align-items:center;justify-content:center;font-size:${fontSize};font-weight:700;color:#fff;flex-shrink:0;">${abbr}</span>
-        <span>${brand}</span>
-        <span class="brand-count" style="margin-left:auto;font-size:${countSize};color:#94a3b8;">${count}</span>`;
+        <span class="brand-icon" style="width:${iconSize};height:${iconSize};border-radius:4px;background:${color};display:inline-flex;align-items:center;justify-content:center;font-size:${fontSize};font-weight:700;color:#fff;flex-shrink:0;">${abbr}</span>
+        <span class="brand-name">${brand}</span>
+        ${membership}
+        <span class="brand-metrics">
+          <span class="brand-count" title="${t('stations')}">${count}</span>
+          <span class="brand-avg" title="${t('brandAvg')}">—</span>
+          <span class="brand-diff" title="${t('brandVsAvg')}">—</span>
+        </span>`;
       item.addEventListener('click', (e) => {
         // Let the label toggle the checkbox naturally, then sync
         setTimeout(syncToggleState, 0);

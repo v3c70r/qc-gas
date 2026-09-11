@@ -210,6 +210,44 @@ body {
 .brand-filter-item.active { background: #1a73e8; color: #fff; }
 .brand-filter-item input { display: none; }
 
+.brand-name {
+  flex: 1 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.brand-membership {
+  font-size: 9px;
+  line-height: 1;
+  cursor: help;
+  opacity: 0.85;
+}
+
+.brand-metrics {
+  margin-left: auto;
+  flex-shrink: 0;
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  font-size: 10px;
+  line-height: 1;
+  white-space: nowrap;
+  font-variant-numeric: tabular-nums;
+}
+
+.brand-count { color: #94a3b8; }
+.brand-avg { color: #475569; font-weight: 600; }
+.brand-diff { font-weight: 700; }
+.brand-diff.diff-neg { color: #16a34a; }
+.brand-diff.diff-pos { color: #dc2626; }
+
+.brand-filter-item.active .brand-count { color: #cbd5e1; }
+.brand-filter-item.active .brand-avg { color: #fff; }
+.brand-filter-item.active .brand-diff.diff-neg { color: #86efac; }
+.brand-filter-item.active .brand-diff.diff-pos { color: #fca5a5; }
+
 /* Fuel chips */
 .fuel-grid {
   display: grid;
