@@ -211,6 +211,8 @@ body {
 .brand-filter-item input { display: none; }
 
 .brand-name {
+  flex: 1 1 auto;
+  min-width: 0;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
@@ -225,6 +227,7 @@ body {
 
 .brand-metrics {
   margin-left: auto;
+  flex-shrink: 0;
   display: inline-flex;
   align-items: center;
   gap: 4px;

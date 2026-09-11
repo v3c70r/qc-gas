@@ -17,47 +17,6 @@ function haversineDistance(lng1, lat1, lng2, lat2) {
 }
 function toRad(deg) { return deg * Math.PI / 180; }
 
-function filterStations() {
-  // Stations load asynchronously; guard every early call path (language
-  // change, favorites toggle, etc.) until the FeatureCollection is ready.
-  if (!currentStations || !Array.isArray(currentStations.features)) return [];
-
-  const radiusBtn = document.querySelector('.radius-btn.active');
-  const radiusKm = radiusBtn ? parseFloat(radiusBtn.dataset.radius) : 25;
-
-  const selectedBrands = new Set();
-  document.querySelectorAll('.brand-filter:checked').forEach(cb => selectedBrands.add(cb.value));
-
-  const selectedFuelTypes = {};
-  document.querySelectorAll('.fuel-filter').forEach(cb => { selectedFuelTypes[cb.value] = cb.checked; });
-  // Determine active fuel type (radio: exactly one is always checked)
-  const activeFuel = document.querySelector('.fuel-filter:checked')?.value || 'regular';
-
-  const priceMin = parseFloat(document.getElementById('min-price').value);
-  const priceMax = parseFloat(document.getElementById('max-price').value);
-  const selectedRegion = document.getElementById('region-filter').value;
-
-  return currentStations.features.filter(feat => {
-    const props = feat.properties;
-    const coords = feat.geometry.coordinates;
-    const distance = haversineDistance(MONTREAL_CENTER[0], MONTREAL_CENTER[1], coords[0], coords[1]);
-    if (distance > radiusKm) return false;
-    if (selectedBrands.size === 0 || !selectedBrands.has(props.brand)) return false;
-    if (selectedRegion && props.region !== selectedRegion) return false;
-
-    // Must have the selected fuel type with a price in range
-    const priceKey = activeFuel + '_price';
-    const fuelPrice = props[priceKey];
-    if (fuelPrice === null) return false;
-    if (fuelPrice < priceMin || fuelPrice > priceMax) return false;
-    return true;
-  });
-}
-
-function filterStationsAsFeatureCollection() {
-  return { type: 'FeatureCollection', features: filterStations() };
-}
-
 function getActiveFuel() {
   return document.querySelector('.fuel-filter:checked')?.value || 'regular';
 }
@@ -66,39 +25,81 @@ function getActiveFuelPriceKey() {
   return getActiveFuel() + '_price';
 }
 
-// Brand comparison ignores the brand checkboxes (they are the dimension being
-// compared), but respects radius / region / price range / active fuel so the
-// numbers move with the other filters.
-function filterStationsForBrandComparison() {
+function getFilterCriteria() {
+  const radiusBtn = document.querySelector('.radius-btn.active');
+  return {
+    radiusKm: radiusBtn ? parseFloat(radiusBtn.dataset.radius) : 25,
+    selectedRegion: document.getElementById('region-filter').value,
+    priceMin: parseFloat(document.getElementById('min-price').value),
+    priceMax: parseFloat(document.getElementById('max-price').value),
+    priceKey: getActiveFuelPriceKey()
+  };
+}
+
+// Shared by the map/list filter and the brand comparison so radius, region and
+// price-range behaviour cannot drift between the two.
+function matchesNonBrandFilters(feat, criteria) {
+  const props = feat.properties;
+  const coords = feat.geometry.coordinates;
+  const distance = haversineDistance(MONTREAL_CENTER[0], MONTREAL_CENTER[1], coords[0], coords[1]);
+  if (distance > criteria.radiusKm) return false;
+  if (criteria.selectedRegion && props.region !== criteria.selectedRegion) return false;
+
+  const fuelPrice = props[criteria.priceKey];
+  if (fuelPrice === null) return false;
+  if (fuelPrice < criteria.priceMin || fuelPrice > criteria.priceMax) return false;
+  return true;
+}
+
+function filterStations() {
+  // Stations load asynchronously; guard every early call path (language
+  // change, favorites toggle, etc.) until the FeatureCollection is ready.
   if (!currentStations || !Array.isArray(currentStations.features)) return [];
 
-  const priceKey = getActiveFuelPriceKey();
-  const radiusBtn = document.querySelector('.radius-btn.active');
-  const radiusKm = radiusBtn ? parseFloat(radiusBtn.dataset.radius) : 25;
-  const selectedRegion = document.getElementById('region-filter').value;
-  const priceMin = parseFloat(document.getElementById('min-price').value);
-  const priceMax = parseFloat(document.getElementById('max-price').value);
+  const criteria = getFilterCriteria();
+  const selectedBrands = new Set();
+  document.querySelectorAll('.brand-filter:checked').forEach(cb => selectedBrands.add(cb.value));
 
   return currentStations.features.filter(feat => {
-    const props = feat.properties;
-    const coords = feat.geometry.coordinates;
-    const distance = haversineDistance(MONTREAL_CENTER[0], MONTREAL_CENTER[1], coords[0], coords[1]);
-    if (distance > radiusKm) return false;
-    if (selectedRegion && props.region !== selectedRegion) return false;
-
-    const fuelPrice = props[priceKey];
-    if (fuelPrice === null) return false;
-    if (fuelPrice < priceMin || fuelPrice > priceMax) return false;
+    if (!matchesNonBrandFilters(feat, criteria)) return false;
+    if (selectedBrands.size === 0 || !selectedBrands.has(feat.properties.brand)) return false;
     return true;
   });
 }
 
-function computeBrandComparison() {
-  const features = filterStationsForBrandComparison();
-  const priceKey = getActiveFuelPriceKey();
-  const brands = {};
+function filterStationsAsFeatureCollection() {
+  return { type: 'FeatureCollection', features: filterStations() };
+}
+
+// Brand comparison ignores the brand checkboxes (they are the dimension being
+// compared), but respects radius / region / price range / active fuel so brand
+// averages move with the other filters.
+function filterStationsForBrandComparison() {
+  if (!currentStations || !Array.isArray(currentStations.features)) return [];
+  const criteria = getFilterCriteria();
+  return currentStations.features.filter(feat => matchesNonBrandFilters(feat, criteria));
+}
+
+// The comparison baseline is the true province-wide average for the active
+// fuel: full dataset, no radius / region / price-range / brand filtering.
+function computeProvinceAverage(priceKey) {
+  if (!currentStations || !Array.isArray(currentStations.features)) return null;
   let total = 0;
-  let totalCount = 0;
+  let count = 0;
+  currentStations.features.forEach(feat => {
+    const price = feat.properties?.[priceKey];
+    if (price !== null && price !== undefined) {
+      total += price;
+      count += 1;
+    }
+  });
+  return count > 0 ? total / count : null;
+}
+
+function computeBrandComparison() {
+  const priceKey = getActiveFuelPriceKey();
+  const features = filterStationsForBrandComparison();
+  const brands = {};
 
   features.forEach(feat => {
     const props = feat.properties;
@@ -109,12 +110,10 @@ function computeBrandComparison() {
     if (!brands[brand]) brands[brand] = { sum: 0, count: 0 };
     brands[brand].sum += price;
     brands[brand].count += 1;
-    total += price;
-    totalCount += 1;
   });
 
   return {
-    provinceAvg: totalCount > 0 ? total / totalCount : null,
+    provinceAvg: computeProvinceAverage(priceKey),
     brands
   };
 }
