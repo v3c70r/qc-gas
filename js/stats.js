@@ -2,6 +2,7 @@ import { map, MONTREAL_CENTER, currentStations } from './map.js';
 import { tf, translations, getLanguage, t, onLanguageChange } from './i18n.js';
 import { brandColor, brandAbbr } from './constants.js';
 import { isFavorite, toggleFavorite, getFavoriteCount, subscribe, STAR_ICON } from './favorites.js';
+import { searchFeatures, getSearchQuery, isSearchActive, refreshSearchSuggestions } from './search.js';
 
 let favoritesOnly = false;
 
@@ -38,12 +39,17 @@ function getFilterCriteria() {
 
 // Shared by the map/list filter and the brand comparison so radius, region and
 // price-range behaviour cannot drift between the two.
-function matchesNonBrandFilters(feat, criteria) {
+// When a search is active, location filters (radius and region) are lifted so
+// users can search an address / postal code / city anywhere in the province.
+// Brand, price-range and favorites filters still apply to keep results useful.
+function matchesNonBrandFilters(feat, criteria, searchMode = false) {
   const props = feat.properties;
   const coords = feat.geometry.coordinates;
-  const distance = haversineDistance(MONTREAL_CENTER[0], MONTREAL_CENTER[1], coords[0], coords[1]);
-  if (distance > criteria.radiusKm) return false;
-  if (criteria.selectedRegion && props.region !== criteria.selectedRegion) return false;
+  if (!searchMode) {
+    const distance = haversineDistance(MONTREAL_CENTER[0], MONTREAL_CENTER[1], coords[0], coords[1]);
+    if (distance > criteria.radiusKm) return false;
+    if (criteria.selectedRegion && props.region !== criteria.selectedRegion) return false;
+  }
 
   const fuelPrice = props[criteria.priceKey];
   if (fuelPrice === null) return false;
@@ -60,8 +66,13 @@ function filterStations() {
   const selectedBrands = new Set();
   document.querySelectorAll('.brand-filter:checked').forEach(cb => selectedBrands.add(cb.value));
 
-  return currentStations.features.filter(feat => {
-    if (!matchesNonBrandFilters(feat, criteria)) return false;
+  const searching = isSearchActive();
+  const baseFeatures = searching
+    ? searchFeatures(getSearchQuery(), currentStations.features)
+    : currentStations.features;
+
+  return baseFeatures.filter(feat => {
+    if (!matchesNonBrandFilters(feat, criteria, searching)) return false;
     if (selectedBrands.size === 0 || !selectedBrands.has(feat.properties.brand)) return false;
     return true;
   });
@@ -72,12 +83,16 @@ function filterStationsAsFeatureCollection() {
 }
 
 // Brand comparison ignores the brand checkboxes (they are the dimension being
-// compared), but respects radius / region / price range / active fuel so brand
-// averages move with the other filters.
+// compared), but respects the other active filters (radius / region when not
+// searching, and price range / active fuel always) so averages move with them.
 function filterStationsForBrandComparison() {
   if (!currentStations || !Array.isArray(currentStations.features)) return [];
   const criteria = getFilterCriteria();
-  return currentStations.features.filter(feat => matchesNonBrandFilters(feat, criteria));
+  const searching = isSearchActive();
+  const baseFeatures = searching
+    ? searchFeatures(getSearchQuery(), currentStations.features)
+    : currentStations.features;
+  return baseFeatures.filter(feat => matchesNonBrandFilters(feat, criteria, searching));
 }
 
 // The comparison baseline is the true province-wide average for the active
@@ -149,6 +164,14 @@ function updateBrandComparison() {
   });
 }
 
+function getVisibleStations() {
+  let filtered = filterStations();
+  if (favoritesOnly) {
+    filtered = filtered.filter(f => isFavorite(f));
+  }
+  return filtered;
+}
+
 function updateMapStations(filteredStations) {
   if (!map || !map.getSource) return;
   const source = map.getSource('stations');
@@ -157,10 +180,7 @@ function updateMapStations(filteredStations) {
 }
 
 function updateStats() {
-  let filtered = filterStations();
-  if (favoritesOnly) {
-    filtered = filtered.filter(f => isFavorite(f));
-  }
+  const filtered = getVisibleStations();
   updateMapStations(filtered);
   const stats = { regular: [], super: [], diesel: [] };
 
@@ -180,6 +200,7 @@ function updateStats() {
   updateBrandComparison();
   updateLowestPriceHighlight(filtered);
   updateStationList(filtered);
+  refreshSearchSuggestions();
   return filtered;
 }
 
@@ -371,4 +392,4 @@ export function initFavorites() {
   updateFavoritesUI();
 }
 
-export { filterStations, filterStationsAsFeatureCollection, updateMapStations, updateStats, updateLowestPriceHighlight, updateStationList };
+export { filterStations, filterStationsAsFeatureCollection, updateMapStations, updateStats, updateLowestPriceHighlight, updateStationList, getVisibleStations };

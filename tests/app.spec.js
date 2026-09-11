@@ -504,6 +504,130 @@ test.describe('Favorites (localStorage)', () => {
   });
 });
 
+test.describe('Offline Station Search', () => {
+  test.beforeEach(async ({ page }) => {
+    await page.goto(BASE_URL);
+    await page.waitForLoadState('networkidle', { timeout: 15000 }).catch(() => {});
+  });
+
+  test('pure normalization ignores case, accents and extra whitespace', async ({ page }) => {
+    await page.waitForFunction(() => window.__qcGasSearch, null, { timeout: 15000 });
+
+    const result = await page.evaluate(() => {
+      const s = window.__qcGasSearch;
+      const feature = {
+        properties: {
+          name: 'Station Émile',
+          brand: 'Shell',
+          address: "123 rue de l'Église, Montréal",
+          postal_code: 'H2X 1Y0',
+          region: 'Montréal'
+        }
+      };
+      return {
+        norm: s.normalizeText('  ÉGLISE   Montréal '),
+        accent: s.matchesFeature(feature, s.normalizeText('eglise')),
+        city: s.matchesFeature(feature, s.normalizeText('MONTREAL')),
+        postal: s.matchesFeature(feature, s.normalizeText('h2x 1y0')),
+        brand: s.matchesFeature(feature, s.normalizeText('SHELL')),
+        name: s.matchesFeature(feature, s.normalizeText('emile'))
+      };
+    });
+
+    expect(result.norm).toBe('eglise montreal');
+    expect(result.accent).toBe(true);
+    expect(result.city).toBe(true);
+    expect(result.postal).toBe(true);
+    expect(result.brand).toBe(true);
+    expect(result.name).toBe(true);
+  });
+
+  test('queries shorter than two characters do not match', async ({ page }) => {
+    await page.waitForFunction(() => window.__qcGasSearch, null, { timeout: 15000 });
+
+    const count = await page.evaluate(() => {
+      const s = window.__qcGasSearch;
+      const feature = { properties: { name: 'Shell', brand: 'Shell', address: 'x', postal_code: 'x', region: 'x' } };
+      return s.searchFeatures('s', [feature]).length;
+    });
+
+    expect(count).toBe(0);
+  });
+
+  test('clear button is hidden when the query is empty', async ({ page }) => {
+    const clearBtn = page.locator('#search-clear');
+    await expect(clearBtn).toBeHidden();
+
+    const input = page.locator('#station-search');
+    await input.fill('rouyn');
+    await expect(clearBtn).toBeVisible();
+
+    await input.fill('');
+    await expect(clearBtn).toBeHidden();
+  });
+
+  test('typing filters the map source and sidebar list', async ({ page }) => {
+    await page.waitForFunction(() => window.__qcGasMap && window.__qcGasMap.getStationFeatureCount() > 0, null, { timeout: 15000 });
+
+    const input = page.locator('#station-search');
+    await input.fill('rouyn');
+    await page.waitForTimeout(500);
+
+    await expect(page.locator('#search-suggestions .search-suggestion').first()).toBeVisible();
+    const count = await page.evaluate(() => window.__qcGasMap.getStationFeatureCount());
+    expect(count).toBeGreaterThan(0);
+    await expect(page.locator('#station-list .list-item').first()).toBeVisible();
+  });
+
+  test('clear button restores the previous filtered state', async ({ page }) => {
+    await page.waitForFunction(() => window.__qcGasMap && window.__qcGasMap.getStationFeatureCount() > 0, null, { timeout: 15000 });
+    const before = await page.evaluate(() => window.__qcGasMap.getStationFeatureCount());
+
+    const input = page.locator('#station-search');
+    await input.fill('shell');
+    await page.waitForTimeout(500);
+    const during = await page.evaluate(() => window.__qcGasMap.getStationFeatureCount());
+    expect(during).not.toBe(before);
+
+    await page.locator('#search-clear').click();
+    await page.waitForTimeout(500);
+    const after = await page.evaluate(() => window.__qcGasMap.getStationFeatureCount());
+    expect(after).toBe(before);
+  });
+
+  test('Escape while focused clears the active search', async ({ page }) => {
+    await page.waitForFunction(() => window.__qcGasMap && window.__qcGasMap.getStationFeatureCount() > 0, null, { timeout: 15000 });
+    const before = await page.evaluate(() => window.__qcGasMap.getStationFeatureCount());
+
+    const input = page.locator('#station-search');
+    await input.fill('rouyn');
+    await page.waitForTimeout(500);
+    await input.press('Escape');
+    await page.waitForTimeout(500);
+
+    await expect(input).toHaveValue('');
+    const after = await page.evaluate(() => window.__qcGasMap.getStationFeatureCount());
+    expect(after).toBe(before);
+  });
+
+  test('keyboard up/down + Enter opens a station card', async ({ page }) => {
+    await page.waitForFunction(() => window.__qcGasMap && window.__qcGasMap.getStationFeatureCount() > 0, null, { timeout: 15000 });
+
+    const input = page.locator('#station-search');
+    await input.fill('rouyn');
+    await page.waitForTimeout(500);
+
+    const suggestions = page.locator('#search-suggestions .search-suggestion');
+    await expect(suggestions.first()).toBeVisible();
+
+    await input.press('ArrowDown');
+    await input.press('Enter');
+    await page.waitForTimeout(800);
+
+    await expect(page.locator('.mapboxgl-popup').first()).toBeVisible();
+  });
+});
+
 test.describe('Dashboard Region Ranking', () => {
   const openDashboard = async (page) => {
     await page.goto(BASE_URL);

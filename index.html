@@ -20,6 +20,17 @@
       </div>
 
       <div id="sidebar-content">
+        <div class="search-box" id="search-box">
+          <div class="search-input-wrap">
+            <span class="search-icon" aria-hidden="true">
+              <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="11" cy="11" r="8"></circle><line x1="21" y1="21" x2="16.65" y2="16.65"></line></svg>
+            </span>
+            <input type="search" id="station-search" data-i18n-placeholder="searchPlaceholder" placeholder="Adresse, ville, code postal, marque ou station" aria-label="Rechercher" autocomplete="off" role="combobox" aria-expanded="false" aria-autocomplete="list" aria-controls="search-suggestions">
+            <button id="search-clear" class="search-clear" aria-label="Effacer la recherche" title="Effacer la recherche" hidden>✕</button>
+          </div>
+          <div id="search-suggestions" class="search-suggestions" role="listbox" hidden></div>
+        </div>
+
         <div class="quick-stats" id="quick-stats">
           <div class="quick-stat-item">
             <span class="quick-stat-label" data-i18n="regular">Régulier</span>
