@@ -6,6 +6,8 @@ import { t, tf, translations, getLanguage, onLanguageChange } from './i18n.js';
 import { getStationHistory } from './history.js';
 import { loadChartJS } from './chartjs.js';
 import { isFavorite, toggleFavorite, STAR_ICON } from './favorites.js';
+import { MONTREAL_CENTER } from './map.js';
+import { haversineDistance } from './stats.js';
 
 const FUEL_KEYS = ['regular', 'super', 'diesel'];
 const RANGES = [
@@ -22,6 +24,33 @@ let popupFuel = 'regular';
 let popupRange = 7;
 let popupUpdated = '';
 
+// ── Trip cost estimator preferences (localStorage, no backend) ──
+const TRIP_STORAGE_KEY = 'qc-gas-trip';
+const DEFAULT_CONSUMPTION = 8; // L/100 km
+
+let tripPrefs = loadTripPrefs();
+
+function loadTripPrefs() {
+  try {
+    const parsed = JSON.parse(localStorage.getItem(TRIP_STORAGE_KEY) || 'null');
+    const consumption = Number(parsed?.consumption);
+    return {
+      consumption: Number.isFinite(consumption) && consumption > 0 ? consumption : DEFAULT_CONSUMPTION,
+      roundTrip: parsed?.roundTrip === true
+    };
+  } catch {
+    return { consumption: DEFAULT_CONSUMPTION, roundTrip: false };
+  }
+}
+
+function saveTripPrefs() {
+  try {
+    localStorage.setItem(TRIP_STORAGE_KEY, JSON.stringify(tripPrefs));
+  } catch {
+    // Storage may be unavailable; the estimator still works for this session.
+  }
+}
+
 // Keep open popup/detail star labels in sync when the language changes.
 onLanguageChange(() => {
   if (activePopup && currentFeature) {
@@ -31,6 +60,9 @@ onLanguageChange(() => {
   if (favBtn && detailFeature) {
     const fav = isFavorite(detailFeature);
     favBtn.setAttribute('aria-label', fav ? t('unfavorite') : t('favorite'));
+  }
+  if (detailEl && detailFeature && detailEl.classList.contains('open')) {
+    updateTripEstimator();
   }
 });
 
@@ -268,6 +300,27 @@ function buildDetailPanel() {
       <div class="sd-range"></div>
       <div class="sd-chart"><canvas id="station-chart"></canvas></div>
       <div class="sd-stats"></div>
+      <div class="sd-trip">
+        <div class="sd-trip-head"></div>
+        <div class="sd-trip-row">
+          <label class="sd-trip-field">
+            <span class="sd-trip-label"></span>
+            <input class="sd-trip-input" type="number" inputmode="decimal" min="0" step="0.1" value="8">
+          </label>
+          <div class="sd-trip-toggle" role="group">
+            <button class="sd-trip-seg on" type="button" data-trip-mode="oneway"></button>
+            <button class="sd-trip-seg" type="button" data-trip-mode="roundtrip"></button>
+          </div>
+        </div>
+        <div class="sd-trip-result">
+          <span class="sd-trip-result-label"></span>
+          <b class="sd-trip-cost">—</b>
+        </div>
+        <div class="sd-trip-distance">
+          <span class="sd-trip-distance-label"></span>
+          <b class="sd-trip-distance-value">—</b>
+        </div>
+      </div>
       <div class="sd-actions">
         <button class="sd-nav"></button>
         <div class="sd-updated"></div>
@@ -297,6 +350,26 @@ function buildDetailPanel() {
       detailRange = parseInt(r.dataset.days, 10);
       renderDetail();
     }
+  });
+
+  // Trip cost estimator: consumption input + one-way / round-trip toggle
+  const tripInput = detailEl.querySelector('.sd-trip-input');
+  tripInput.addEventListener('input', () => {
+    const raw = tripInput.value.trim();
+    const val = Number(raw);
+    if (raw !== '' && Number.isFinite(val) && val > 0) {
+      tripPrefs.consumption = val;
+      saveTripPrefs();
+    }
+    updateTripEstimatorResult();
+  });
+
+  detailEl.querySelector('.sd-trip-toggle').addEventListener('click', (e) => {
+    const btn = e.target.closest('[data-trip-mode]');
+    if (!btn) return;
+    tripPrefs.roundTrip = btn.dataset.tripMode === 'roundtrip';
+    saveTripPrefs();
+    updateTripEstimator();
   });
 
   const mapEl = document.getElementById('map-container');
@@ -390,6 +463,8 @@ async function renderDetail() {
     <div class="sd-stat"><span>${t('avg')}</span><b>${avg != null ? fmt(avg) : '—'}</b></div>
     <div class="sd-stat ${lastCls}"><span>${t('lastPrice')}</span><b>${lastChange > 0 ? '+' : lastChange < 0 ? '−' : ''}${fmt(Math.abs(lastChange))}</b></div>`;
 
+  updateTripEstimator();
+
   // Navigate + updated
   const isIOS = /iPhone|iPad|iPod/.test(navigator.userAgent);
   const [lng, lat] = detailFeature.geometry.coordinates;
@@ -412,6 +487,56 @@ async function renderDetail() {
     });
   }
   updateDetailChart(series, color);
+}
+
+// ── Trip cost estimator (L/100 km × distance × station price) ──
+function tripEstimate() {
+  if (!detailFeature) return { distanceKm: null, cost: null };
+
+  const raw = detailEl?.querySelector('.sd-trip-input')?.value ?? String(tripPrefs.consumption);
+  const consumption = Number(raw);
+  const validConsumption = raw.trim() !== '' && Number.isFinite(consumption) && consumption > 0;
+
+  const [lng, lat] = detailFeature.geometry.coordinates;
+  const oneWayKm = haversineDistance(MONTREAL_CENTER[0], MONTREAL_CENTER[1], lng, lat);
+  const distanceKm = oneWayKm * (tripPrefs.roundTrip ? 2 : 1);
+  const priceCents = detailFeature.properties[detailFuel + '_price'];
+
+  // cost = (distanceKm / 100) * consumption * (priceCents / 100)  → CAD
+  const cost = validConsumption && priceCents != null
+    ? (distanceKm / 100) * consumption * (priceCents / 100)
+    : null;
+
+  return { distanceKm, cost };
+}
+
+function updateTripEstimatorResult() {
+  if (!detailEl) return;
+  const { distanceKm, cost } = tripEstimate();
+  const costEl = detailEl.querySelector('.sd-trip-cost');
+  const distEl = detailEl.querySelector('.sd-trip-distance-value');
+  if (costEl) costEl.textContent = cost != null ? `$${cost.toFixed(2)}` : '—';
+  if (distEl) distEl.textContent = distanceKm != null ? `${distanceKm.toFixed(1)} km` : '—';
+}
+
+function updateTripEstimator() {
+  if (!detailEl) return;
+  detailEl.querySelector('.sd-trip-head').textContent = t('tripEstimator');
+  detailEl.querySelector('.sd-trip-label').textContent = t('fuelConsumption');
+  detailEl.querySelector('.sd-trip-result-label').textContent = t('tripCost');
+  detailEl.querySelector('.sd-trip-distance-label').textContent = t('tripDistance');
+
+  const input = detailEl.querySelector('.sd-trip-input');
+  input.value = String(tripPrefs.consumption);
+  input.setAttribute('aria-label', t('fuelConsumption'));
+
+  detailEl.querySelectorAll('.sd-trip-seg').forEach(btn => {
+    const on = (btn.dataset.tripMode === 'roundtrip') === tripPrefs.roundTrip;
+    btn.classList.toggle('on', on);
+    btn.textContent = btn.dataset.tripMode === 'roundtrip' ? t('roundTrip') : t('oneWay');
+  });
+
+  updateTripEstimatorResult();
 }
 
 // ── small helper to format metadata time (kept local, no import cycle) ──

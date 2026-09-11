@@ -64,7 +64,13 @@ export const translations = {
     regionRanking: '区域排行',
     spread: '价差',
     vsYesterday: '环比昨日',
-    overall: '全省'
+    overall: '全省',
+    tripEstimator: '行程油费估算',
+    fuelConsumption: '油耗 (L/100km)',
+    oneWay: '单程',
+    roundTrip: '往返',
+    tripCost: '估算油费',
+    tripDistance: '行程距离'
   },
   'en-CA': {
     results: 'Results',
@@ -131,7 +137,13 @@ export const translations = {
     regionRanking: 'Regional ranking',
     spread: 'Spread',
     vsYesterday: 'vs yesterday',
-    overall: 'Province'
+    overall: 'Province',
+    tripEstimator: 'Trip cost estimate',
+    fuelConsumption: 'Consumption (L/100 km)',
+    oneWay: 'One way',
+    roundTrip: 'Round trip',
+    tripCost: 'Estimated fuel cost',
+    tripDistance: 'Trip distance'
   },
   'fr-CA': {
     results: 'Résultats',
@@ -198,7 +210,13 @@ export const translations = {
     regionRanking: 'Classement régional',
     spread: 'Écart',
     vsYesterday: 'vs hier',
-    overall: 'Province'
+    overall: 'Province',
+    tripEstimator: 'Estimation du coût du trajet',
+    fuelConsumption: 'Consommation (L/100 km)',
+    oneWay: 'Aller simple',
+    roundTrip: 'Aller-retour',
+    tripCost: 'Coût estimé du carburant',
+    tripDistance: 'Distance du trajet'
   }
 };
 
