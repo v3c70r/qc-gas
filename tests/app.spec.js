@@ -554,6 +554,18 @@ test.describe('Offline Station Search', () => {
     expect(count).toBe(0);
   });
 
+  test('clear button is hidden when the query is empty', async ({ page }) => {
+    const clearBtn = page.locator('#search-clear');
+    await expect(clearBtn).toBeHidden();
+
+    const input = page.locator('#station-search');
+    await input.fill('rouyn');
+    await expect(clearBtn).toBeVisible();
+
+    await input.fill('');
+    await expect(clearBtn).toBeHidden();
+  });
+
   test('typing filters the map source and sidebar list', async ({ page }) => {
     await page.waitForFunction(() => window.__qcGasMap && window.__qcGasMap.getStationFeatureCount() > 0, null, { timeout: 15000 });
 

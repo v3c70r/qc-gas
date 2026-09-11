@@ -3,8 +3,8 @@
 // search box wiring. Matching is intentionally local-only: no geocoding API,
 // no new network requests.
 
-import { map, currentStations } from './map.js';
-import { updateStats, showPopup } from './stats.js';
+import { map } from './map.js';
+import { updateStats, showPopup, getVisibleStations } from './stats.js';
 import { t, onLanguageChange } from './i18n.js';
 import { brandColor, brandAbbr } from './constants.js';
 
@@ -101,8 +101,9 @@ function renderSuggestions() {
     return;
   }
 
-  const features = Array.isArray(currentStations?.features) ? currentStations.features : [];
-  suggestions = searchFeatures(currentQuery, features).slice(0, 8);
+  // Derive suggestions from the same filtered set as the map/list so the
+  // dropdown never offers a station that has no marker in the current source.
+  suggestions = getVisibleStations().slice(0, 8);
   suggestionIndex = suggestions.length ? 0 : -1;
 
   box.innerHTML = '';
@@ -150,6 +151,11 @@ export function clearSearch() {
   hideSuggestions();
 }
 
+export function refreshSearchSuggestions() {
+  if (!document.getElementById('search-box')) return;
+  renderSuggestions();
+}
+
 function updateSearchLabels() {
   const btn = document.getElementById('search-clear');
   if (btn) {
@@ -167,7 +173,6 @@ export function initSearch() {
 
   input.addEventListener('input', () => {
     setQuery(input.value);
-    renderSuggestions();
   });
 
   input.addEventListener('keydown', (e) => {

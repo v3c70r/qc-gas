@@ -142,6 +142,7 @@ body {
 }
 
 .search-clear:hover { background: #e2e8f0; color: #475569; }
+.search-clear[hidden] { display: none; }
 
 .search-suggestions {
   position: absolute;
