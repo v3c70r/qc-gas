@@ -628,6 +628,59 @@ test.describe('Offline Station Search', () => {
   });
 });
 
+test.describe('Trip Fuel Cost Estimator', () => {
+  const openDetailPanel = async (page) => {
+    await page.goto(BASE_URL);
+    await page.waitForLoadState('networkidle', { timeout: 15000 }).catch(() => {});
+    await page.waitForTimeout(3000);
+    const list = page.locator('#station-list');
+    await expect(list.locator('.list-item').first()).toBeVisible();
+    await list.locator('.list-item').first().click();
+    await expect(page.locator('.mapboxgl-popup').first()).toBeVisible();
+    await page.locator('.mapboxgl-popup [data-expand]').click();
+    await expect(page.locator('#station-panel')).toHaveClass(/open/);
+    await expect(page.locator('.sd-trip')).toBeVisible();
+  };
+
+  test('computes cost and switches one-way / round-trip', async ({ page }) => {
+    await openDetailPanel(page);
+
+    const input = page.locator('.sd-trip-input');
+    await expect(input).toHaveValue('8');
+
+    await input.fill('10');
+    const costEl = page.locator('.sd-trip-cost');
+    await expect(costEl).not.toHaveText('—');
+    await expect(costEl).not.toContainText('NaN');
+    const oneWayCost = await costEl.textContent();
+
+    await page.locator('[data-trip-mode="roundtrip"]').click();
+    await expect(page.locator('[data-trip-mode="roundtrip"]')).toHaveClass(/on/);
+    const roundTripCost = await costEl.textContent();
+    expect(roundTripCost).not.toBe(oneWayCost);
+  });
+
+  test('consumption persists across reload', async ({ page }) => {
+    await openDetailPanel(page);
+
+    const input = page.locator('.sd-trip-input');
+    await input.fill('9.5');
+
+    await page.reload();
+    await openDetailPanel(page);
+    await expect(page.locator('.sd-trip-input')).toHaveValue('9.5');
+  });
+
+  test('invalid consumption falls back without NaN', async ({ page }) => {
+    await openDetailPanel(page);
+
+    const input = page.locator('.sd-trip-input');
+    await input.fill('0');
+    await expect(page.locator('.sd-trip-cost')).toHaveText('—');
+    await expect(page.locator('.sd-trip-cost')).not.toContainText('NaN');
+  });
+});
+
 test.describe('Dashboard Region Ranking', () => {
   const openDashboard = async (page) => {
     await page.goto(BASE_URL);

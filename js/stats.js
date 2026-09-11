@@ -6,7 +6,7 @@ import { searchFeatures, getSearchQuery, isSearchActive, refreshSearchSuggestion
 
 let favoritesOnly = false;
 
-function haversineDistance(lng1, lat1, lng2, lat2) {
+export function haversineDistance(lng1, lat1, lng2, lat2) {
   const R = 6371;
   const dLat = toRad(lat2 - lat1);
   const dLon = toRad(lng2 - lng1);
