@@ -2,6 +2,7 @@ import { map, MONTREAL_CENTER, currentStations } from './map.js';
 import { tf, translations, getLanguage, t, onLanguageChange } from './i18n.js';
 import { brandColor, brandAbbr } from './constants.js';
 import { isFavorite, toggleFavorite, getFavoriteCount, subscribe, STAR_ICON } from './favorites.js';
+import { searchFeatures, getSearchQuery, isSearchActive } from './search.js';
 
 let favoritesOnly = false;
 
@@ -38,11 +39,15 @@ function getFilterCriteria() {
 
 // Shared by the map/list filter and the brand comparison so radius, region and
 // price-range behaviour cannot drift between the two.
-function matchesNonBrandFilters(feat, criteria) {
+// `skipRadius` lets an active search temporarily lift the distance constraint
+// so users can search an address / postal code / city anywhere in the province.
+function matchesNonBrandFilters(feat, criteria, skipRadius = false) {
   const props = feat.properties;
   const coords = feat.geometry.coordinates;
-  const distance = haversineDistance(MONTREAL_CENTER[0], MONTREAL_CENTER[1], coords[0], coords[1]);
-  if (distance > criteria.radiusKm) return false;
+  if (!skipRadius) {
+    const distance = haversineDistance(MONTREAL_CENTER[0], MONTREAL_CENTER[1], coords[0], coords[1]);
+    if (distance > criteria.radiusKm) return false;
+  }
   if (criteria.selectedRegion && props.region !== criteria.selectedRegion) return false;
 
   const fuelPrice = props[criteria.priceKey];
@@ -60,8 +65,13 @@ function filterStations() {
   const selectedBrands = new Set();
   document.querySelectorAll('.brand-filter:checked').forEach(cb => selectedBrands.add(cb.value));
 
-  return currentStations.features.filter(feat => {
-    if (!matchesNonBrandFilters(feat, criteria)) return false;
+  const searching = isSearchActive();
+  const baseFeatures = searching
+    ? searchFeatures(getSearchQuery(), currentStations.features)
+    : currentStations.features;
+
+  return baseFeatures.filter(feat => {
+    if (!matchesNonBrandFilters(feat, criteria, searching)) return false;
     if (selectedBrands.size === 0 || !selectedBrands.has(feat.properties.brand)) return false;
     return true;
   });
@@ -77,7 +87,11 @@ function filterStationsAsFeatureCollection() {
 function filterStationsForBrandComparison() {
   if (!currentStations || !Array.isArray(currentStations.features)) return [];
   const criteria = getFilterCriteria();
-  return currentStations.features.filter(feat => matchesNonBrandFilters(feat, criteria));
+  const searching = isSearchActive();
+  const baseFeatures = searching
+    ? searchFeatures(getSearchQuery(), currentStations.features)
+    : currentStations.features;
+  return baseFeatures.filter(feat => matchesNonBrandFilters(feat, criteria, searching));
 }
 
 // The comparison baseline is the true province-wide average for the active

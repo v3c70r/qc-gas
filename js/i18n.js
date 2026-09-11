@@ -2,6 +2,8 @@ export const translations = {
   'zh-Hans': {
     results: '结果',
     stations_count: '{n} 个加油站',
+    searchPlaceholder: '地址、城市、邮编、品牌或站名',
+    searchClear: '清除搜索',
     filters: '筛选',
     brand: '品牌',
     fuel: '燃油类型',
@@ -67,6 +69,8 @@ export const translations = {
   'en-CA': {
     results: 'Results',
     stations_count: '{n} stations',
+    searchPlaceholder: 'Address, city, postal code, brand or station',
+    searchClear: 'Clear search',
     filters: 'Filters',
     brand: 'Brand',
     fuel: 'Fuel type',
@@ -132,6 +136,8 @@ export const translations = {
   'fr-CA': {
     results: 'Résultats',
     stations_count: '{n} stations',
+    searchPlaceholder: 'Adresse, ville, code postal, marque ou station',
+    searchClear: 'Effacer la recherche',
     filters: 'Filtres',
     brand: 'Marque',
     fuel: 'Type de carburant',

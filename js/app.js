@@ -4,6 +4,7 @@ import { initFavorites } from './stats.js';
 import { getStoredLanguage, createLanguageSelector, applyTranslations } from './i18n.js';
 import { togglePanel } from './dashboard.js';
 import { loadHistoryData } from './history.js';
+import { initSearch, clearSearch, isSearchActive } from './search.js';
 
 function initKeyboardShortcuts() {
   document.addEventListener('keydown', (e) => {
@@ -21,6 +22,12 @@ function initKeyboardShortcuts() {
         document.getElementById('locate-btn').click();
         break;
       case 'escape': {
+        // An active search is the most specific Escape target: clear it first.
+        if (isSearchActive()) {
+          clearSearch();
+          e.preventDefault();
+          break;
+        }
         const sidebar = document.getElementById('sidebar');
         const isMobile = window.innerWidth < 768;
         if (isMobile && !sidebar.classList.contains('collapsed')) {
@@ -57,6 +64,7 @@ function initApp() {
   initFilters();
   initGeolocation();
   initSidebarToggle();
+  initSearch();
   initFavorites();
   initKeyboardShortcuts();
 
