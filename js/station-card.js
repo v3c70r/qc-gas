@@ -11,11 +11,11 @@ import { haversineDistance } from './stats.js';
 
 const FUEL_KEYS = ['regular', 'super', 'diesel'];
 const RANGES = [
-  { label: '1W', days: 7 },
-  { label: '1M', days: 30 },
-  { label: '3M', days: 90 },
-  { label: '6M', days: 180 },
-  { label: '1A', days: 365 }
+  { key: 'rangeWeek', days: 7 },
+  { key: 'rangeMonth', days: 30 },
+  { key: 'range3Months', days: 90 },
+  { key: 'range6Months', days: 180 },
+  { key: 'rangeYear', days: 365 }
 ];
 
 let activePopup = null;        // mapboxgl Popup instance
@@ -56,13 +56,16 @@ onLanguageChange(() => {
   if (activePopup && currentFeature) {
     activePopup.setHTML(cardHTML(currentFeature));
   }
-  const favBtn = detailEl?.querySelector('.sd-fav');
-  if (favBtn && detailFeature) {
-    const fav = isFavorite(detailFeature);
-    favBtn.setAttribute('aria-label', fav ? t('unfavorite') : t('favorite'));
-  }
   if (detailEl && detailFeature && detailEl.classList.contains('open')) {
-    updateTripEstimator();
+    // Re-render the whole panel so range pills, stats and chart labels
+    // pick up the newly selected language.
+    renderDetail().catch(() => {});
+  } else {
+    const favBtn = detailEl?.querySelector('.sd-fav');
+    if (favBtn && detailFeature) {
+      const fav = isFavorite(detailFeature);
+      favBtn.setAttribute('aria-label', fav ? t('unfavorite') : t('favorite'));
+    }
   }
 });
 
@@ -72,7 +75,7 @@ function fuelLabel(fuel) {
   return dict?.[fuel] || fuel;
 }
 function fmt(v) { return v.toFixed(1); }
-function centsToDollar(cents) { return (cents / 100).toFixed(3); }
+function centsToDollar(cents) { return (cents / 100).toFixed(2); }
 
 // Direction: gas price rising = red (cost up), falling = green (cheap)
 function trendColor(series) {
@@ -152,7 +155,7 @@ function cardHTML(feature) {
     <button class="sc-pill ${f === popupFuel ? 'on' : ''}" data-fuel="${f}">${fuelLabel(f)}</button>`).join('');
 
   const rangePills = RANGES.map(r => `
-    <button class="sc-rangepill ${r.days === popupRange ? 'on' : ''}" data-days="${r.days}">${r.label}</button>`).join('');
+    <button class="sc-rangepill ${r.days === popupRange ? 'on' : ''}" data-days="${r.days}">${t(r.key)}</button>`).join('');
 
   // mini stats
   const prices = series.map(s => s.price);
@@ -494,7 +497,7 @@ async function renderDetail() {
 
   // Range pills
   detailEl.querySelector('.sd-range').innerHTML = RANGES.map(r => `
-    <button class="sd-rangepill ${r.days === detailRange ? 'on' : ''}" data-days="${r.days}">${r.label}</button>`).join('');
+    <button class="sd-rangepill ${r.days === detailRange ? 'on' : ''}" data-days="${r.days}">${t(r.key)}</button>`).join('');
 
   // Stats
   const prices = series.map(s => s.price);
@@ -614,7 +617,7 @@ function detailChartOptions() {
       y: {
         position: 'right',
         grid: { color: '#f1f5f9' },
-        ticks: { font: { size: 10 }, callback: v => v + '¢' }
+        ticks: { font: { size: 10 }, callback: v => v.toFixed(1) + '¢' }
       }
     }
   };
