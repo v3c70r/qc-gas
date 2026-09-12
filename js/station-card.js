@@ -276,11 +276,54 @@ let detailRange = 90;
 let detailMap = null;
 let detailUpdated = '';
 
+// ── Pull-down-to-dismiss for mobile bottom sheets ──
+function initSheetDrag(sheet, handle, onDismiss) {
+  if (!sheet || !handle) return;
+  let startY = 0;
+  let dragged = false;
+
+  handle.addEventListener('touchstart', (e) => {
+    if (!sheet.classList.contains('open')) return;
+    startY = e.touches[0].clientY;
+    dragged = false;
+    sheet.classList.add('dragging');
+  }, { passive: true });
+
+  handle.addEventListener('touchmove', (e) => {
+    if (!sheet.classList.contains('open')) return;
+    const delta = e.touches[0].clientY - startY;
+    if (Math.abs(delta) > 8) dragged = true;
+    // Only downward drags are meaningful for a dismiss gesture.
+    sheet.style.transform = `translateY(${Math.max(0, delta)}px)`;
+  }, { passive: true });
+
+  const finish = () => {
+    if (!sheet.classList.contains('open')) {
+      sheet.classList.remove('dragging');
+      sheet.style.transform = '';
+      return;
+    }
+    const match = sheet.style.transform.match(/translateY\(([0-9.-]+)px\)/);
+    const offset = match ? parseFloat(match[1]) : 0;
+    sheet.classList.remove('dragging');
+    sheet.style.transform = '';
+    const threshold = Math.max(90, sheet.offsetHeight * 0.25);
+    if (dragged && offset > threshold) onDismiss();
+  };
+
+  handle.addEventListener('touchend', finish);
+  handle.addEventListener('touchcancel', () => {
+    sheet.classList.remove('dragging');
+    sheet.style.transform = '';
+  });
+}
+
 function buildDetailPanel() {
   if (detailEl) return detailEl;
   detailEl = document.createElement('div');
   detailEl.id = 'station-panel';
   detailEl.innerHTML = `
+    <div class="sd-handle" aria-hidden="true"><div class="handle-bar"></div></div>
     <div class="sd-head">
       <div class="sd-head-info">
         <div class="sd-name"></div>
@@ -329,6 +372,9 @@ function buildDetailPanel() {
   document.getElementById('map-container').appendChild(detailEl);
 
   detailEl.querySelector('.sd-close').addEventListener('click', closeStationDetail);
+
+  // On mobile the panel is a bottom sheet: allow swipe-down to dismiss.
+  initSheetDrag(detailEl, detailEl.querySelector('.sd-handle'), closeStationDetail);
 
   detailEl.querySelector('.sd-fav').addEventListener('click', () => {
     if (detailFeature) {
