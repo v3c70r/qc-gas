@@ -146,38 +146,64 @@ function initGeolocation() {
 
 function initSidebarToggle() {
   const sidebar = document.getElementById('sidebar');
-  let startY = 0;
-  let startTransform = 0;
-
   const handle = document.getElementById('sidebar-handle');
+  const PEEK = 60;
+  let startY = 0;
+  let startOffset = 0;
+  let dragged = false;
+
+  const maxOffset = () => Math.max(0, sidebar.offsetHeight - PEEK);
+  const isCollapsed = () => sidebar.classList.contains('collapsed');
 
   handle.addEventListener('touchstart', (e) => {
     startY = e.touches[0].clientY;
-    const isCollapsed = sidebar.classList.contains('collapsed');
-    startTransform = isCollapsed ? sidebar.offsetHeight - 60 : 0;
+    startOffset = isCollapsed() ? maxOffset() : 0;
+    dragged = false;
+    sidebar.classList.add('dragging');
   }, { passive: true });
 
   handle.addEventListener('touchmove', (e) => {
-    const deltaY = startY - e.touches[0].clientY;
-    const newTransform = Math.max(0, Math.min(sidebar.offsetHeight - 60, startTransform + deltaY));
-    sidebar.style.transform = `translateY(${sidebar.offsetHeight - 60 - newTransform}px)`;
+    const delta = e.touches[0].clientY - startY;
+    if (Math.abs(delta) > 8) dragged = true;
+    // 0 = expanded, maxOffset = collapsed. Follow the finger smoothly.
+    const offset = Math.max(0, Math.min(maxOffset(), startOffset + delta));
+    sidebar.style.transform = `translateY(${offset}px)`;
   }, { passive: true });
 
-  handle.addEventListener('touchend', () => {
-    const currentTransform = sidebar.style.transform;
-    const match = currentTransform.match(/translateY\(([0-9.-]+)px\)/);
-    const currentY = match ? parseFloat(match[1]) : 0;
-    if (currentY > 30) {
-      sidebar.classList.remove('collapsed');
-    } else {
+  const finishDrag = () => {
+    sidebar.classList.remove('dragging');
+    const match = sidebar.style.transform.match(/translateY\(([0-9.-]+)px\)/);
+    const offset = match ? parseFloat(match[1]) : (isCollapsed() ? maxOffset() : 0);
+    sidebar.style.transform = '';
+    if (offset > maxOffset() / 2) {
       sidebar.classList.add('collapsed');
+    } else {
+      sidebar.classList.remove('collapsed');
     }
+  };
+
+  handle.addEventListener('touchend', () => {
+    if (!dragged) {
+      // A plain tap: let the click handler perform the toggle.
+      sidebar.classList.remove('dragging');
+      sidebar.style.transform = '';
+      return;
+    }
+    finishDrag();
+  });
+
+  handle.addEventListener('touchcancel', () => {
+    sidebar.classList.remove('dragging');
     sidebar.style.transform = '';
   });
 
   // Tap-to-toggle (click without drag) on desktop + mobile
-  handle.addEventListener('click', (e) => {
-    // Only toggle if it was a quick tap (no significant drag happened)
+  handle.addEventListener('click', () => {
+    if (dragged) {
+      // Ignore the synthetic click that can follow a drag gesture.
+      dragged = false;
+      return;
+    }
     sidebar.classList.toggle('collapsed');
     sidebar.style.transform = '';
   });

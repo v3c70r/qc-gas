@@ -37,6 +37,7 @@ body {
   border-bottom: 1px solid #f1f5f9;
   cursor: grab;
   flex-shrink: 0;
+  touch-action: none;
 }
 
 #sidebar-content {
@@ -823,6 +824,7 @@ body {
   }
 
   #sidebar.collapsed { transform: translateY(calc(100% - 60px)); }
+  #sidebar.dragging { transition: none; }
   #sidebar-handle { display: block; }
 
   .search-suggestions { max-height: 38dvh; }
@@ -1320,6 +1322,10 @@ select:focus-visible {
   box-shadow: -6px 0 30px rgba(2, 6, 23, 0.12);
 }
 #station-panel.open { transform: translateX(0); }
+#station-panel.dragging { transition: none; }
+
+/* Grab handle — visible only on mobile where the panel is a bottom sheet */
+.sd-handle { display: none; }
 
 .sd-head {
   display: flex;
@@ -1588,6 +1594,13 @@ select:focus-visible {
     transform: translateY(102%);
   }
   #station-panel.open { transform: translateY(0); }
+  .sd-handle {
+    display: block;
+    flex-shrink: 0;
+    padding: 10px 16px 2px;
+    cursor: grab;
+    touch-action: none;
+  }
   .sc-card { width: 260px; }
   .sd-bigprice { font-size: 42px; }
   .sd-chart { height: 190px; }
