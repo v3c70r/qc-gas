@@ -104,7 +104,7 @@ async function runImplementer(issue, roundNote = '') {
   const s = state.load();
   const branch = `agent/${issue.number}`;
   const prompt = buildPrompt('implementer', { issue, branch, roundNote });
-  log(issue.number, `A: 开始实现 (branch=${branch}) ${roundNote ? '——' + roundNote : ''}`);
+  log(issue.number, `A: 开始实现 (branch=${branch}, model=${describeModel(IMPL)}) ${roundNote ? '——' + roundNote : ''}`);
   try {
     sh(['git', 'fetch', 'origin', BASE]);
     sh(['git', 'checkout', '-B', branch, `origin/${BASE}`]);
@@ -113,7 +113,7 @@ async function runImplementer(issue, roundNote = '') {
     sh(['git', 'checkout', branch]);
     sh(['git', 'reset', '--hard', `origin/${branch}`]);
   }
-  const out = runPi(`agent-issue-${issue.number}`, prompt, branch);
+  const out = runPi(`agent-issue-${issue.number}`, prompt, branch, IMPL);
   log(issue.number, `A: pi 输出（尾）:\n${out.split('\n').slice(-40).join('\n')}`);
 
   sh(['git', 'add', '-A']);
@@ -136,7 +136,7 @@ async function runImplementer(issue, roundNote = '') {
     }
   }
   if (pr) {
-    commentOnPr(pr.number, `🤖 **Agent A 完成实现**，等待 Agent B review。`);
+    commentOnPr(pr.number, `🤖 **Agent A 完成实现**（${describeModel(IMPL)}），等待 Agent B review（${describeModel(REVIEW)}）。`);
     s[issue.number] = { status: 'pr_open', pr: pr.number, branch, round: 0, fixes: 0, title: issue.title };
   } else {
     s[issue.number] = { status: 'pr_open', pr: null, branch, round: 0, fixes: 0, title: issue.title };
@@ -149,8 +149,8 @@ async function runImplementer(issue, roundNote = '') {
 // ── Role B: reviewer (round-trip discussion with A) ──
 async function runReviewRound(issueNum, prNum) {
   const prompt = buildPrompt('reviewer', { issue: { number: issueNum }, pr: prNum });
-  const out = runPi(`agent-review-${prNum}`, prompt, null);
-  log(issueNum, `B: review 输出:\n${out.split('\n').slice(-30).join('\n')}`);
+  const out = runPi(`agent-review-${prNum}`, prompt, null, REVIEW);
+  log(issueNum, `B: review 输出 (model=${describeModel(REVIEW)}):\n${out.split('\n').slice(-30).join('\n')}`);
   const verdict = (out.match(/RESULT:\s*(APPROVE|REQUEST_CHANGES)/i) || [])[1] || 'REQUEST_CHANGES';
   return { verdict, out };
 }
@@ -195,13 +195,28 @@ function runTester(issueNum, prNum, branch) {
 }
 
 // ── shared pi invocation ──
-function runPi(sessionId, prompt, branchHint) {
+// ── model routing per role ──
+// Agent A (implementer) uses pi's default model unless IMPL_PROVIDER/IMPL_MODEL are set.
+// Agent B (reviewer) uses a different model for an independent perspective.
+const REVIEW = {
+  provider: process.env.REVIEW_PROVIDER || 'zai-coding-cn',
+  model: process.env.REVIEW_MODEL || 'glm-5.3',
+};
+const IMPL = {
+  provider: process.env.IMPL_PROVIDER || '',
+  model: process.env.IMPL_MODEL || '',
+};
+function describeModel(m) { return m.provider && m.model ? `${m.provider}/${m.model}` : '(pi default)'; }
+
+function runPi(sessionId, prompt, branchHint, model = {}) {
   const cwdNote = branchHint ? `当前分支应为 agent 分支（已在本地 checkout）。` : '';
   const extra = prompt; // full system prompt already assembled by buildPrompt
   mkdirSync(TMP, { recursive: true });
   const pfile = path.join(TMP, `${sessionId}.prompt.md`);
   writeFileSync(pfile, extra);
   const args = ['-p', '--mode', 'text', '--session-id', sessionId,
+    ...(model.provider ? ['--provider', model.provider] : []),
+    ...(model.model ? ['--model', model.model] : []),
     '--system-prompt', `You are part of an autonomous agent loop operating on the GitHub repo (cwd). ${cwdNote} Follow the instructions below strictly.`,
     '--append-system-prompt', pfile,
     '--no-approve',
@@ -370,6 +385,21 @@ async function main() {
         : issue;
       await processIssue(typeof full === 'string' ? JSON.parse(full) : full, force);
     }
+    return;
+  }
+
+  if (cmd === 'review') {
+    // Review-only: useful for testing the reviewer model or a manual re-review.
+    //   node .agent/pipeline.mjs review --pr 12 [--issue 7]
+    const pi = process.argv.indexOf('--pr');
+    const prNum = pi >= 0 ? process.argv[pi + 1] : null;
+    if (!prNum) { console.error('usage: pipeline.mjs review --pr <number> [--issue <number>]'); process.exit(2); }
+    const ii = process.argv.indexOf('--issue');
+    const issueNum = ii >= 0 ? process.argv[ii + 1] : 'unknown';
+    console.log(`reviewing PR #${prNum} with ${describeModel(REVIEW)}`);
+    const { verdict, out } = await runReviewRound(issueNum, prNum);
+    console.log(`\nVERDICT: ${verdict}\n`);
+    console.log(out.split('\n').slice(-20).join('\n'));
     return;
   }
 

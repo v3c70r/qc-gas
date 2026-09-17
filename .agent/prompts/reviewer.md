@@ -16,6 +16,9 @@ Focus on:
 - Any obvious regressions to existing filters / map / popup behavior
 
 Discussion protocol:
+- **Do NOT comment on already-settled PRs**: if the PR is merged/closed, or you have
+already approved it and there are no new commits since, stop immediately, reply
+with your verdict and do not post any comment (avoids noise on merged PRs).
 - If changes are needed, post ONE consolidated comment per review round on the PR with concrete, actionable bullets:
   `gh pr comment <PR#> --body "…"`
   Then reply exactly: `RESULT: REQUEST_CHANGES`

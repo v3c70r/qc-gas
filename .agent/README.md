@@ -63,6 +63,25 @@ PM_WEEKLY_CAP=7 ./.agent/pm/supervisor.sh
 | **Agent B** | pi 非交互 (本机) | diff review、PR 评论讨论 |
 | **Agent C** | 脚本 + Playwright | 构建 + 功能测试 → `gh pr merge` |
 
+### 模型路由（各角色可用不同模型）
+
+| 角色 | 默认模型 | 覆盖方式 |
+|------|---------|---------|
+| Agent A 实现 | pi 默认（当前 `deepseek/deepseek-v4-pro`） | `IMPL_PROVIDER` / `IMPL_MODEL` |
+| **Agent B 审查** | **`zai-coding-cn/glm-5.3`** | `REVIEW_PROVIDER` / `REVIEW_MODEL` |
+| Agent C 测试 | 不调用 LLM（确定性 build + Playwright） | — |
+| PM Agent | `deepseek/deepseek-v4-flash` | `PM_MODEL` |
+
+用不同模型做 review 可获得**独立视角**（降低同模型自我确认偏差）。示例：
+
+```bash
+REVIEW_MODEL=glm-5.3 npm run agent:watch              # 默认即此
+IMPL_MODEL=deepseek-v4-pro REVIEW_MODEL=glm-5.3 npm run agent:watch
+node .agent/pipeline.mjs review --pr 12 --issue 7     # 单独复审某个 PR（用当前 REVIEW 模型）
+```
+
+> `zai-coding-cn` 凭证来自 `~/.pi/agent/auth.json`（`pi auth check --provider zai-coding-cn` 可验证）。
+
 **共享记忆**：PR 评论（对话）+ `.agent/logs/issue-<N>.md`（每轮状态）。
 
 ## 使用
