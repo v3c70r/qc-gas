@@ -801,3 +801,106 @@ test.describe('Dashboard Region Ranking', () => {
     expect(first).toBeLessThanOrEqual(last);
   });
 });
+
+test.describe('Fill-ups (localStorage fuel log)', () => {
+  const openDetailPanel = async (page) => {
+    await page.goto(BASE_URL);
+    await page.waitForLoadState('networkidle', { timeout: 15000 }).catch(() => {});
+    await page.waitForTimeout(3000);
+    const list = page.locator('#station-list');
+    await expect(list.locator('.list-item').first()).toBeVisible();
+    await list.locator('.list-item').first().click();
+    await expect(page.locator('.mapboxgl-popup').first()).toBeVisible();
+    await page.locator('.mapboxgl-popup [data-expand]').click();
+    await expect(page.locator('#station-panel')).toHaveClass(/open/);
+  };
+
+  test('record, persists and delete a fill-up', async ({ page }) => {
+    await openDetailPanel(page);
+
+    const addBtn = page.locator('.sd-fillup-add');
+    await addBtn.click();
+    const form = page.locator('.sd-fillup-form');
+    await expect(form).toBeVisible();
+
+    // Date and price are pre-filled; the user only fills litres.
+    await expect(page.locator('.sd-fillup-date')).not.toHaveValue('');
+    await expect(page.locator('.sd-fillup-price')).not.toHaveValue('');
+    await page.locator('.sd-fillup-liters').fill('40');
+    await page.locator('.sd-fillup-save').click();
+
+    await expect(page.locator('#fillups-list .fillup-item')).toHaveCount(1);
+    await expect(page.locator('#fillups-summary')).toContainText('$');
+
+    // Persists across a reload.
+    await page.reload();
+    await page.waitForTimeout(3000);
+    await expect(page.locator('#fillups-list .fillup-item')).toHaveCount(1);
+
+    // Delete the single record.
+    await page.locator('.fillup-delete').click();
+    await expect(page.locator('#fillups-list .fillup-item')).toHaveCount(0);
+    await expect(page.locator('#fillups-summary')).toContainText(/No fill-ups|Aucun plein|暂无加油记录/);
+  });
+
+  test('computeMonthStats sums spend, weighted avg price and savings from region average', async ({ page }) => {
+    await page.goto(BASE_URL);
+    await page.waitForLoadState('networkidle', { timeout: 15000 }).catch(() => {});
+    await page.waitForFunction(() => window.__qcGasFillups, null, { timeout: 15000 });
+
+    const result = await page.evaluate(() => {
+      const m = window.__qcGasFillups;
+      const fillups = [
+        { id: '1', stationName: 'S1', region: 'Montréal', fuel: 'regular', date: '2026-09-15', priceCents: 190, liters: 50, totalPrice: null },
+        { id: '2', stationName: 'S2', region: 'Montréal', fuel: 'regular', date: '2026-09-16', priceCents: 195, liters: 40, totalPrice: null }
+      ];
+      const history = {
+        regions: {
+          'Montréal': {
+            points: [
+              { date: '2026-09-15T12:00:00Z', regular: { avg: 200 } },
+              { date: '2026-09-16T12:00:00Z', regular: { avg: 200 } }
+            ]
+          }
+        }
+      };
+      return m.computeMonthStats(fillups, history, new Date(2026, 8, 17));
+    });
+
+    expect(result.count).toBe(2);
+    expect(result.liters).toBe(90);
+    expect(result.spendDollars).toBeCloseTo(95 + 78, 2);
+    expect(result.avgPriceCents).toBeCloseTo((190 * 50 + 195 * 40) / 90, 1);
+    expect(result.savingsKnown).toBe(true);
+    expect(result.savingsDollars).toBeCloseTo(5 + 2, 2);
+  });
+
+  test('regionAverageForDate falls back to the province overall series', async ({ page }) => {
+    await page.goto(BASE_URL);
+    await page.waitForLoadState('networkidle', { timeout: 15000 }).catch(() => {});
+    await page.waitForFunction(() => window.__qcGasFillups, null, { timeout: 15000 });
+
+    const result = await page.evaluate(() => {
+      const m = window.__qcGasFillups;
+      return m.regionAverageForDate(
+        { overall: { points: [
+          { date: '2026-09-15T06:00:00Z', regular: { avg: 205 } },
+          { date: '2026-09-15T18:00:00Z', regular: { avg: 207 } }
+        ] } },
+        'Montréal',
+        'regular',
+        '2026-09-15'
+      );
+    });
+
+    expect(result).toBeCloseTo(206, 1);
+  });
+
+  test('fill-up delete button has an accessible name', async ({ page }) => {
+    await openDetailPanel(page);
+    await page.locator('.sd-fillup-add').click();
+    await page.locator('.sd-fillup-liters').fill('10');
+    await page.locator('.sd-fillup-save').click();
+    await expect(page.locator('#fillups-list .fillup-delete').first()).toHaveAttribute('aria-label', /Delete|Supprimer|删除/);
+  });
+});
