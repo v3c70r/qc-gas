@@ -185,7 +185,9 @@ function main() {
   }
 
   if (!due) { log(`not due yet (target ${todayTarget(now).toISOString()}). skip.`); return; }
-  if (slots === 0) { log(`quota reached (today ${dailyUsed}/${CFG.dailyCap}, 7d ${weeklyUsed}/${CFG.weeklyCap}). skip.`); return; }
+  // a dry run creates nothing, so it ignores the quota (but still needs --force
+  // to bypass the schedule/window unless it is genuinely due)
+  if (slots === 0 && !DRY) { log(`quota reached (today ${dailyUsed}/${CFG.dailyCap}, 7d ${weeklyUsed}/${CFG.weeklyCap}). skip.`); return; }
   if (!windowOpen && !FORCE) {
     log(`outside DeepSeek off-peak window (${CFG.winStart}–${CFG.winEnd} UTC), now ${utcDecimalHour(now).toFixed(2)}h UTC — waiting. Use --force to override.`);
     return;
@@ -201,7 +203,7 @@ function main() {
   try {
     buildContext();
 
-    const runtime = `\n\n---\n\n# 本次运行\n- 当前时间(UTC): ${now.toISOString()}\n- 今日剩余提案名额: **${slots}**（每日上限 ${CFG.dailyCap}，7 天滚动上限 ${CFG.weeklyCap}；今日已用 ${dailyUsed}，近 7 天已用 ${weeklyUsed}）\n- 目标：**只做 1 个最有价值的提案**（深度优先，宁可 0 个也不要凑数）\n- 你的长期记忆文件: \`docs/product-review.md\`（在工作目录内，请更新它）\n- 上下文包(绝对路径): \`${CONTEXT_FILE}\`\n- 工作目录: \`${WT}\`（本仓库的独立 worktree，可读全部代码）\n- 调研工具: \`.agents/skills/brave-search/search.sh\` / \`fetch.sh\`（BRAVE_API_KEY 已在环境变量中），以及 \`gh search repos\`\n${DRY ? '- ⚠️ DRY RUN：**不要**创建任何 GitHub issue，只在最终输出里列出候选提案。\n' : ''}`;
+    const runtime = `\n\n---\n\n# 本次运行\n- 当前时间(UTC): ${now.toISOString()}\n- 今日剩余提案名额: **${DRY ? Math.max(slots, 1) : slots}**${DRY ? '（DRY RUN 演练：请列出候选但不要创建）' : ''}（每日上限 ${CFG.dailyCap}，7 天滚动上限 ${CFG.weeklyCap}；今日已用 ${dailyUsed}，近 7 天已用 ${weeklyUsed}）\n- 目标：**只做 1 个最有价值的提案**（深度优先，宁可 0 个也不要凑数）\n- 你的长期记忆文件: \`docs/product-review.md\`（在工作目录内，请更新它）\n- 上下文包(绝对路径): \`${CONTEXT_FILE}\`\n- 工作目录: \`${WT}\`（本仓库的独立 worktree，可读全部代码）\n- 调研工具: \`.agents/skills/brave-search/search.sh\` / \`fetch.sh\`（BRAVE_API_KEY 已在环境变量中），以及 \`gh search repos\`\n${DRY ? '- ⚠️ DRY RUN：**不要**创建任何 GitHub issue，只在最终输出里列出候选提案。\n' : ''}`;
 
     const promptFile = path.join(PM_DIR, 'prompt.md');
     const piArgs = [
