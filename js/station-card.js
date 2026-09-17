@@ -5,7 +5,8 @@
 import { t, tf, translations, getLanguage, onLanguageChange } from './i18n.js';
 import { getStationHistory } from './history.js';
 import { loadChartJS } from './chartjs.js';
-import { isFavorite, toggleFavorite, STAR_ICON } from './favorites.js';
+import { isFavorite, toggleFavorite, stationId, STAR_ICON } from './favorites.js';
+import { addFillup, localDateKey } from './fillups.js';
 import { MONTREAL_CENTER } from './map.js';
 import { haversineDistance } from './stats.js';
 
@@ -198,6 +199,7 @@ function cardHTML(feature) {
       <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M8 3H5a2 2 0 0 0-2 2v3m18 0V5a2 2 0 0 0-2-2h-3m0 18h3a2 2 0 0 0 2-2v-3M3 16v3a2 2 0 0 0 2 2h3"/></svg>
       ${t('expand')}
     </button>
+    <button class="sc-fillup" data-fillup-add>⛽ ${t('fillupRecordHere')}</button>
     ${popupUpdated ? `<div class="sc-updated">${popupUpdated}</div>` : ''}
   </div>`;
 }
@@ -264,6 +266,12 @@ function wireCardEvents(feature, map) {
       if (activePopup) activePopup.remove();
       activePopup = null;
       openStationDetail(currentFeature, map);
+    }
+    const fillup = e.target.closest('[data-fillup-add]');
+    if (fillup && activePopup && currentFeature) {
+      if (activePopup) activePopup.remove();
+      activePopup = null;
+      openStationDetail(currentFeature, map).then(() => openFillupForm());
     }
   });
 }
@@ -367,6 +375,40 @@ function buildDetailPanel() {
           <b class="sd-trip-distance-value">—</b>
         </div>
       </div>
+      <div class="sd-fillups">
+        <div class="sd-fillups-head">
+          <span class="sd-fillups-title">⛽ ${t('fillups')}</span>
+        </div>
+        <button class="sd-fillup-add" data-fillup-add>${t('fillupRecordHere')}</button>
+        <div class="sd-fillup-form" id="sd-fillup-form" hidden>
+          <div class="sd-fillup-grid">
+            <label class="sd-fillup-field">
+              <span class="sd-fillup-label">${t('fillupDate')}</span>
+              <input type="date" class="sd-fillup-date">
+            </label>
+            <label class="sd-fillup-field">
+              <span class="sd-fillup-label">${t('fillupFuel')}</span>
+              <select class="sd-fillup-fuel"></select>
+            </label>
+            <label class="sd-fillup-field">
+              <span class="sd-fillup-label">${t('fillupPrice')}</span>
+              <input type="number" class="sd-fillup-price" inputmode="decimal" min="0" step="0.1" placeholder="¢/L">
+            </label>
+            <label class="sd-fillup-field">
+              <span class="sd-fillup-label">${t('fillupLiters')}</span>
+              <input type="number" class="sd-fillup-liters" inputmode="decimal" min="0" step="0.01" placeholder="L">
+            </label>
+            <label class="sd-fillup-field">
+              <span class="sd-fillup-label">${t('fillupTotal')}</span>
+              <input type="number" class="sd-fillup-total" inputmode="decimal" min="0" step="0.01" placeholder="$">
+            </label>
+          </div>
+          <div class="sd-fillup-actions">
+            <button class="sd-fillup-save">${t('fillupSave')}</button>
+            <button class="sd-fillup-cancel">${t('fillupCancel')}</button>
+          </div>
+        </div>
+      </div>
       <div class="sd-actions">
         <button class="sd-nav"></button>
         <div class="sd-updated"></div>
@@ -421,9 +463,98 @@ function buildDetailPanel() {
     updateTripEstimator();
   });
 
+  // Fill-up logging (localStorage, no backend)
+  detailEl.querySelector('.sd-fillup-add').addEventListener('click', () => openFillupForm());
+  detailEl.querySelector('.sd-fillup-cancel').addEventListener('click', () => {
+    detailEl.querySelector('.sd-fillup-form').hidden = true;
+  });
+  const fillupFuelSel = detailEl.querySelector('.sd-fillup-fuel');
+  fillupFuelSel.addEventListener('change', () => {
+    if (!detailFeature) return;
+    const price = detailFeature.properties[fillupFuelSel.value + '_price'];
+    if (price != null) detailEl.querySelector('.sd-fillup-price').value = price;
+  });
+  detailEl.querySelector('.sd-fillup-save').addEventListener('click', () => saveFillup());
+
   const mapEl = document.getElementById('map-container');
   mapEl.classList.add('panel-open');
   return detailEl;
+}
+
+// ── Fill-up logging ──
+function openFillupForm() {
+  if (!detailFeature || !detailEl) return;
+  const props = detailFeature.properties;
+  const form = detailEl.querySelector('.sd-fillup-form');
+  if (!form) return;
+
+  const available = FUEL_KEYS.filter(f => props[f + '_price'] != null);
+  const fuelSel = detailEl.querySelector('.sd-fillup-fuel');
+  fuelSel.innerHTML = available.map(f => `<option value="${f}">${fuelLabel(f)}</option>`).join('');
+  const fuel = available.includes(detailFuel) ? detailFuel : (available[0] || 'regular');
+  fuelSel.value = fuel;
+
+  detailEl.querySelector('.sd-fillup-date').value = localDateKey(new Date()) || '';
+  detailEl.querySelector('.sd-fillup-price').value = props[fuel + '_price'] != null ? props[fuel + '_price'] : '';
+  detailEl.querySelector('.sd-fillup-liters').value = '';
+  detailEl.querySelector('.sd-fillup-total').value = '';
+  form.hidden = false;
+}
+
+function saveFillup() {
+  if (!detailFeature || !detailEl) return;
+  const props = detailFeature.properties;
+  const form = detailEl.querySelector('.sd-fillup-form');
+  const dateInput = detailEl.querySelector('.sd-fillup-date');
+  const fuelSel = detailEl.querySelector('.sd-fillup-fuel');
+  const priceInput = detailEl.querySelector('.sd-fillup-price');
+  const litersInput = detailEl.querySelector('.sd-fillup-liters');
+  const totalInput = detailEl.querySelector('.sd-fillup-total');
+
+  const date = dateInput.value;
+  const fuel = fuelSel.value;
+  const priceCents = Number(priceInput.value);
+  const litersRaw = litersInput.value.trim();
+  const totalRaw = totalInput.value.trim();
+  const liters = litersRaw === '' ? null : Number(litersRaw);
+  const totalPrice = totalRaw === '' ? null : Number(totalRaw);
+
+  if (!date) { dateInput.focus(); return; }
+  if (!Number.isFinite(priceCents) || priceCents <= 0) { priceInput.focus(); return; }
+  if ((liters == null || !Number.isFinite(liters) || liters <= 0) &&
+      (totalPrice == null || !Number.isFinite(totalPrice) || totalPrice <= 0)) {
+    litersInput.focus();
+    return;
+  }
+
+  const entry = {
+    stationId: stationId(detailFeature),
+    stationName: props.name || props.brand || '',
+    brand: props.brand || '',
+    region: props.region || '',
+    fuel,
+    date,
+    priceCents,
+    liters: (liters != null && Number.isFinite(liters) && liters > 0) ? liters : null,
+    totalPrice: (totalPrice != null && Number.isFinite(totalPrice) && totalPrice > 0) ? totalPrice : null
+  };
+
+  if (addFillup(entry)) form.hidden = true;
+}
+
+function updateFillupLabels() {
+  if (!detailEl) return;
+  const labels = detailEl.querySelectorAll('.sd-fillup-label');
+  const keys = ['fillupDate', 'fillupFuel', 'fillupPrice', 'fillupLiters', 'fillupTotal'];
+  labels.forEach((label, i) => { if (keys[i]) label.textContent = t(keys[i]); });
+  const add = detailEl.querySelector('.sd-fillup-add');
+  if (add) add.textContent = t('fillupRecordHere');
+  const title = detailEl.querySelector('.sd-fillups-title');
+  if (title) title.innerHTML = `⛽ ${t('fillups')}`;
+  const save = detailEl.querySelector('.sd-fillup-save');
+  if (save) save.textContent = t('fillupSave');
+  const cancel = detailEl.querySelector('.sd-fillup-cancel');
+  if (cancel) cancel.textContent = t('fillupCancel');
 }
 
 export function closeStationDetail() {
@@ -513,6 +644,7 @@ async function renderDetail() {
     <div class="sd-stat ${lastCls}"><span>${t('lastPrice')}</span><b>${lastChange > 0 ? '+' : lastChange < 0 ? '−' : ''}${fmt(Math.abs(lastChange))}</b></div>`;
 
   updateTripEstimator();
+  updateFillupLabels();
 
   // Navigate + updated
   const isIOS = /iPhone|iPad|iPod/.test(navigator.userAgent);

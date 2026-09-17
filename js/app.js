@@ -4,6 +4,7 @@ import { initFavorites } from './stats.js';
 import { getStoredLanguage, createLanguageSelector, applyTranslations } from './i18n.js';
 import { togglePanel } from './dashboard.js';
 import { loadHistoryData } from './history.js';
+import { initFillups } from './fillups.js';
 import { initSearch, clearSearch, isSearchActive } from './search.js';
 
 function initKeyboardShortcuts() {
@@ -66,6 +67,7 @@ function initApp() {
   initSidebarToggle();
   initSearch();
   initFavorites();
+  initFillups();
   initKeyboardShortcuts();
 
   // Warm the history cache (used by station cards + trends dashboard)

@@ -75,7 +75,21 @@ export const translations = {
     oneWay: '单程',
     roundTrip: '往返',
     tripCost: '估算油费',
-    tripDistance: '行程距离'
+    tripDistance: '行程距离',
+    fillups: '我的加油记录',
+    fillupRecordHere: '我在这里加了油',
+    fillupDate: '日期',
+    fillupFuel: '燃油类型',
+    fillupPrice: '单价 (¢/L)',
+    fillupLiters: '升数 (L)',
+    fillupTotal: '总价（可选, $）',
+    fillupSave: '保存',
+    fillupCancel: '取消',
+    fillupMonthSpend: '本月支出',
+    fillupAvgPrice: '实付均价',
+    fillupSavings: '累计节省',
+    fillupNoRecords: '暂无加油记录',
+    fillupDelete: '删除记录'
   },
   'en-CA': {
     results: 'Results',
@@ -153,7 +167,21 @@ export const translations = {
     oneWay: 'One way',
     roundTrip: 'Round trip',
     tripCost: 'Estimated fuel cost',
-    tripDistance: 'Trip distance'
+    tripDistance: 'Trip distance',
+    fillups: 'My fill-ups',
+    fillupRecordHere: 'I filled up here',
+    fillupDate: 'Date',
+    fillupFuel: 'Fuel',
+    fillupPrice: 'Price (¢/L)',
+    fillupLiters: 'Litres (L)',
+    fillupTotal: 'Total (optional, $)',
+    fillupSave: 'Save',
+    fillupCancel: 'Cancel',
+    fillupMonthSpend: 'Month spend',
+    fillupAvgPrice: 'Avg paid price',
+    fillupSavings: 'Savings',
+    fillupNoRecords: 'No fill-ups recorded',
+    fillupDelete: 'Delete record'
   },
   'fr-CA': {
     results: 'Résultats',
@@ -231,7 +259,21 @@ export const translations = {
     oneWay: 'Aller simple',
     roundTrip: 'Aller-retour',
     tripCost: 'Coût estimé du carburant',
-    tripDistance: 'Distance du trajet'
+    tripDistance: 'Distance du trajet',
+    fillups: 'Mes pleins',
+    fillupRecordHere: 'J\'ai fait le plein ici',
+    fillupDate: 'Date',
+    fillupFuel: 'Carburant',
+    fillupPrice: 'Prix (¢/L)',
+    fillupLiters: 'Litres (L)',
+    fillupTotal: 'Total (optionnel, $)',
+    fillupSave: 'Enregistrer',
+    fillupCancel: 'Annuler',
+    fillupMonthSpend: 'Dépenses du mois',
+    fillupAvgPrice: 'Prix moyen payé',
+    fillupSavings: 'Économies',
+    fillupNoRecords: 'Aucun plein enregistré',
+    fillupDelete: 'Supprimer'
   }
 };
 
