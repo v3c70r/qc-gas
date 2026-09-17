@@ -39,7 +39,8 @@ const MONTREAL_CENTER = [-73.7, 45.45];
 
 let map;
 let currentStations = [];
-export const rangeRadius = { value: 5 }; // km, shared mutable reference
+// Must match the default `.radius-btn.active` in index.html (25 km)
+export const rangeRadius = { value: 25 }; // km, shared mutable reference
 let pulseAnimationId = null;
 
 // ── Fuel selection helpers ──
