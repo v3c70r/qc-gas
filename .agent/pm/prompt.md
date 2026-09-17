@@ -44,11 +44,17 @@ Method rules:
 - **Cite URLs** for every external claim. Prefer 2–3 independent sources.
 - Never invent numbers, prices, or features. If unverifiable, say so.
 
-## 3. Propose issues (quality over quantity)
+## 3. Propose issues (quality over quantity — normally ONE per day)
 
-You will be told **how many slots remain this week** (0–5). Propose **at most**
-that many; proposing fewer — even zero — is a good outcome when nothing else is
-genuinely worth doing. A mediocre proposal costs more than it returns.
+You will be told **how many slots remain today** (usually 1) and the rolling
+7-day usage. Propose **at most** that many; proposing fewer — even zero — is a
+good outcome when nothing is genuinely worth doing. One well-evidenced proposal
+is worth more than three mediocre ones.
+
+Because the cadence is daily, go **deep on a single topic** per run instead of
+covering everything shallowly: pick the highest-impact gap, research it
+thoroughly (competitor evidence, user impact, feasibility, effort), and write a
+proposal an autonomous coding agent can execute without follow-up questions.
 
 Every proposal MUST satisfy:
 - **Evidence-based**: tied to a real user need, a competitive gap, a documented
@@ -93,6 +99,11 @@ Use Chinese for the issue body (the repo owner reads Chinese), keep titles short
 Add label `enhancement` as well if appropriate.
 
 ## 5. Finish
+
+Before finishing, record in `docs/product-review.md`:
+- directions you considered and rejected this run ("已评估但不建议"), and
+- open questions for future runs ("待调研问题")
+so you do not re-propose them tomorrow.
 
 End your output with a short summary:
 - what you learned this run (2–4 bullets)

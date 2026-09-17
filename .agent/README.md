@@ -19,6 +19,41 @@ A human-in-the-loop, multi-agent system driven by GitHub **issues** and **PRs**.
 └────────────────────────────────────────────────────────────┘
 ```
 
+## PM Agent（Product Manager，每日提案）
+
+除了上面的实现流水线，本仓库还有一个**独立的产品经理 agent**，负责竞品调研与提案：
+
+```
+tmux: pm ── .agent/pm/supervisor.sh ── node .agent/pm/run.mjs
+                                        │
+              ┌─────────────────────────┼──────────────────────────┐
+              ▼                         ▼                          ▼
+   docs/product-review.md       Brave 检索 + gh search      创建 pm-proposal issue
+   （长期产品认知，每周更新）    （竞品/开放数据/商店评论）   （每日 ≤1，等你 /approve）
+```
+
+| 项 | 默认值 | 说明 |
+|---|---|---|
+| 模型 | `deepseek/deepseek-v4-flash` | 最便宜；可用 `PM_MODEL` 覆盖 |
+| 时间 | 每日 17:00 UTC | **只在 DeepSeek 折扣时段 16:30–00:30 UTC 内实际执行**（`--force` 可越过） |
+| 每日上限 | `PM_DAILY_CAP=1` | 每天最多 1 条提案 |
+| 周上限 | `PM_WEEKLY_CAP=5` | 7 天滚动上限，保护质量（想每天都有可设为 7） |
+| 产出 | GitHub issue + `pm-proposal` 标签 | 现有 triage 会自动 @ 你请 `/approve` |
+| 记忆 | `docs/product-review.md` | 产品能力/优势/劣势/竞品格局，跨天累积 |
+| 隔离 | `.agent/pm/wt/`（独立 worktree） | 不干扰实现流水线；只写该文档 + 建 issue，不改代码 |
+
+```bash
+# 常用命令
+node .agent/pm/run.mjs --check            # 是否到期 / 窗口是否开着 / 剩余名额
+node .agent/pm/run.mjs --dry-run --force  # 演练（不建 issue、不占名额）
+node .agent/pm/run.mjs --force            # 立即产出提案（占当日名额）
+
+# 配置覆盖（示例：允许 7 天 7 条）
+PM_WEEKLY_CAP=7 ./.agent/pm/supervisor.sh
+```
+
+日志：`.agent/pm/supervisor.log`（调度）、`.agent/pm/logs/<date>.md`（每次运行完整输出）、`.agent/pm/state.json`（上次运行/产出）。
+
 ## 角色划分
 
 | 角色 | 执行 | 说明 |
