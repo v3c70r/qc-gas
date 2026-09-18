@@ -184,38 +184,49 @@ def update_station_history(store, snapshot, today, cutoff_day):
     day keys and ``s[coord][fuel]`` is a list aligned to ``t`` (``null`` when
     that station did not report on that day). This keeps repeated coordinate
     keys out of the daily payload.
+
+    Days are inserted in sorted order *and* existing arrays are reindexed onto
+    that new day list, so an out-of-order source date can never shift older
+    recorded values out of alignment.
     """
     old_t = list(store.get('t') or [])
-    if today not in old_t:
-        old_t.append(today)
-    old_t.sort()
-    n = len(old_t)
-
     old_s = store.get('s') or {}
-    for site in old_s.values():
-        for arr in site.values():
-            if len(arr) < n:
-                arr.extend([None] * (n - len(arr)))
 
-    idx = old_t.index(today)
+    new_t = sorted(set(old_t) | {today})
+    old_index = {day: i for i, day in enumerate(old_t)}
+    n = len(new_t)
+    idx = new_t.index(today)
+
+    # Reindex existing arrays onto the new sorted day list first. This is the
+    # fix for out-of-order source timestamps: inserting a middle day must not
+    # shift the values that belong to the days after it.
+    aligned_s = {}
+    for key, site in old_s.items():
+        new_site = {}
+        for short, arr in site.items():
+            new_site[short] = [
+                arr[old_index[d]] if d in old_index and old_index[d] < len(arr) else None
+                for d in new_t
+            ]
+        aligned_s[key] = new_site
+
+    # Apply today's snapshot at its sorted position.
     for key, rec in snapshot.items():
-        site = old_s.get(key)
+        site = aligned_s.get(key)
         if site is None:
             site = {}
-            old_s[key] = site
+            aligned_s[key] = site
         for short, val in rec.items():
             arr = site.get(short)
             if arr is None:
                 arr = [None] * n
                 site[short] = arr
-            elif len(arr) < n:
-                arr.extend([None] * (n - len(arr)))
             arr[idx] = val
 
-    new_t = [d for d in old_t if d >= cutoff_day]
-    keep = [i for i, d in enumerate(old_t) if d >= cutoff_day]
+    new_t_pruned = [d for d in new_t if d >= cutoff_day]
+    keep = [i for i, d in enumerate(new_t) if d >= cutoff_day]
     new_s = {}
-    for key, site in old_s.items():
+    for key, site in aligned_s.items():
         new_site = {}
         for short, arr in site.items():
             new_arr = [arr[i] if i < len(arr) else None for i in keep]
@@ -226,7 +237,7 @@ def update_station_history(store, snapshot, today, cutoff_day):
 
     return {
         'v': 1,
-        't': new_t,
+        't': new_t_pruned,
         's': new_s,
         'tiers': {
             'daily_days': STATION_DAILY_DAYS,
