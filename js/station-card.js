@@ -3,7 +3,7 @@
 // Popup = compact card; side panel = expanded card (Chart.js area chart).
 
 import { t, tf, translations, getLanguage, onLanguageChange } from './i18n.js';
-import { getStationHistory } from './history.js';
+import { getStationHistory, loadStationHistoryData } from './history.js';
 import { loadChartJS } from './chartjs.js';
 import { isFavorite, toggleFavorite, stationId, STAR_ICON } from './favorites.js';
 import { addFillup, localDateKey } from './fillups.js';
@@ -53,7 +53,8 @@ function saveTripPrefs() {
 }
 
 // Keep open popup/detail star labels in sync when the language changes.
-onLanguageChange(() => {
+onLanguageChange(async () => {
+  await loadStationHistoryData().catch(() => {});
   if (activePopup && currentFeature) {
     activePopup.setHTML(cardHTML(currentFeature));
   }
@@ -120,6 +121,12 @@ function sparklinePath(series, w, h) {
 
 function sparklineSVG(series, color) {
   const w = 260, h = 72;
+  if (series.length === 1) {
+    return `
+    <svg viewBox="0 0 ${w} ${h}" width="100%" height="72" preserveAspectRatio="none" aria-hidden="true">
+      <circle cx="${w / 2}" cy="${h / 2}" r="3.5" fill="${color}"/>
+    </svg>`;
+  }
   const path = sparklinePath(series, w, h);
   const area = `${path} L ${w - 4} ${h - 1} L 4 ${h - 1} Z`;
   const gid = 'sl_' + Math.random().toString(36).slice(2, 8);
@@ -148,6 +155,7 @@ function cardHTML(feature) {
 
   const series = getStationHistory(feature, popupFuel, popupRange) || [];
   const color = trendColor(series);
+  const hasTrend = series.length >= 2;
   const { diff, pct, up, flat } = changeInfo(series);
   const priceVal = props[popupFuel + '_price'];
   const available = FUEL_KEYS.filter(f => props[f + '_price'] != null);
@@ -167,6 +175,12 @@ function cardHTML(feature) {
   const sign = flat ? '' : (up ? '+' : '−');
   const badgeCls = flat ? 'flat' : up ? 'up' : 'down';
   const delta = flat ? '0,0' : `${sign}${fmt(Math.abs(diff))},${sign}${fmt(Math.abs(pct))}`;
+  const changeHTML = hasTrend ? `
+      <div class="sc-change ${badgeCls}">
+        <span class="sc-arrow">${arrow}</span>
+        <span class="sc-delta">${delta.split(',')[0]}</span>
+        <span class="sc-pct">(${delta.split(',')[1] || '0.0'}%)</span>
+      </div>` : '';
 
   const fav = isFavorite(feature);
   return `
@@ -181,18 +195,14 @@ function cardHTML(feature) {
     ${available.length > 1 ? `<div class="sc-pills">${fuelPills}</div>` : ''}
     <div class="sc-quote">
       <div class="sc-price">${priceVal != null ? fmt(priceVal) : '—'}<span class="sc-unit">¢</span></div>
-      <div class="sc-change ${badgeCls}">
-        <span class="sc-arrow">${arrow}</span>
-        <span class="sc-delta">${delta.split(',')[0]}</span>
-        <span class="sc-pct">(${delta.split(',')[1] || '0.0'}%)</span>
-      </div>
+      ${changeHTML}
     </div>
     <div class="sc-range">${rangePills}</div>
-    ${prices.length ? `<div class="sc-chart">${sparklineSVG(series, color)}</div>` : `<div class="sc-empty">${t('noHistory')}</div>`}
-    ${prices.length ? `
+    ${series.length ? `<div class="sc-chart">${sparklineSVG(series, color)}</div>` : `<div class="sc-empty">${t('noHistory')}</div>`}
+    ${priceVal != null ? `
     <div class="sc-mini-stats">
-      <div class="sc-mini"><span>${t('high')}</span><b>${fmt(hi)}</b></div>
-      <div class="sc-mini"><span>${t('low')}</span><b>${fmt(lo)}</b></div>
+      <div class="sc-mini"><span>${t('high')}</span><b>${hi != null ? fmt(hi) : '—'}</b></div>
+      <div class="sc-mini"><span>${t('low')}</span><b>${lo != null ? fmt(lo) : '—'}</b></div>
       <div class="sc-mini"><span>≈ $/L</span><b>${centsToDollar(priceVal)}</b></div>
     </div>` : ''}
     <button class="sc-expand" data-expand>
@@ -209,7 +219,7 @@ function escapeHtml(s) {
 }
 
 // ── Open the popup card for a station ──
-export function showStationCard(feature, map, updatedText = '') {
+export async function showStationCard(feature, map, updatedText = '') {
   const props = feature.properties;
   popupUpdated = updatedText || '';
   // Respect the fuel chosen in the sidebar filter
@@ -218,6 +228,8 @@ export function showStationCard(feature, map, updatedText = '') {
     : (props.regular_price != null ? 'regular' : FUEL_KEYS.find(f => props[f + '_price'] != null) || 'regular');
   popupRange = 7;
   currentFeature = feature;
+
+  await loadStationHistoryData().catch(() => {});
 
   if (activePopup) { activePopup.remove(); }
 
@@ -352,7 +364,10 @@ function buildDetailPanel() {
         <div class="sd-change-row"></div>
       </div>
       <div class="sd-range"></div>
-      <div class="sd-chart"><canvas id="station-chart"></canvas></div>
+      <div class="sd-chart">
+        <canvas id="station-chart"></canvas>
+        <div class="sd-empty" id="station-chart-empty" hidden>${t('noHistory')}</div>
+      </div>
       <div class="sd-stats"></div>
       <div class="sd-trip">
         <div class="sd-trip-head"></div>
@@ -584,11 +599,13 @@ export async function openStationDetail(feature, map, updatedText = '') {
   const panel = buildDetailPanel();
   panel.classList.add('open');
   document.getElementById('map-container').classList.add('panel-open');
+  await loadStationHistoryData().catch(() => {});
   renderDetail();
 }
 
 async function renderDetail() {
   if (!detailFeature) return;
+  await loadStationHistoryData().catch(() => {});
   const props = detailFeature.properties;
   const available = FUEL_KEYS.filter(f => props[f + '_price'] != null);
 
@@ -613,6 +630,7 @@ async function renderDetail() {
   const series = getStationHistory(detailFeature, detailFuel, detailRange) || [];
   const priceVal = props[detailFuel + '_price'];
   const color = trendColor(series);
+  const hasTrend = series.length >= 2;
   const { diff, pct, up, flat } = changeInfo(series);
 
   // Big quote
@@ -621,8 +639,8 @@ async function renderDetail() {
 
   const arrow = flat ? '' : up ? '▲' : '▼';
   const sign = flat ? '' : up ? '+' : '−';
-  detailEl.querySelector('.sd-change-row').className = 'sd-change-row ' + (flat ? 'flat' : up ? 'up' : 'down');
-  detailEl.querySelector('.sd-change-row').innerHTML = priceVal != null
+  detailEl.querySelector('.sd-change-row').className = 'sd-change-row ' + (hasTrend ? (flat ? 'flat' : up ? 'up' : 'down') : '');
+  detailEl.querySelector('.sd-change-row').innerHTML = hasTrend && priceVal != null
     ? `<span class="sd-arrow">${arrow}</span> <b>${sign}${fmt(Math.abs(diff))}</b> <span class="sd-pct">${sign}${fmt(Math.abs(pct))}%</span> <span class="sd-hint">(${t('sinceStart')})</span>`
     : '';
 
@@ -635,13 +653,13 @@ async function renderDetail() {
   const lo = prices.length ? Math.min(...prices) : null;
   const hi = prices.length ? Math.max(...prices) : null;
   const avg = prices.length ? prices.reduce((a, b) => a + b, 0) / prices.length : null;
-  const lastChange = series.length >= 2 ? series[series.length - 1].price - series[series.length - 2].price : 0;
-  const lastCls = lastChange > 0 ? 'up' : lastChange < 0 ? 'down' : '';
+  const lastChange = series.length >= 2 ? series[series.length - 1].price - series[series.length - 2].price : null;
+  const lastCls = lastChange == null ? '' : lastChange > 0 ? 'up' : lastChange < 0 ? 'down' : '';
   detailEl.querySelector('.sd-stats').innerHTML = `
     <div class="sd-stat"><span>${t('low')}</span><b>${lo != null ? fmt(lo) : '—'}</b></div>
     <div class="sd-stat"><span>${t('high')}</span><b>${hi != null ? fmt(hi) : '—'}</b></div>
     <div class="sd-stat"><span>${t('avg')}</span><b>${avg != null ? fmt(avg) : '—'}</b></div>
-    <div class="sd-stat ${lastCls}"><span>${t('lastPrice')}</span><b>${lastChange > 0 ? '+' : lastChange < 0 ? '−' : ''}${fmt(Math.abs(lastChange))}</b></div>`;
+    <div class="sd-stat ${lastCls}"><span>${t('lastPrice')}</span><b>${lastChange == null ? '—' : `${lastChange > 0 ? '+' : lastChange < 0 ? '−' : ''}${fmt(Math.abs(lastChange))}`}</b></div>`;
 
   updateTripEstimator();
   updateFillupLabels();
@@ -756,7 +774,23 @@ function detailChartOptions() {
 }
 
 function updateDetailChart(series, color) {
-  if (!detailChart || !series || !series.length) return;
+  if (!detailChart) return;
+  const canvas = detailEl?.querySelector('#station-chart');
+  const empty = detailEl?.querySelector('#station-chart-empty');
+
+  if (!series || !series.length) {
+    // No real recorded history: show the empty-state copy, not an empty axis.
+    if (canvas) canvas.style.display = 'none';
+    if (empty) empty.hidden = false;
+    detailChart.data.labels = [];
+    detailChart.data.datasets[0].data = [];
+    detailChart.update();
+    return;
+  }
+
+  if (canvas) canvas.style.display = '';
+  if (empty) empty.hidden = true;
+
   const daily = detailRange > 7;
   const labels = series.map(s => {
     const d = new Date(s.date);
@@ -768,6 +802,8 @@ function updateDetailChart(series, color) {
   detailChart.data.datasets[0].data = series.map(s => s.price);
   detailChart.data.datasets[0].borderColor = color;
   detailChart.data.datasets[0].backgroundColor = color + '22';
+  // A short/single-point series should still be visible as points.
+  detailChart.data.datasets[0].pointRadius = series.length < 7 ? 3 : 0;
   // dynamic y range padding
   const prices = series.map(s => s.price);
   const min = Math.min(...prices), max = Math.max(...prices), span = max - min || 1;

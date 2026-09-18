@@ -1,9 +1,13 @@
-// ── History data loader + per-station series synthesizer ──
+// ── History data loaders + region/station series helpers ──
 
 let historyData = null;
 let historyPromise = null;
 
+let stationHistoryData = null;
+let stationHistoryPromise = null;
+
 const DAY_MS = 24 * 60 * 60 * 1000;
+const FUEL_SHORT = { regular: 'g', super: 's', diesel: 'd' };
 
 export async function loadHistoryData() {
   if (historyPromise) return historyPromise;
@@ -12,6 +16,15 @@ export async function loadHistoryData() {
     .then(d => { historyData = d; return d; })
     .catch(err => { historyPromise = null; throw err; });
   return historyPromise;
+}
+
+export async function loadStationHistoryData() {
+  if (stationHistoryPromise) return stationHistoryPromise;
+  stationHistoryPromise = fetch('data/history/station-history.json')
+    .then(r => r.json())
+    .then(d => { stationHistoryData = d; return d; })
+    .catch(err => { stationHistoryPromise = null; throw err; });
+  return stationHistoryPromise;
 }
 
 function tsOf(entry) {
@@ -30,7 +43,7 @@ function regionPoints(region) {
 /**
  * Filter a list of intraday samples to the last `days` calendar days,
  * relative to the newest sample in the list (NOT the wall-clock "now").
- * This keeps the range buttons meaningful for synthetic historical data.
+ * This keeps the range buttons meaningful for historical data.
  */
 export function filterByDays(points, days) {
   const list = points || [];
@@ -41,79 +54,52 @@ export function filterByDays(points, days) {
   return sorted.filter(p => tsOf(p) >= cutoff);
 }
 
-// Deterministic pseudo-noise per station (stable across calls)
-function noiseFor(seed, i) {
-  const x = Math.sin((seed + i) * 12.9898) * 43758.5453;
-  return (x - Math.floor(x)) * 2 - 1; // [-1, 1]
+/**
+ * Stable station key derived from the feature coordinates. The recorder stores
+ * no station id, so the frontend matches recorded station history back to the
+ * currently rendered feature using the same 5-decimal coordinate key.
+ */
+function stationKey(feature) {
+  const coords = feature?.geometry?.coordinates;
+  if (!coords || coords.length < 2) return null;
+  const lng = Number(coords[0]);
+  const lat = Number(coords[1]);
+  if (!Number.isFinite(lng) || !Number.isFinite(lat)) return null;
+  return `${lng.toFixed(5)},${lat.toFixed(5)}`;
 }
 
 /**
- * Build a plausible intraday price series for one station, anchored to its
- * REAL current price and shaped by its region's trend. Oldest → newest.
- * Returns [{ date, price }] (full timestamps) or null when unavailable.
+ * Return the REAL recorded price history for one station, oldest → newest.
+ * Returns [{ date, price }] when recorded data exists for the requested
+ * window, or null when the station has no recorded history yet. No synthetic
+ * data, no offsets, and no backwards extrapolation are applied.
  */
 export function getStationHistory(feature, fuel = 'regular', days = 90) {
-  if (!historyData) return null;
-  const props = feature.properties;
-  const key = fuel + '_price';
-  const current = props[key];
-  if (current == null) return null;
+  if (!stationHistoryData || !feature) return null;
+  const short = FUEL_SHORT[fuel];
+  if (!short) return null;
 
-  const rd = regionPoints(props.region);
-  if (!rd || rd.length === 0) return null;
+  const key = stationKey(feature);
+  const site = key ? stationHistoryData.s && stationHistoryData.s[key] : null;
+  const values = site && site[short];
+  const dates = stationHistoryData.t || [];
+  if (!values || !dates.length) return null;
 
-  const last = rd[rd.length - 1];
-  const avgNow = last && last[fuel] ? last[fuel].avg : null;
-  // Station's deviation from its region average — kept constant over time
-  const offset = avgNow != null ? current - avgNow : 0;
-
-  const seed = (props.name || '').length * 3 + (props.brand || '').length * 7 + 11;
-  let avail = filterByDays(rd, days);
-
-  // When the requested range predates the available history, extrapolate a
-  // flat-ish backwards tail so 6M / 1A ranges still show a full window.
-  const intervalHours = historyData.metadata?.interval_hours || 6;
-  const intervalMs = intervalHours * 60 * 60 * 1000;
-
-  const out = [];
-
-  if (avail.length > 0) {
-    const end = tsOf(avail[avail.length - 1]);
-    const cutoff = end - days * DAY_MS;
-    const first = avail[0];
-    const firstTs = tsOf(first);
-
-    if (firstTs - cutoff > intervalMs) {
-      const firstAvg = first[fuel] ? first[fuel].avg : current - offset;
-      const extra = [];
-      let t = firstTs - intervalMs;
-      let i = 1;
-      while (t >= cutoff) {
-        const driftDays = (firstTs - t) / DAY_MS;
-        const v = firstAvg - driftDays * 0.02 + offset + noiseFor(seed, -i) * 1.6;
-        extra.push({ date: new Date(t).toISOString(), price: clamp(v) });
-        t -= intervalMs;
-        i++;
-      }
-      extra.reverse();
-      out.push(...extra);
-    }
+  const points = [];
+  for (let i = 0; i < dates.length; i++) {
+    const v = values[i];
+    if (v == null || !Number.isFinite(v)) continue;
+    points.push({ date: `${dates[i]}T12:00:00Z`, price: v });
   }
+  if (!points.length) return null;
 
-  avail.forEach((d, i) => {
-    const avg = d[fuel] ? d[fuel].avg : null;
-    if (avg == null) return;
-    const v = avg + offset + noiseFor(seed, i) * 1.4;
-    out.push({ date: d.date, price: clamp(v) });
-  });
+  const sliced = filterByDays(points, days);
+  if (!sliced.length) return null;
 
-  // Keep intraday granularity for short windows; for anything longer than a
-  // week, downsample to one point per calendar day (mean price).
-  return days > 7 ? aggregateDaily(out) : out;
-}
-
-function clamp(v) {
-  return Math.round(Math.max(120, Math.min(320, v)) * 10) / 10;
+  // The station store is recorded once per day. For windows longer than a
+  // week we still run it through the daily aggregator so both region and
+  // station series share the same day-key/mean behaviour.
+  return days > 7 ? aggregateDaily(sliced) : sliced;
 }
 
 function round1(v) {

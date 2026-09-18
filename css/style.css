@@ -1268,6 +1268,8 @@ select:focus-visible {
 /* Sparkline */
 .sc-chart { margin: 6px 0 2px; }
 .sc-empty { font-size: 12px; color: #94a3b8; text-align: center; padding: 18px 0; }
+.sd-empty { display: flex; align-items: center; justify-content: center; height: 100%; font-size: 12px; color: #94a3b8; text-align: center; padding: 18px 0; }
+[hidden].sd-empty { display: none; }
 
 /* Mini stats under chart */
 .sc-mini-stats {

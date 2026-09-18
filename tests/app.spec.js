@@ -681,6 +681,36 @@ test.describe('Trip Fuel Cost Estimator', () => {
   });
 });
 
+test.describe('Station History (real data only)', () => {
+  test('shows empty placeholder and hides change chip when no recorded station history', async ({ page }) => {
+    await page.route('**/data/history/station-history.json', route =>
+      route.fulfill({ json: { v: 1, t: [], s: {} } })
+    );
+
+    await page.goto(BASE_URL);
+    await page.waitForLoadState('networkidle', { timeout: 15000 }).catch(() => {});
+    await page.waitForTimeout(3000);
+
+    const list = page.locator('#station-list');
+    await expect(list.locator('.list-item').first()).toBeVisible();
+    await list.locator('.list-item').first().click();
+    await expect(page.locator('.mapboxgl-popup').first()).toBeVisible();
+
+    const popup = page.locator('.mapboxgl-popup').first();
+    await expect(popup.locator('.sc-empty')).toBeVisible();
+    await expect(popup.locator('.sc-change')).toHaveCount(0);
+    await expect(popup).not.toContainText('0.0%');
+    await expect(popup.locator('.sc-mini-stats .sc-mini').nth(0).locator('b')).toHaveText('—');
+    await expect(popup.locator('.sc-mini-stats .sc-mini').nth(1).locator('b')).toHaveText('—');
+
+    // Expanded panel also shows an empty state, not an empty axis.
+    await popup.locator('[data-expand]').click();
+    await expect(page.locator('#station-panel')).toHaveClass(/open/);
+    await expect(page.locator('#station-chart-empty')).toBeVisible();
+    await expect(page.locator('.sd-change-row')).toBeEmpty();
+  });
+});
+
 test.describe('Dashboard Region Ranking', () => {
   const openDashboard = async (page) => {
     await page.goto(BASE_URL);

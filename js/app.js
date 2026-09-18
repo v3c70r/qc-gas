@@ -3,7 +3,7 @@ import { initFilters, initGeolocation, initSidebarToggle } from './filters.js';
 import { initFavorites } from './stats.js';
 import { getStoredLanguage, createLanguageSelector, applyTranslations } from './i18n.js';
 import { togglePanel } from './dashboard.js';
-import { loadHistoryData } from './history.js';
+import { loadHistoryData, loadStationHistoryData } from './history.js';
 import { initFillups } from './fillups.js';
 import { initSearch, clearSearch, isSearchActive } from './search.js';
 
@@ -70,8 +70,9 @@ function initApp() {
   initFillups();
   initKeyboardShortcuts();
 
-  // Warm the history cache (used by station cards + trends dashboard)
+  // Warm the history caches (used by station cards + trends dashboard)
   loadHistoryData().catch(() => {});
+  loadStationHistoryData().catch(() => {});
 
   // Dashboard trigger button
   document.getElementById('dashboard-trigger')?.addEventListener('click', togglePanel);

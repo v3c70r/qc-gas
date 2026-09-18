@@ -34,8 +34,10 @@ INDEX_FILE = HISTORY_DIR / 'index.json'
 DAILY_FILE = HISTORY_DIR / 'daily.json'
 MONTHLY_FILE = HISTORY_DIR / 'monthly.json'
 MERGED_FILE = DATA_DIR / 'history.json'
+STATION_HISTORY_FILE = HISTORY_DIR / 'station-history.json'
 
 BUCKET_SECONDS = 6 * 3600
+STATION_DAILY_DAYS = 180  # keep one station-level daily snapshot per day for 6 months
 RAW_DAYS = 14
 DAILY_DAYS = 365  # 12 months approximate
 OVERALL_KEY = '__overall__'
@@ -144,6 +146,103 @@ def build_snapshot(stations, src_dt):
         't': to_iso(floor_bucket(src_dt)),
         'src': to_iso(src_dt),
         'r': r,
+    }
+
+
+def station_coord_key(feat):
+    coords = (feat.get('geometry') or {}).get('coordinates')
+    if not coords or len(coords) < 2:
+        return None
+    try:
+        return f"{float(coords[0]):.5f},{float(coords[1]):.5f}"
+    except (TypeError, ValueError):
+        return None
+
+
+def build_station_snapshot(stations):
+    """Return one scalar price per fuel per station, keyed by 5-decimal coords."""
+    out = {}
+    for feat in stations.get('features', []):
+        props = feat.get('properties') or {}
+        key = station_coord_key(feat)
+        if not key:
+            continue
+        rec = {}
+        for fuel, short in FUEL_SHORT.items():
+            val = props.get(fuel + '_price')
+            if val is not None:
+                rec[short] = round(float(val), 1)
+        if rec:
+            out[key] = rec
+    return out
+
+
+def update_station_history(store, snapshot, today, cutoff_day):
+    """Upsert one daily station snapshot and prune older days.
+
+    The station store is column-oriented: ``t`` is the sorted list of retained
+    day keys and ``s[coord][fuel]`` is a list aligned to ``t`` (``null`` when
+    that station did not report on that day). This keeps repeated coordinate
+    keys out of the daily payload.
+
+    Days are inserted in sorted order *and* existing arrays are reindexed onto
+    that new day list, so an out-of-order source date can never shift older
+    recorded values out of alignment.
+    """
+    old_t = list(store.get('t') or [])
+    old_s = store.get('s') or {}
+
+    new_t = sorted(set(old_t) | {today})
+    old_index = {day: i for i, day in enumerate(old_t)}
+    n = len(new_t)
+    idx = new_t.index(today)
+
+    # Reindex existing arrays onto the new sorted day list first. This is the
+    # fix for out-of-order source timestamps: inserting a middle day must not
+    # shift the values that belong to the days after it.
+    aligned_s = {}
+    for key, site in old_s.items():
+        new_site = {}
+        for short, arr in site.items():
+            new_site[short] = [
+                arr[old_index[d]] if d in old_index and old_index[d] < len(arr) else None
+                for d in new_t
+            ]
+        aligned_s[key] = new_site
+
+    # Apply today's snapshot at its sorted position.
+    for key, rec in snapshot.items():
+        site = aligned_s.get(key)
+        if site is None:
+            site = {}
+            aligned_s[key] = site
+        for short, val in rec.items():
+            arr = site.get(short)
+            if arr is None:
+                arr = [None] * n
+                site[short] = arr
+            arr[idx] = val
+
+    new_t_pruned = [d for d in new_t if d >= cutoff_day]
+    keep = [i for i, d in enumerate(new_t) if d >= cutoff_day]
+    new_s = {}
+    for key, site in aligned_s.items():
+        new_site = {}
+        for short, arr in site.items():
+            new_arr = [arr[i] if i < len(arr) else None for i in keep]
+            if any(v is not None for v in new_arr):
+                new_site[short] = new_arr
+        if new_site:
+            new_s[key] = new_site
+
+    return {
+        'v': 1,
+        't': new_t_pruned,
+        's': new_s,
+        'tiers': {
+            'daily_days': STATION_DAILY_DAYS,
+            'monthly': 'none',
+        },
     }
 
 
@@ -344,6 +443,19 @@ def main():
         print(f"Appended snapshot {snap['src']} -> bucket {snap['t']}")
     else:
         print(f'Source unchanged ({src}); skipping duplicate snapshot')
+
+    # ── Station-level daily history (real per-station prices) ──
+    station_store = load_json(STATION_HISTORY_FILE) or {'v': 1, 't': [], 's': {}}
+    station_cutoff_day = day_key_of(src_dt - timedelta(days=STATION_DAILY_DAYS))
+    station_store = update_station_history(
+        station_store,
+        build_station_snapshot(stations),
+        day_key_of(src_dt),
+        station_cutoff_day,
+    )
+    save_json(STATION_HISTORY_FILE, station_store)
+    print(f'Station history: {len(station_store["t"])} days, '
+          f'{len(station_store["s"])} stations')
 
     # ── Retention: raw (last RAW_DAYS) → daily → monthly ──
     cutoff_raw_day = day_key_of(src_dt - timedelta(days=RAW_DAYS))
