@@ -3,7 +3,8 @@
 
 GitHub's soft repo guidance and 100 MB per-file limit make a small guard cheap
 insurance against silent repository bloat. The region-level history store is
-designed to grow only a few tens of KB per year, so the default budget is very
+designed to grow only a few tens of KB per year, and the station-level daily
+store is retained for a fixed 180-day window, so the default budget is very
 generous relative to the expected size.
 """
 
