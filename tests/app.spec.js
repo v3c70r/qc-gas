@@ -1,7 +1,14 @@
 import { test, expect } from '@playwright/test';
+import { readFileSync } from 'node:fs';
+import { fileURLToPath } from 'node:url';
+import path from 'node:path';
 
 const BASE_URL = process.env.BASE_URL || 'http://localhost:5173';
 const DEPLOY_URL = 'https://qgu.io/qc-gas/';
+
+const stationsFixture = JSON.parse(
+  readFileSync(path.join(path.dirname(fileURLToPath(import.meta.url)), '../data/stations.json'), 'utf8')
+);
 
 test.describe('QC Gas Price App - Regression Tests', () => {
   test.beforeEach(async ({ page }) => {
@@ -932,5 +939,109 @@ test.describe('Fill-ups (localStorage fuel log)', () => {
     await page.locator('.sd-fillup-liters').fill('10');
     await page.locator('.sd-fillup-save').click();
     await expect(page.locator('#fillups-list .fillup-delete').first()).toHaveAttribute('aria-label', /Delete|Supprimer|删除/);
+  });
+});
+
+test.describe('Same-day regional benchmark', () => {
+  test('computes median, gap, percentile and 50 L saving deterministically', async ({ page }) => {
+    await page.goto(BASE_URL);
+    await page.waitForLoadState('networkidle', { timeout: 15000 }).catch(() => {});
+    await page.waitForFunction(() => window.__qcGasBenchmark, null, { timeout: 15000 });
+
+    const result = await page.evaluate(() => {
+      const b = window.__qcGasBenchmark;
+      const fc = {
+        type: 'FeatureCollection',
+        features: Array.from({ length: 10 }, (_, i) => ({
+          type: 'Feature',
+          geometry: { type: 'Point', coordinates: [0, 0] },
+          properties: { region: 'Test', regular_price: 100 + i }
+        }))
+      };
+      return b.computeRegionBenchmark(fc, 'Test', 'regular_price', 104);
+    });
+
+    expect(result.count).toBe(10);
+    expect(result.sufficient).toBe(true);
+    expect(result.min).toBe(100);
+    expect(result.max).toBe(109);
+    expect(result.median).toBe(104.5);
+    expect(result.cheaperThanPercent).toBe(40);
+    expect(result.gapToMin).toBeCloseTo(4, 2);
+    expect(result.gapToMedian).toBeCloseTo(-0.5, 2);
+    expect(result.saving50L).toBeCloseTo(0.25, 2);
+  });
+
+  test('degrades to insufficient sample when a region has fewer than 10 stations', async ({ page }) => {
+    await page.goto(BASE_URL);
+    await page.waitForLoadState('networkidle', { timeout: 15000 }).catch(() => {});
+    await page.waitForFunction(() => window.__qcGasBenchmark, null, { timeout: 15000 });
+
+    const result = await page.evaluate(() => {
+      const b = window.__qcGasBenchmark;
+      const fc = {
+        type: 'FeatureCollection',
+        features: [
+          { type: 'Feature', geometry: { type: 'Point', coordinates: [0, 0] }, properties: { region: 'Test', regular_price: 180 } },
+          { type: 'Feature', geometry: { type: 'Point', coordinates: [0, 0] }, properties: { region: 'Test', regular_price: 190 } },
+          { type: 'Feature', geometry: { type: 'Point', coordinates: [0, 0] }, properties: { region: 'Test', regular_price: 200 } }
+        ]
+      };
+      return b.computeRegionBenchmark(fc, 'Test', 'regular_price', 190);
+    });
+
+    expect(result.count).toBe(3);
+    expect(result.sufficient).toBe(false);
+    expect(result.median).toBe(190);
+    expect(result.cheaperThanPercent).toBeNull();
+    expect(result.gapToMedian).toBeNull();
+    expect(result.saving50L).toBeNull();
+  });
+
+  test('disables range pills beyond real station history coverage', async ({ page }) => {
+    const history = { v: 1, t: ['2026-09-18', '2026-09-19'], s: {} };
+    for (const feature of stationsFixture.features) {
+      const [lng, lat] = feature.geometry.coordinates;
+      const key = `${lng.toFixed(5)},${lat.toFixed(5)}`;
+      history.s[key] = { g: [199.9, 198.4], s: [239.9, 238.4], d: [259.9, 258.4] };
+    }
+
+    await page.route('**/data/history/station-history.json', route =>
+      route.fulfill({ json: history })
+    );
+    await page.goto(BASE_URL);
+    await page.waitForLoadState('networkidle', { timeout: 15000 }).catch(() => {});
+    await page.waitForTimeout(3000);
+
+    const list = page.locator('#station-list');
+    await expect(list.locator('.list-item').first()).toBeVisible();
+    await list.locator('.list-item').first().click();
+    await expect(page.locator('.mapboxgl-popup').first()).toBeVisible();
+
+    const popup = page.locator('.mapboxgl-popup').first();
+    await expect(popup.locator('.sc-rangepill[aria-disabled="true"]')).toHaveCount(5);
+    await expect(popup.locator('.sc-coverage')).toContainText('2');
+    await expect(popup.locator('.sc-coverage')).toContainText('2026-09-18');
+  });
+
+  test('station card and detail panel show the same-day benchmark block', async ({ page }) => {
+    await page.goto(BASE_URL);
+    await page.waitForLoadState('networkidle', { timeout: 15000 }).catch(() => {});
+    await page.waitForTimeout(3000);
+
+    const list = page.locator('#station-list');
+    await expect(list.locator('.list-item').first()).toBeVisible();
+    await list.locator('.list-item').first().click();
+    await expect(page.locator('.mapboxgl-popup').first()).toBeVisible();
+
+    const popup = page.locator('.mapboxgl-popup').first();
+    await expect(popup.locator('.sc-bench')).toBeVisible();
+    await expect(popup.locator('.sc-bench-grid .sc-bench-item')).toHaveCount(5);
+    await expect(popup.locator('.sc-bench-note')).toContainText(/Cheaper than|Moins cher que|低于/);
+
+    await popup.locator('[data-expand]').click();
+    await expect(page.locator('#station-panel')).toHaveClass(/open/);
+    await expect(page.locator('.sd-bench')).toBeVisible();
+    await expect(page.locator('.sd-bench-grid .sd-bench-item')).toHaveCount(5);
   });
 });
