@@ -1037,7 +1037,7 @@ test.describe('Same-day regional benchmark', () => {
     const popup = page.locator('.mapboxgl-popup').first();
     await expect(popup.locator('.sc-bench')).toBeVisible();
     await expect(popup.locator('.sc-bench-grid .sc-bench-item')).toHaveCount(5);
-    await expect(popup.locator('.sc-bench-note')).toContainText(/Cheaper than|Moins cher que|低于/);
+    await expect(popup.locator('.sc-bench-note')).toContainText(/are cheaper|moins chères|比本站便宜/);
 
     await popup.locator('[data-expand]').click();
     await expect(page.locator('#station-panel')).toHaveClass(/open/);
