@@ -3,11 +3,12 @@
 // Popup = compact card; side panel = expanded card (Chart.js area chart).
 
 import { t, tf, translations, getLanguage, onLanguageChange } from './i18n.js';
-import { getStationHistory, loadStationHistoryData } from './history.js';
+import { getStationHistory, getStationHistoryCoverage, loadStationHistoryData } from './history.js';
+import { computeRegionBenchmark } from './benchmark.js';
 import { loadChartJS } from './chartjs.js';
 import { isFavorite, toggleFavorite, stationId, STAR_ICON } from './favorites.js';
 import { addFillup, localDateKey } from './fillups.js';
-import { MONTREAL_CENTER } from './map.js';
+import { MONTREAL_CENTER, currentStations } from './map.js';
 import { haversineDistance } from './stats.js';
 
 const FUEL_KEYS = ['regular', 'super', 'diesel'];
@@ -77,6 +78,8 @@ function fuelLabel(fuel) {
   return dict?.[fuel] || fuel;
 }
 function fmt(v) { return v.toFixed(1); }
+function fmtMoney(v) { return Math.abs(v).toFixed(2); }
+function sign(v) { return v > 0 ? '+' : v < 0 ? '−' : ''; }
 function centsToDollar(cents) { return (cents / 100).toFixed(2); }
 
 // Direction: gas price rising = red (cost up), falling = green (cheap)
@@ -143,6 +146,59 @@ function sparklineSVG(series, color) {
     </svg>`;
 }
 
+// ── Same-day regional benchmark (full snapshot, filter-independent) ──
+function benchmarkFor(feature, fuel) {
+  const props = feature && feature.properties;
+  const region = props && props.region;
+  const priceKey = fuel + '_price';
+  const price = props && props[priceKey];
+  if (!region || price == null || !currentStations) return null;
+  return computeRegionBenchmark(currentStations, region, priceKey, price);
+}
+
+function benchmarkBlockHTML(bench, prefix) {
+  if (!bench) return '';
+  const head = `<div class="${prefix}-bench-head">${t('benchTitle')}</div>`;
+  if (!bench.sufficient || bench.median == null) {
+    return `${head}<div class="${prefix}-bench-insufficient">${t('benchInsufficient')} (${bench.count})</div>`;
+  }
+
+  const vs = bench.gapToMedian;
+  const vsCls = vs < 0 ? 'bench-pos' : vs > 0 ? 'bench-neg' : 'bench-zero';
+  const saving = bench.saving50L;
+  const savingCls = saving > 0 ? 'bench-pos' : saving < 0 ? 'bench-neg' : 'bench-zero';
+  const gapMin = bench.gapToMin;
+  const gapMinCls = gapMin === 0 ? 'bench-pos' : '';
+  const gapMinText = gapMin > 0 ? `+${fmt(gapMin)}` : '0.0';
+  const savingText = `${saving < 0 ? '−' : ''}$${fmtMoney(saving)}`;
+  const percentilePhrase = escapeHtml(tf('benchCheaperThan', { p: bench.cheaperThanPercent }));
+
+  return `${head}
+    <div class="${prefix}-bench-grid">
+      <div class="${prefix}-bench-item"><span>${t('benchMedian')}</span><b>${fmt(bench.median)}¢</b></div>
+      <div class="${prefix}-bench-item ${vsCls}"><span>${t('benchVsMedian')}</span><b>${sign(vs)}${fmt(Math.abs(vs))}¢</b></div>
+      <div class="${prefix}-bench-item" title="${percentilePhrase}"><span>${t('benchPercentile')}</span><b>${bench.cheaperThanPercent}%</b></div>
+      <div class="${prefix}-bench-item ${savingCls}"><span>${t('benchSaving50L')}</span><b>${savingText}</b></div>
+      <div class="${prefix}-bench-item ${gapMinCls}"><span>${t('benchGapMin')}</span><b>${gapMinText}¢</b></div>
+    </div>
+    <div class="${prefix}-bench-note">${percentilePhrase}</div>`;
+}
+
+function rangePillsHTML(prefix, activeDays, coverageDays) {
+  return RANGES.map(r => {
+    const disabled = coverageDays > 0 && r.days > coverageDays;
+    const active = !disabled && r.days === activeDays;
+    const cls = `${prefix}-rangepill${active ? ' on' : ''}${disabled ? ' is-disabled' : ''}`;
+    const attrs = disabled ? ' aria-disabled="true" disabled' : '';
+    return `<button class="${cls}" data-days="${r.days}"${attrs}>${t(r.key)}</button>`;
+  }).join('');
+}
+
+function coverageHTML(prefix, coverage) {
+  if (!coverage || coverage.days <= 0 || !coverage.firstDate) return '';
+  return `<div class="${prefix}-coverage">${escapeHtml(tf('dataCoverage', { n: coverage.days, date: coverage.firstDate }))}</div>`;
+}
+
 // ── Build compact card HTML for the Mapbox popup ──
 function cardHTML(feature) {
   const props = feature.properties;
@@ -153,23 +209,28 @@ function cardHTML(feature) {
     }
   }
 
+  const coverage = getStationHistoryCoverage(feature, popupFuel);
+  if (coverage.days > 0) popupRange = Math.min(popupRange, coverage.days);
   const series = getStationHistory(feature, popupFuel, popupRange) || [];
   const color = trendColor(series);
   const hasTrend = series.length >= 2;
   const { diff, pct, up, flat } = changeInfo(series);
   const priceVal = props[popupFuel + '_price'];
   const available = FUEL_KEYS.filter(f => props[f + '_price'] != null);
+  const bench = benchmarkFor(feature, popupFuel);
 
   const fuelPills = available.map(f => `
     <button class="sc-pill ${f === popupFuel ? 'on' : ''}" data-fuel="${f}">${fuelLabel(f)}</button>`).join('');
 
-  const rangePills = RANGES.map(r => `
-    <button class="sc-rangepill ${r.days === popupRange ? 'on' : ''}" data-days="${r.days}">${t(r.key)}</button>`).join('');
+  const rangePills = rangePillsHTML('sc', popupRange, coverage.days);
 
   // mini stats
   const prices = series.map(s => s.price);
   const hi = prices.length ? Math.max(...prices) : null;
   const lo = prices.length ? Math.min(...prices) : null;
+  const fewSamples = series.length > 0 && series.length <= 2;
+  const highLabel = fewSamples ? tf('highRecent', { n: coverage.days }) : t('high');
+  const lowLabel = fewSamples ? tf('lowRecent', { n: coverage.days }) : t('low');
 
   const arrow = flat ? '' : (up ? '▲' : '▼');
   const sign = flat ? '' : (up ? '+' : '−');
@@ -197,12 +258,14 @@ function cardHTML(feature) {
       <div class="sc-price">${priceVal != null ? fmt(priceVal) : '—'}<span class="sc-unit">¢</span></div>
       ${changeHTML}
     </div>
+    ${bench ? `<div class="sc-bench">${benchmarkBlockHTML(bench, 'sc')}</div>` : ''}
     <div class="sc-range">${rangePills}</div>
+    ${coverageHTML('sc', coverage)}
     ${series.length ? `<div class="sc-chart">${sparklineSVG(series, color)}</div>` : `<div class="sc-empty">${t('noHistory')}</div>`}
     ${priceVal != null ? `
     <div class="sc-mini-stats">
-      <div class="sc-mini"><span>${t('high')}</span><b>${hi != null ? fmt(hi) : '—'}</b></div>
-      <div class="sc-mini"><span>${t('low')}</span><b>${lo != null ? fmt(lo) : '—'}</b></div>
+      <div class="sc-mini"><span>${highLabel}</span><b>${hi != null ? fmt(hi) : '—'}</b></div>
+      <div class="sc-mini"><span>${lowLabel}</span><b>${lo != null ? fmt(lo) : '—'}</b></div>
       <div class="sc-mini"><span>≈ $/L</span><b>${centsToDollar(priceVal)}</b></div>
     </div>` : ''}
     <button class="sc-expand" data-expand>
@@ -230,6 +293,8 @@ export async function showStationCard(feature, map, updatedText = '') {
   currentFeature = feature;
 
   await loadStationHistoryData().catch(() => {});
+  const coverage = getStationHistoryCoverage(feature, popupFuel);
+  if (coverage.days > 0) popupRange = Math.min(popupRange, coverage.days);
 
   if (activePopup) { activePopup.remove(); }
 
@@ -363,7 +428,9 @@ function buildDetailPanel() {
         <div class="sd-bigprice"></div>
         <div class="sd-change-row"></div>
       </div>
+      <div class="sd-bench"></div>
       <div class="sd-range"></div>
+      <div class="sd-coverage"></div>
       <div class="sd-chart">
         <canvas id="station-chart"></canvas>
         <div class="sd-empty" id="station-chart-empty" hidden>${t('noHistory')}</div>
@@ -600,6 +667,8 @@ export async function openStationDetail(feature, map, updatedText = '') {
   panel.classList.add('open');
   document.getElementById('map-container').classList.add('panel-open');
   await loadStationHistoryData().catch(() => {});
+  const coverage = getStationHistoryCoverage(feature, detailFuel);
+  if (coverage.days > 0) detailRange = Math.min(detailRange, coverage.days);
   renderDetail();
 }
 
@@ -627,11 +696,14 @@ async function renderDetail() {
   detailEl.querySelector('.sd-pills').innerHTML = available.map(f => `
     <button class="sd-fuelpill ${f === detailFuel ? 'on' : ''}" data-fuel="${f}">${fuelLabel(f)}</button>`).join('');
 
+  const coverage = getStationHistoryCoverage(detailFeature, detailFuel);
+  if (coverage.days > 0) detailRange = Math.min(detailRange, coverage.days);
   const series = getStationHistory(detailFeature, detailFuel, detailRange) || [];
   const priceVal = props[detailFuel + '_price'];
   const color = trendColor(series);
   const hasTrend = series.length >= 2;
   const { diff, pct, up, flat } = changeInfo(series);
+  const bench = benchmarkFor(detailFeature, detailFuel);
 
   // Big quote
   detailEl.querySelector('.sd-bigprice').innerHTML = priceVal != null
@@ -644,9 +716,19 @@ async function renderDetail() {
     ? `<span class="sd-arrow">${arrow}</span> <b>${sign}${fmt(Math.abs(diff))}</b> <span class="sd-pct">${sign}${fmt(Math.abs(pct))}%</span> <span class="sd-hint">(${t('sinceStart')})</span>`
     : '';
 
-  // Range pills
-  detailEl.querySelector('.sd-range').innerHTML = RANGES.map(r => `
-    <button class="sd-rangepill ${r.days === detailRange ? 'on' : ''}" data-days="${r.days}">${t(r.key)}</button>`).join('');
+  // Range pills + data coverage line
+  detailEl.querySelector('.sd-range').innerHTML = rangePillsHTML('sd', detailRange, coverage.days);
+  detailEl.querySelector('.sd-coverage').innerHTML = coverageHTML('sd', coverage);
+
+  // Same-day regional benchmark block
+  const benchEl = detailEl.querySelector('.sd-bench');
+  if (bench) {
+    benchEl.hidden = false;
+    benchEl.innerHTML = benchmarkBlockHTML(bench, 'sd');
+  } else {
+    benchEl.hidden = true;
+    benchEl.innerHTML = '';
+  }
 
   // Stats
   const prices = series.map(s => s.price);
@@ -655,9 +737,12 @@ async function renderDetail() {
   const avg = prices.length ? prices.reduce((a, b) => a + b, 0) / prices.length : null;
   const lastChange = series.length >= 2 ? series[series.length - 1].price - series[series.length - 2].price : null;
   const lastCls = lastChange == null ? '' : lastChange > 0 ? 'up' : lastChange < 0 ? 'down' : '';
+  const fewSamples = series.length > 0 && series.length <= 2;
+  const highLabel = fewSamples ? tf('highRecent', { n: coverage.days }) : t('high');
+  const lowLabel = fewSamples ? tf('lowRecent', { n: coverage.days }) : t('low');
   detailEl.querySelector('.sd-stats').innerHTML = `
-    <div class="sd-stat"><span>${t('low')}</span><b>${lo != null ? fmt(lo) : '—'}</b></div>
-    <div class="sd-stat"><span>${t('high')}</span><b>${hi != null ? fmt(hi) : '—'}</b></div>
+    <div class="sd-stat"><span>${lowLabel}</span><b>${lo != null ? fmt(lo) : '—'}</b></div>
+    <div class="sd-stat"><span>${highLabel}</span><b>${hi != null ? fmt(hi) : '—'}</b></div>
     <div class="sd-stat"><span>${t('avg')}</span><b>${avg != null ? fmt(avg) : '—'}</b></div>
     <div class="sd-stat ${lastCls}"><span>${t('lastPrice')}</span><b>${lastChange == null ? '—' : `${lastChange > 0 ? '+' : lastChange < 0 ? '−' : ''}${fmt(Math.abs(lastChange))}`}</b></div>`;
 

@@ -69,12 +69,10 @@ function stationKey(feature) {
 }
 
 /**
- * Return the REAL recorded price history for one station, oldest → newest.
- * Returns [{ date, price }] when recorded data exists for the requested
- * window, or null when the station has no recorded history yet. No synthetic
- * data, no offsets, and no backwards extrapolation are applied.
+ * Raw recorded points for one station + fuel, oldest → newest, without any
+ * day filtering. Returns null when the station has no recorded data yet.
  */
-export function getStationHistory(feature, fuel = 'regular', days = 90) {
+function stationHistoryPoints(feature, fuel = 'regular') {
   if (!stationHistoryData || !feature) return null;
   const short = FUEL_SHORT[fuel];
   if (!short) return null;
@@ -91,7 +89,12 @@ export function getStationHistory(feature, fuel = 'regular', days = 90) {
     if (v == null || !Number.isFinite(v)) continue;
     points.push({ date: `${dates[i]}T12:00:00Z`, price: v });
   }
-  if (!points.length) return null;
+  return points.length ? points : null;
+}
+
+export function getStationHistory(feature, fuel = 'regular', days = 90) {
+  const points = stationHistoryPoints(feature, fuel);
+  if (!points) return null;
 
   const sliced = filterByDays(points, days);
   if (!sliced.length) return null;
@@ -100,6 +103,27 @@ export function getStationHistory(feature, fuel = 'regular', days = 90) {
   // week we still run it through the daily aggregator so both region and
   // station series share the same day-key/mean behaviour.
   return days > 7 ? aggregateDaily(sliced) : sliced;
+}
+
+/**
+ * Real data coverage for one station + fuel, independent of any selected
+ * range. Returns the number of distinct recorded calendar days, the first
+ * and last recorded dates, and the unfiltered points themselves.
+ */
+export function getStationHistoryCoverage(feature, fuel = 'regular') {
+  const points = stationHistoryPoints(feature, fuel);
+  if (!points || !points.length) {
+    return { days: 0, firstDate: null, lastDate: null, points: [] };
+  }
+  const sorted = points.slice().sort((a, b) => tsOf(a) - tsOf(b));
+  const dayKeys = new Set();
+  for (const point of sorted) {
+    const key = dayKey(point);
+    if (key) dayKeys.add(key);
+  }
+  const firstDate = String(sorted[0]?.date ?? '').slice(0, 10) || null;
+  const lastDate = String(sorted[sorted.length - 1]?.date ?? '').slice(0, 10) || null;
+  return { days: dayKeys.size, firstDate, lastDate, points: sorted };
 }
 
 function round1(v) {
