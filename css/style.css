@@ -1965,3 +1965,219 @@ select:focus-visible {
   transition: all 0.15s;
 }
 .sd-fillup-cancel:hover { background: #f8fafc; color: #334155; }
+
+/* ══════════════════════════════════════
+   Price watch — sidebar list
+   ══════════════════════════════════════ */
+.watch-section {
+  border-bottom: 1px solid #e2e8f0;
+  flex-shrink: 0;
+}
+.watch-section[hidden] { display: none; }
+.watch-toggle {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  width: 100%;
+  min-height: 44px;
+  padding: 12px 16px;
+  background: #fff;
+  border: none;
+  cursor: pointer;
+  color: #475569;
+  font-size: 13px;
+  font-weight: 600;
+  text-align: left;
+}
+.watch-toggle:hover { background: #f8fafc; }
+.watch-toggle .chevron {
+  margin-left: auto;
+  transition: transform 0.2s;
+  flex-shrink: 0;
+}
+.watch-section.open .chevron { transform: rotate(180deg); }
+
+.watch-count {
+  margin-left: auto;
+  font-size: 11px;
+  font-weight: 700;
+  color: #dc2626;
+  background: #fef2f2;
+  padding: 3px 8px;
+  border-radius: 10px;
+  flex-shrink: 0;
+}
+.watch-toggle .chevron { margin-left: 8px; }
+
+.watch-panel {
+  display: none;
+  padding: 0 12px 12px;
+}
+.watch-section.open .watch-panel { display: block; }
+
+.watch-list {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  max-height: 260px;
+  overflow-y: auto;
+}
+.watch-item {
+  display: flex;
+  align-items: stretch;
+  gap: 6px;
+  background: #fff;
+  border: 1px solid #e2e8f0;
+  border-radius: 10px;
+  overflow: hidden;
+}
+.watch-item-main {
+  flex: 1;
+  min-width: 0;
+  min-height: 56px;
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 3px;
+  padding: 8px 10px;
+  background: #fff;
+  border: none;
+  cursor: pointer;
+  text-align: left;
+  transition: background 0.15s;
+}
+.watch-item-main:hover { background: #f8fafc; }
+.watch-item-name {
+  font-size: 12px;
+  font-weight: 700;
+  color: #0f172a;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  max-width: 100%;
+}
+.watch-item-meta {
+  font-size: 10px;
+  color: #64748b;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  max-width: 100%;
+}
+.watch-item-delta {
+  font-size: 10px;
+  color: #64748b;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  max-width: 100%;
+}
+.watch-item-delta b { font-variant-numeric: tabular-nums; }
+.watch-item-side {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-end;
+  justify-content: center;
+  gap: 4px;
+  padding: 6px 8px 6px 0;
+  flex-shrink: 0;
+}
+.watch-trigger-badge {
+  font-size: 9px;
+  font-weight: 700;
+  color: #dc2626;
+  background: #fef2f2;
+  border: 1px solid #fecaca;
+  padding: 2px 6px;
+  border-radius: 999px;
+  white-space: nowrap;
+}
+.watch-remove {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 44px;
+  height: 44px;
+  border: none;
+  background: transparent;
+  color: #d97706;
+  cursor: pointer;
+  border-radius: 9px;
+  padding: 0;
+  font-size: 16px;
+  transition: all 0.15s;
+}
+.watch-remove:hover { background: #fff7ed; color: #b45309; }
+
+/* Price watch — station detail panel row */
+.sd-watch {
+  margin-top: 14px;
+  padding: 14px;
+  background: #fff;
+  border: 1px solid #e2e8f0;
+  border-radius: 12px;
+}
+.sd-watch-row {
+  display: flex;
+  align-items: flex-end;
+  gap: 10px;
+}
+.sd-watch-toggle {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  min-height: 44px;
+  padding: 8px 12px;
+  border: 1px solid #e2e8f0;
+  border-radius: 10px;
+  background: #fff;
+  color: #64748b;
+  font-size: 13px;
+  font-weight: 600;
+  cursor: pointer;
+  white-space: nowrap;
+  transition: all 0.15s;
+  flex-shrink: 0;
+}
+.sd-watch-toggle:hover { border-color: #cbd5e1; }
+.sd-watch-toggle.on {
+  background: #fff7ed;
+  border-color: #fdba74;
+  color: #d97706;
+}
+.sd-watch-field {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+}
+.sd-watch-label {
+  font-size: 10px;
+  color: #94a3b8;
+  font-weight: 600;
+}
+.sd-watch-threshold {
+  width: 100%;
+  height: 44px;
+  padding: 0 12px;
+  border: 1px solid #e2e8f0;
+  border-radius: 9px;
+  font-size: 14px;
+  font-weight: 600;
+  color: #0f172a;
+  background: #fff;
+  font-variant-numeric: tabular-nums;
+}
+.sd-watch-threshold:focus {
+  outline: none;
+  border-color: #1a73e8;
+  box-shadow: 0 0 0 3px rgba(26, 115, 232, 0.12);
+}
+.sd-watch-hint {
+  margin-top: 8px;
+  font-size: 10px;
+  color: #94a3b8;
+  line-height: 1.4;
+}

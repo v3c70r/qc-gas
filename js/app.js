@@ -6,6 +6,7 @@ import { togglePanel } from './dashboard.js';
 import { loadHistoryData, loadStationHistoryData } from './history.js';
 import './benchmark.js';
 import { initFillups } from './fillups.js';
+import { initWatch } from './watch.js';
 import { initSearch, clearSearch, isSearchActive } from './search.js';
 
 function initKeyboardShortcuts() {
@@ -69,6 +70,7 @@ function initApp() {
   initSearch();
   initFavorites();
   initFillups();
+  initWatch();
   initKeyboardShortcuts();
 
   // Warm the history caches (used by station cards + trends dashboard)

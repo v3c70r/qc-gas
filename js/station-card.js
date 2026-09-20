@@ -10,6 +10,7 @@ import { isFavorite, toggleFavorite, stationId, STAR_ICON } from './favorites.js
 import { addFillup, localDateKey } from './fillups.js';
 import { MONTREAL_CENTER, currentStations } from './map.js';
 import { haversineDistance } from './stats.js';
+import { isWatching, getWatchEntry, setWatch, removeWatch, setWatchThreshold, setWatchFuel } from './watch.js';
 
 const FUEL_KEYS = ['regular', 'super', 'diesel'];
 const RANGES = [
@@ -428,6 +429,19 @@ function buildDetailPanel() {
         <div class="sd-bigprice"></div>
         <div class="sd-change-row"></div>
       </div>
+      <div class="sd-watch">
+        <div class="sd-watch-row">
+          <button class="sd-watch-toggle" aria-pressed="false">
+            <span class="sd-watch-icon" aria-hidden="true">🔔</span>
+            <span class="sd-watch-toggle-text"></span>
+          </button>
+          <label class="sd-watch-field">
+            <span class="sd-watch-label"></span>
+            <input type="number" class="sd-watch-threshold" inputmode="decimal" min="0" step="0.1" placeholder="—">
+          </label>
+        </div>
+        <div class="sd-watch-hint"></div>
+      </div>
       <div class="sd-bench"></div>
       <div class="sd-range"></div>
       <div class="sd-coverage"></div>
@@ -510,11 +524,51 @@ function buildDetailPanel() {
     }
   });
 
+  // Price watch: bell toggles the watch; threshold input persists live (debounced).
+  let watchThresholdTimer = null;
+  detailEl.querySelector('.sd-watch-toggle').addEventListener('click', () => {
+    if (!detailFeature) return;
+    if (isWatching(detailFeature)) {
+      removeWatch(detailFeature);
+    } else {
+      const input = detailEl.querySelector('.sd-watch-threshold');
+      const raw = input?.value?.trim();
+      const threshold = raw === '' ? null : Number(raw);
+      setWatch(detailFeature, { fuel: detailFuel, thresholdCents: threshold });
+    }
+    renderDetail();
+  });
+
+  const watchThresholdInput = detailEl.querySelector('.sd-watch-threshold');
+  const persistThreshold = () => {
+    if (!detailFeature || !isWatching(detailFeature)) return;
+    const raw = watchThresholdInput.value.trim();
+    const threshold = raw === '' ? null : Number(raw);
+    setWatchThreshold(detailFeature, threshold);
+  };
+  watchThresholdInput.addEventListener('input', () => {
+    if (!detailFeature || !isWatching(detailFeature)) return;
+    clearTimeout(watchThresholdTimer);
+    watchThresholdTimer = setTimeout(persistThreshold, 300);
+  });
+  watchThresholdInput.addEventListener('change', () => {
+    clearTimeout(watchThresholdTimer);
+    persistThreshold();
+  });
+
   // Delegated fuel / range switching inside panel
   detailEl.addEventListener('click', (e) => {
     const f = e.target.closest('[data-fuel]');
     if (f) {
       detailFuel = f.dataset.fuel;
+      // Only an explicit fuel-pill click re-points a watched station to the
+      // newly selected fuel (and resets its delta baseline in watch.js).
+      if (detailFeature && isWatching(detailFeature)) {
+        const entry = getWatchEntry(detailFeature);
+        if (entry && entry.fuel !== detailFuel) {
+          setWatchFuel(detailFeature, detailFuel);
+        }
+      }
       renderDetail();
       return;
     }
@@ -639,6 +693,36 @@ function updateFillupLabels() {
   if (cancel) cancel.textContent = t('fillupCancel');
 }
 
+function updateWatchRow() {
+  if (!detailEl || !detailFeature) return;
+  const entry = getWatchEntry(detailFeature);
+  const watching = !!entry;
+  const btn = detailEl.querySelector('.sd-watch-toggle');
+  const input = detailEl.querySelector('.sd-watch-threshold');
+  const label = detailEl.querySelector('.sd-watch-label');
+  const hint = detailEl.querySelector('.sd-watch-hint');
+  const text = detailEl.querySelector('.sd-watch-toggle-text');
+
+  if (label) label.textContent = t('watchThresholdLabel');
+  if (hint) hint.textContent = t('watchThresholdPlaceholder');
+  if (btn) {
+    btn.classList.toggle('on', watching);
+    btn.setAttribute('aria-pressed', String(watching));
+    const btnLabel = watching ? t('watchRemove') : t('watchSet');
+    btn.setAttribute('aria-label', btnLabel);
+    if (text) text.textContent = btnLabel;
+  }
+  if (input) {
+    input.setAttribute('aria-label', t('watchThresholdLabel'));
+    if (watching) {
+      input.value = entry.thresholdCents != null ? String(entry.thresholdCents) : '';
+    } else {
+      const current = detailFeature.properties?.[detailFuel + '_price'];
+      input.value = current != null ? String(Math.round((current - 2) * 10) / 10) : '';
+    }
+  }
+}
+
 export function closeStationDetail() {
   if (detailEl) {
     detailEl.classList.remove('open');
@@ -661,6 +745,13 @@ export async function openStationDetail(feature, map, updatedText = '') {
   const props = feature.properties;
   detailFuel = checked && props[checked.value + '_price'] != null ? checked.value
     : (props.regular_price != null ? 'regular' : FUEL_KEYS.find(f => props[f + '_price'] != null) || 'regular');
+
+  // Opening a watched station should show the fuel it is actually watching,
+  // not silently re-point it to the sidebar's selected fuel.
+  const watched = getWatchEntry(feature);
+  if (watched && FUEL_KEYS.includes(watched.fuel) && props[watched.fuel + '_price'] != null) {
+    detailFuel = watched.fuel;
+  }
   detailRange = 90;
 
   const panel = buildDetailPanel();
@@ -695,6 +786,8 @@ async function renderDetail() {
   // Fuel pills
   detailEl.querySelector('.sd-pills').innerHTML = available.map(f => `
     <button class="sd-fuelpill ${f === detailFuel ? 'on' : ''}" data-fuel="${f}">${fuelLabel(f)}</button>`).join('');
+
+  updateWatchRow();
 
   const coverage = getStationHistoryCoverage(detailFeature, detailFuel);
   if (coverage.days > 0) detailRange = Math.min(detailRange, coverage.days);

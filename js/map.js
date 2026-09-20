@@ -263,6 +263,10 @@ export async function loadStations() {
     // Update UI
     updateDataStatus();
     updateStats();
+
+    // Let dependent modules (e.g. the price-watch list) evaluate once the
+    // real snapshot is available.
+    window.dispatchEvent(new CustomEvent('stations:loaded', { detail: data }));
     
   } catch (error) {
     console.error('Error loading stations:', error);
