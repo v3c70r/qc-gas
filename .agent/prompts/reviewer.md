@@ -25,4 +25,13 @@ with your verdict and do not post any comment (avoids noise on merged PRs).
 - If the code is acceptable, post a short approval summary comment and reply exactly: `RESULT: APPROVE`
 
 Do not invent trivial nits. Only request changes that genuinely matter.
-Your final line MUST be exactly `RESULT: APPROVE` or `RESULT: REQUEST_CHANGES`.
+
+**Machine-readable verdict (mandatory):** your final line MUST be exactly one of
+```
+RESULT: APPROVE
+RESULT: REQUEST_CHANGES
+```
+Written in English ASCII, on its own line, even if the rest of your reply is in
+Chinese or another language. An automated orchestrator parses this line; if it is
+missing or translated, the loop cannot tell that you approved and will keep
+asking the implementer for changes until the round budget is exhausted.

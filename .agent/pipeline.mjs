@@ -147,12 +147,34 @@ async function runImplementer(issue, roundNote = '') {
 }
 
 // ── Role B: reviewer (round-trip discussion with A) ──
+
+/**
+ * Parse the reviewer's verdict robustly.
+ * The reviewer is asked for an English `RESULT: APPROVE|REQUEST_CHANGES` sentinel,
+ * but models (e.g. GLM) sometimes answer in Chinese — "批准/通过" vs "要求修改" —
+ * which previously defaulted to REQUEST_CHANGES and burned all review rounds.
+ * We therefore scan for both languages and trust the LAST signal in the output.
+ */
+function parseReviewVerdict(out) {
+  const text = String(out || '');
+  const approve = /(RESULT:\s*APPROVE\b|LGTM\b|批准|予以批准|通过)/gi;
+  const changes = /(RESULT:\s*REQUEST_CHANGES\b|REQUEST_CHANGES\b|要求修改|需要修改|需要更改|建议修改|不予批准|未批准|不批准|不通过)/gi;
+  const last = (re) => { let m, i = -1; while ((m = re.exec(text)) !== null) i = m.index + m[0].length; return i; };
+  const la = last(approve);
+  const lc = last(changes);
+  const sentinel = /RESULT:\s*(APPROVE|REQUEST_CHANGES)/i.test(text);
+  if (la === -1 && lc === -1) return { verdict: 'REQUEST_CHANGES', source: 'no-signal' };
+  if (la > lc) return { verdict: 'APPROVE', source: sentinel ? 'sentinel' : 'heuristic' };
+  return { verdict: 'REQUEST_CHANGES', source: sentinel ? 'sentinel' : 'heuristic' };
+}
+
 async function runReviewRound(issueNum, prNum) {
   const prompt = buildPrompt('reviewer', { issue: { number: issueNum }, pr: prNum });
   const out = runPi(`agent-review-${prNum}`, prompt, null, REVIEW);
-  log(issueNum, `B: review 输出 (model=${describeModel(REVIEW)}):\n${out.split('\n').slice(-30).join('\n')}`);
-  const verdict = (out.match(/RESULT:\s*(APPROVE|REQUEST_CHANGES)/i) || [])[1] || 'REQUEST_CHANGES';
-  return { verdict, out };
+  const { verdict, source } = parseReviewVerdict(out);
+  log(issueNum, `B: verdict=${verdict} (${source}, model=${describeModel(REVIEW)})`);
+  log(issueNum, `B: review 输出:\n${out.split('\n').slice(-30).join('\n')}`);
+  return { verdict, out, source };
 }
 
 // ── Role C: tester (functional tests) ──
@@ -284,14 +306,18 @@ async function processIssueInner(issue, force = false) {
 
   // 2) REVIEW (loop with A) — skip if already approved (resume path)
   const maxRounds = parseInt(process.env.MAX_REVIEW_ROUNDS || '3', 10);
+  let lastReviewOut = '';
+  let lastReviewVerdict = 'n/a';
   let fresh = state.load();
   if (!fresh[issue.number]) fresh[issue.number] = {}; // ensure key exists
   if (fresh[issue.number].status !== 'approved') {
     for (let r = 0; r < maxRounds; r++) {
       fresh = state.load();
       if (!fresh[issue.number]) fresh[issue.number] = {};
-      const { verdict } = await runReviewRound(issue.number, pr.number);
-      if (verdict === 'APPROVE') { fresh[issue.number].status = 'approved'; state.save(fresh); break; }
+      const res = await runReviewRound(issue.number, pr.number);
+      lastReviewOut = res.out;
+      lastReviewVerdict = res.verdict;
+      if (res.verdict === 'APPROVE') { fresh[issue.number].status = 'approved'; state.save(fresh); break; }
       const note = `Agent B 要求修改（第 ${r + 1} 轮），请根据 PR #${pr.number} 上 Agent B 的评论修改。`;
       fresh[issue.number].status = 'reviewing';
       fresh[issue.number].round = r + 1;
@@ -304,10 +330,15 @@ async function processIssueInner(issue, force = false) {
   // 3) TEST
   const s2 = state.load();
   if (!s2[issue.number] || s2[issue.number].status !== 'approved') {
-    // loop exhausted without approval → notify human
+    // loop exhausted without approval → notify human (include the last verdict so a
+    // human can immediately see whether the reviewer had actually approved)
     if (!s2[issue.number]) s2[issue.number] = {};
-    commentOnIssue(issue.number, `⚠️ Agent B 与 Agent A 未能在 ${maxRounds} 轮内达成一致，请人工 review PR #${s2[issue.number]?.pr || pr.number}。`);
+    const excerpt = String(lastReviewOut || '').split('\n').filter(Boolean).slice(-6).join('\n').slice(0, 900);
+    commentOnIssue(issue.number, `⚠️ Agent B 与 Agent A 未能在 ${maxRounds} 轮内达成一致，请人工 review PR #${s2[issue.number]?.pr || pr.number}。\n\n` +
+      `自动解析的最后一轮结论：\`${lastReviewVerdict}\`\n\n` +
+      (excerpt ? `<details><summary>最后一轮 reviewer 输出（节选）</summary>\n\n\`\`\`\n${excerpt}\n\`\`\`\n</details>` : ''));
     s2[issue.number].status = 'needs_human';
+    s2[issue.number].lastVerdict = lastReviewVerdict;
     state.save(s2);
     return { skipped: 'needs_human' };
   }
