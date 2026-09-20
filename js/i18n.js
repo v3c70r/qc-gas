@@ -100,7 +100,18 @@ export const translations = {
     fillupAvgPrice: '实付均价',
     fillupSavings: '累计节省',
     fillupNoRecords: '暂无加油记录',
-    fillupDelete: '删除记录'
+    fillupDelete: '删除记录',
+    watch: '我的关注',
+    watchSet: '关注此站',
+    watchRemove: '取消关注',
+    watchThresholdLabel: '提醒阈值 (¢/L)',
+    watchThresholdPlaceholder: '留空则只跟踪变动',
+    watchTrackOnly: '仅跟踪变动',
+    watchPriceUnavailable: '价格不可用',
+    watchSinceLastSeen: '自上次查看（{date}）',
+    watchTriggered: '已触发',
+    watchLocate: '定位到 {name}',
+    watchRemoveAria: '取消关注 {name}'
   },
   'en-CA': {
     results: 'Results',
@@ -203,7 +214,18 @@ export const translations = {
     fillupAvgPrice: 'Avg paid price',
     fillupSavings: 'Savings',
     fillupNoRecords: 'No fill-ups recorded',
-    fillupDelete: 'Delete record'
+    fillupDelete: 'Delete record',
+    watch: 'My watch list',
+    watchSet: 'Watch this station',
+    watchRemove: 'Stop watching',
+    watchThresholdLabel: 'Alert threshold (¢/L)',
+    watchThresholdPlaceholder: 'Leave empty to only track changes',
+    watchTrackOnly: 'Track changes only',
+    watchPriceUnavailable: 'Price unavailable',
+    watchSinceLastSeen: 'Since last viewed ({date})',
+    watchTriggered: 'Triggered',
+    watchLocate: 'Locate {name}',
+    watchRemoveAria: 'Stop watching {name}'
   },
   'fr-CA': {
     results: 'Résultats',
@@ -306,7 +328,18 @@ export const translations = {
     fillupAvgPrice: 'Prix moyen payé',
     fillupSavings: 'Économies',
     fillupNoRecords: 'Aucun plein enregistré',
-    fillupDelete: 'Supprimer'
+    fillupDelete: 'Supprimer',
+    watch: 'Mes alertes',
+    watchSet: 'Surveiller cette station',
+    watchRemove: 'Ne plus surveiller',
+    watchThresholdLabel: 'Seuil d\'alerte (¢/L)',
+    watchThresholdPlaceholder: 'Laisser vide pour suivre les changements seulement',
+    watchTrackOnly: 'Suivre les changements',
+    watchPriceUnavailable: 'Prix indisponible',
+    watchSinceLastSeen: 'Depuis la dernière visite ({date})',
+    watchTriggered: 'Déclenchée',
+    watchLocate: 'Localiser {name}',
+    watchRemoveAria: 'Ne plus surveiller {name}'
   }
 };
 

@@ -942,6 +942,118 @@ test.describe('Fill-ups (localStorage fuel log)', () => {
   });
 });
 
+test.describe('Price Watch (localStorage)', () => {
+  test.beforeEach(async ({ page }) => {
+    await page.goto(BASE_URL);
+    await page.waitForLoadState('networkidle', { timeout: 15000 }).catch(() => {});
+  });
+
+  test('computeWatchStatus triggers only at or below threshold', async ({ page }) => {
+    await page.waitForFunction(() => window.__qcGasWatch, null, { timeout: 15000 });
+
+    const result = await page.evaluate(() => {
+      const w = window.__qcGasWatch;
+      const entry = { thresholdCents: 180 };
+      return {
+        at: w.computeWatchStatus(entry, 180),
+        below: w.computeWatchStatus(entry, 179.9),
+        idle: w.computeWatchStatus(entry, 180.1),
+        noThreshold: w.computeWatchStatus({}, 180),
+        unknown: w.computeWatchStatus(entry, null)
+      };
+    });
+
+    expect(result.at).toBe('triggered');
+    expect(result.below).toBe('triggered');
+    expect(result.idle).toBe('idle');
+    expect(result.noThreshold).toBe('idle');
+    expect(result.unknown).toBe('unknown');
+  });
+
+  test('computeDelta returns the real observed change or null when missing', async ({ page }) => {
+    await page.waitForFunction(() => window.__qcGasWatch, null, { timeout: 15000 });
+
+    const result = await page.evaluate(() => {
+      const w = window.__qcGasWatch;
+      return {
+        down: w.computeDelta({ lastSeenPriceCents: 200 }, 197.6),
+        up: w.computeDelta({ lastSeenPriceCents: 200 }, 202.4),
+        noLast: w.computeDelta({}, 197.6),
+        noCurrent: w.computeDelta({ lastSeenPriceCents: 200 }, null)
+      };
+    });
+
+    expect(result.down).toBeCloseTo(-2.4, 1);
+    expect(result.up).toBeCloseTo(2.4, 1);
+    expect(result.noLast).toBeNull();
+    expect(result.noCurrent).toBeNull();
+  });
+
+  test('watch entry persists in localStorage after reload', async ({ page }) => {
+    await page.waitForFunction(() => window.__qcGasWatch, null, { timeout: 15000 });
+
+    const { id } = await page.evaluate(async () => {
+      const w = window.__qcGasWatch;
+      const data = await fetch('data/stations.json').then(r => r.json());
+      const feature = data.features[0];
+      const id = [feature.properties.name, feature.properties.address, feature.properties.postal_code]
+        .map(v => (v ?? '').trim()).join('|');
+      w.setWatch(feature, { fuel: 'regular', thresholdCents: 160 });
+      return { id };
+    });
+
+    expect(id).toBeTruthy();
+    const raw = await page.evaluate(() => localStorage.getItem('qc-gas-watch'));
+    expect(raw).toContain(id);
+
+    await page.reload();
+    await page.waitForLoadState('networkidle', { timeout: 15000 }).catch(() => {});
+    await page.waitForFunction(() => window.__qcGasWatch, null, { timeout: 15000 });
+    await page.waitForTimeout(3000);
+
+    const entries = await page.evaluate(() => window.__qcGasWatch.getWatchEntries());
+    expect(entries.some(e => e.id === id)).toBe(true);
+  });
+
+  test('detail panel watch toggle adds a triggered sidebar item and can remove it', async ({ page }) => {
+    await page.waitForTimeout(3000);
+    const list = page.locator('#station-list');
+    await expect(list.locator('.list-item').first()).toBeVisible();
+    await list.locator('.list-item').first().click();
+    await expect(page.locator('.mapboxgl-popup').first()).toBeVisible();
+    await page.locator('.mapboxgl-popup [data-expand]').click();
+    await expect(page.locator('#station-panel')).toHaveClass(/open/);
+
+    await expect(page.locator('#watch-section')).toBeHidden();
+
+    const watchToggle = page.locator('.sd-watch-toggle');
+    await expect(watchToggle).toBeVisible();
+    // Default threshold is prefilled with the current price minus 2¢.
+    await expect(page.locator('.sd-watch-threshold')).not.toHaveValue('');
+
+    await watchToggle.click();
+    await expect(watchToggle).toHaveClass(/on/);
+    await expect(watchToggle).toHaveAttribute('aria-pressed', 'true');
+    await expect(page.locator('#watch-section')).toBeVisible();
+    await expect(page.locator('#watch-list .watch-item')).toHaveCount(1);
+
+    // The prefilled threshold (current − 2¢) is below the current price, so
+    // the item is watched but NOT yet triggered.
+    await expect(page.locator('#watch-count')).toHaveText('0');
+    await expect(page.locator('.watch-trigger-badge')).toHaveCount(0);
+
+    // Raising the threshold above the current price triggers the badge.
+    await page.locator('.sd-watch-threshold').fill('999');
+    await page.locator('.sd-watch-threshold').press('Tab');
+    await expect(page.locator('#watch-count')).toHaveText('1');
+    await expect(page.locator('.watch-trigger-badge').first()).toBeVisible();
+
+    // Toggling off cleans the section up again (empty → hidden).
+    await watchToggle.click();
+    await expect(page.locator('#watch-section')).toBeHidden();
+  });
+});
+
 test.describe('Same-day regional benchmark', () => {
   test('computes median, gap, percentile and 50 L saving deterministically', async ({ page }) => {
     await page.goto(BASE_URL);

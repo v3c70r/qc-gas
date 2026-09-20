@@ -46,6 +46,19 @@
           </div>
         </div>
 
+        <div class="watch-section open" id="watch-section" hidden>
+          <button id="watch-toggle" class="watch-toggle" aria-expanded="true" aria-controls="watch-panel">
+            <span class="watch-title">🔔 <span data-i18n="watch">我的关注</span></span>
+            <span class="watch-count" id="watch-count" aria-live="polite">0</span>
+            <svg class="chevron" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+              <polyline points="6 9 12 15 18 9"></polyline>
+            </svg>
+          </button>
+          <div class="watch-panel" id="watch-panel">
+            <div class="watch-list" id="watch-list"></div>
+          </div>
+        </div>
+
         <div class="fillups-section open" id="fillups-section">
           <button id="fillups-toggle" class="fillups-toggle" aria-expanded="true" aria-controls="fillups-panel">
             <span class="fillups-title">⛽ <span data-i18n="fillups">Mes pleins</span></span>
