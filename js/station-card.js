@@ -561,6 +561,14 @@ function buildDetailPanel() {
     const f = e.target.closest('[data-fuel]');
     if (f) {
       detailFuel = f.dataset.fuel;
+      // Only an explicit fuel-pill click re-points a watched station to the
+      // newly selected fuel (and resets its delta baseline in watch.js).
+      if (detailFeature && isWatching(detailFeature)) {
+        const entry = getWatchEntry(detailFeature);
+        if (entry && entry.fuel !== detailFuel) {
+          setWatchFuel(detailFeature, detailFuel);
+        }
+      }
       renderDetail();
       return;
     }
@@ -737,6 +745,13 @@ export async function openStationDetail(feature, map, updatedText = '') {
   const props = feature.properties;
   detailFuel = checked && props[checked.value + '_price'] != null ? checked.value
     : (props.regular_price != null ? 'regular' : FUEL_KEYS.find(f => props[f + '_price'] != null) || 'regular');
+
+  // Opening a watched station should show the fuel it is actually watching,
+  // not silently re-point it to the sidebar's selected fuel.
+  const watched = getWatchEntry(feature);
+  if (watched && FUEL_KEYS.includes(watched.fuel) && props[watched.fuel + '_price'] != null) {
+    detailFuel = watched.fuel;
+  }
   detailRange = 90;
 
   const panel = buildDetailPanel();
@@ -772,11 +787,6 @@ async function renderDetail() {
   detailEl.querySelector('.sd-pills').innerHTML = available.map(f => `
     <button class="sd-fuelpill ${f === detailFuel ? 'on' : ''}" data-fuel="${f}">${fuelLabel(f)}</button>`).join('');
 
-  // Keep a watched station's threshold attached to the fuel being viewed.
-  const watchEntry = getWatchEntry(detailFeature);
-  if (watchEntry && watchEntry.fuel !== detailFuel) {
-    setWatchFuel(detailFeature, detailFuel);
-  }
   updateWatchRow();
 
   const coverage = getStationHistoryCoverage(detailFeature, detailFuel);

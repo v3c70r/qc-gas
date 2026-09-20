@@ -989,6 +989,40 @@ test.describe('Price Watch (localStorage)', () => {
     expect(result.noCurrent).toBeNull();
   });
 
+  test('setWatchFuel re-baselines the delta for the new fuel', async ({ page }) => {
+    await page.waitForFunction(() => window.__qcGasWatch && window.__qcGasMap?.getStationFeatureCount() > 0, null, { timeout: 15000 });
+
+    const result = await page.evaluate(async () => {
+      const w = window.__qcGasWatch;
+      const data = await fetch('data/stations.json').then(r => r.json());
+      const feature = data.features.find(f =>
+        f.properties.regular_price != null && f.properties.super_price != null
+      );
+      const id = [feature.properties.name, feature.properties.address, feature.properties.postal_code]
+        .map(v => (v ?? '').trim()).join('|');
+
+      w.setWatch(feature, { fuel: 'regular', thresholdCents: 170 });
+      const before = w.getWatchEntries().find(e => e.id === id);
+
+      w.setWatchFuel(feature, 'super');
+      const after = w.getWatchEntries().find(e => e.id === id);
+
+      return {
+        regularBaseline: before.lastSeenPriceCents,
+        superPrice: feature.properties.super_price,
+        fuel: after.fuel,
+        baseline: after.lastSeenPriceCents,
+        delta: w.computeDelta(after, feature.properties.super_price)
+      };
+    });
+
+    expect(result.regularBaseline).not.toBeNull();
+    expect(result.fuel).toBe('super');
+    expect(result.baseline).toBeCloseTo(result.superPrice, 1);
+    // A freshly re-based watch must show a zero delta, never a cross-fuel jump.
+    expect(result.delta).toBe(0);
+  });
+
   test('watch entry persists in localStorage after reload', async ({ page }) => {
     await page.waitForFunction(() => window.__qcGasWatch, null, { timeout: 15000 });
 

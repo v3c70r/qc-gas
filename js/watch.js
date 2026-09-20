@@ -195,6 +195,10 @@ export function setWatchFuel(feature, fuel) {
   const entry = watchEntries.find(e => e.id === id);
   if (!entry) return null;
   entry.fuel = fuel;
+  // A fuel switch must never compare prices across fuels: re-baseline the
+  // "since last viewed" delta from the new fuel's real observed price.
+  entry.lastSeenPriceCents = currentPrice(feature, fuel);
+  entry.lastSeenAt = currentStations?.metadata?.generated_at || new Date().toISOString();
   persist();
   notify();
   return entry;
@@ -402,6 +406,7 @@ if (typeof window !== 'undefined') {
     removeWatch,
     removeWatchById,
     setWatchThreshold,
+    setWatchFuel,
     isWatching,
     getWatchEntry,
     evaluateWatch
