@@ -542,6 +542,29 @@ body {
 }
 
 /* Station list */
+.locate-around-btn {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  margin: 4px 12px 6px;
+  padding: 10px 12px;
+  border: 1px dashed #94a3b8;
+  background: #f8fafc;
+  border-radius: 8px;
+  font-size: 13px;
+  font-weight: 600;
+  color: #334155;
+  cursor: pointer;
+  transition: all 0.15s;
+}
+
+.locate-around-btn:hover {
+  border-color: #1a73e8;
+  color: #1a73e8;
+  background: #eff6ff;
+}
+
 #station-list { padding: 8px; }
 
 .list-item {
@@ -803,6 +826,8 @@ body {
   box-shadow: 0 2px 12px rgba(0,0,0,0.12);
   display: flex;
   align-items: center;
+  justify-content: center;
+  flex-wrap: wrap;
   gap: 8px;
 }
 
@@ -829,6 +854,15 @@ body {
 
 .radius-btn:hover { background: #f1f5f9; }
 .radius-btn.active { background: #1a73e8; color: #fff; }
+
+.radius-source {
+  flex-basis: 100%;
+  text-align: center;
+  font-size: 10px;
+  font-weight: 500;
+  color: #64748b;
+  white-space: nowrap;
+}
 
 /* Legend */
 #legend {

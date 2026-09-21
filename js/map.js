@@ -35,14 +35,146 @@ function waitForMapboxGL(timeoutMs = 15000) {
   });
 }
 
-// Montréal West Island center
+// Montréal West Island fallback reference. It is NOT used for radius filtering
+// unless the user explicitly enters radius mode without another reference point.
 const MONTREAL_CENTER = [-73.7, 45.45];
+
+// Valid Québec bounding box used for first-visit province view + invalid
+// coordinate protection. The official snapshot contains a (0,0) "Hub Régie"
+// record that must never enter the map/list/stats/benchmarks.
+export const QUEBEC_BOUNDS = [[-79.5, 44.9], [-57.1, 62.4]];
+const VIEW_STORAGE_KEY = 'qc-gas-view';
+const VALID_RADII = [5, 10, 25, 50];
 
 let map;
 let currentStations = [];
+// Explicit user reference point ([lng, lat]) or null when the user has not
+// located / clicked the map. `MONTREAL_CENTER` is only the legacy fallback.
+let referencePoint = null;
+let radiusMode = false;
+let referenceSource = 'stored'; // 'geolocation' | 'map-click' | 'stored'
+
 // Must match the default `.radius-btn.active` in index.html (25 km)
 export const rangeRadius = { value: 25 }; // km, shared mutable reference
 let pulseAnimationId = null;
+
+export function isValidQuebecCoordinate(lng, lat) {
+  const [sw, ne] = QUEBEC_BOUNDS;
+  return Number.isFinite(lng) && Number.isFinite(lat) &&
+    lng >= sw[0] && lng <= ne[0] &&
+    lat >= sw[1] && lat <= ne[1];
+}
+
+export function isValidStation(feature) {
+  const coords = feature?.geometry?.coordinates;
+  return Array.isArray(coords) && isValidQuebecCoordinate(coords[0], coords[1]);
+}
+
+export function getReferencePoint() {
+  return referencePoint ? [...referencePoint] : null;
+}
+
+export function getEffectiveReferencePoint() {
+  return getReferencePoint() || [...MONTREAL_CENTER];
+}
+
+export function isRadiusMode() {
+  return radiusMode;
+}
+
+function loadViewState() {
+  try {
+    const raw = localStorage.getItem(VIEW_STORAGE_KEY);
+    if (!raw) return null;
+    const saved = JSON.parse(raw);
+    const lng = Number(saved?.lng);
+    const lat = Number(saved?.lat);
+    if (!isValidQuebecCoordinate(lng, lat)) return null;
+    const radiusKm = VALID_RADII.includes(Number(saved?.radiusKm)) ? Number(saved.radiusKm) : 25;
+    return {
+      mode: saved.mode === 'radius' ? 'radius' : 'province',
+      lng,
+      lat,
+      radiusKm,
+      zoom: Number.isFinite(Number(saved?.zoom)) ? Number(saved.zoom) : null
+    };
+  } catch {
+    return null;
+  }
+}
+
+function persistView() {
+  try {
+    const reference = getEffectiveReferencePoint();
+    const center = map?.getCenter ? map.getCenter() : null;
+    localStorage.setItem(VIEW_STORAGE_KEY, JSON.stringify({
+      mode: radiusMode ? 'radius' : 'province',
+      lng: reference[0],
+      lat: reference[1],
+      radiusKm: rangeRadius.value,
+      zoom: map?.getZoom ? map.getZoom() : null,
+      center: center ? [center.lng, center.lat] : null
+    }));
+  } catch {
+    // Storage may be unavailable (private browsing); view still works in-session.
+  }
+}
+
+export function setRadiusMode(mode) {
+  radiusMode = Boolean(mode);
+  syncRadiusUI();
+  addRangeCircle();
+  persistView();
+}
+
+export function setReferencePoint(lng, lat, { zoom = 13, fly = true, source = 'map-click' } = {}) {
+  if (!isValidQuebecCoordinate(lng, lat)) return;
+  referencePoint = [lng, lat];
+  MONTREAL_CENTER[0] = lng;
+  MONTREAL_CENTER[1] = lat;
+  radiusMode = true;
+  referenceSource = source;
+  syncRadiusUI();
+  if (fly && map) map.flyTo({ center: [lng, lat], zoom, duration: 1200 });
+  addRangeCircle();
+  persistView();
+  updateStats();
+}
+
+export function setRadiusKm(km) {
+  const value = Number(km);
+  if (!VALID_RADII.includes(value)) return;
+  rangeRadius.value = value;
+  radiusMode = true;
+  syncRadiusUI();
+  addRangeCircle();
+  persistView();
+  updateStats();
+}
+
+function syncRadiusUI() {
+  document.querySelectorAll('.radius-btn').forEach((btn) => {
+    const active = radiusMode && Number(btn.dataset.radius) === rangeRadius.value;
+    btn.classList.toggle('active', active);
+  });
+
+  const label = document.querySelector('.radius-label');
+  if (label) label.textContent = radiusMode ? t('radius') : t('provinceView');
+
+  const source = document.getElementById('radius-source');
+  if (source) {
+    if (radiusMode) {
+      const key = referenceSource === 'geolocation' ? 'referenceGeolocation'
+        : referenceSource === 'map-click' ? 'referenceMapClick' : 'referenceStored';
+      source.textContent = t(key);
+      source.hidden = false;
+    } else {
+      source.hidden = true;
+    }
+  }
+}
+
+onLanguageChange(syncRadiusUI);
 
 // ── Fuel selection helpers ──
 function getActiveFuelPriceKey() {
@@ -73,11 +205,30 @@ export async function initMap() {
   }
   mapboxgl.accessToken = mapboxToken;
 
+  const savedView = loadViewState();
+  if (savedView && savedView.mode === 'radius') {
+    referencePoint = [savedView.lng, savedView.lat];
+    MONTREAL_CENTER[0] = savedView.lng;
+    MONTREAL_CENTER[1] = savedView.lat;
+    radiusMode = true;
+    rangeRadius.value = savedView.radiusKm;
+    referenceSource = 'stored';
+  }
+
+  syncRadiusUI();
+
+  // Keep the pre-load view quick and familiar (Montréal zoom 10, as before).
+  // Province mode is fitted to valid station bounds right after stations load,
+  // so first-time visitors still land on the province-wide view without
+  // delaying the initial Mapbox load.
+  const initialCenter = radiusMode ? getEffectiveReferencePoint() : [...MONTREAL_CENTER];
+  const initialZoom = radiusMode ? (savedView?.zoom ?? 12) : 10;
+
   map = new mapboxgl.Map({
     container: 'map',
     style: 'mapbox://styles/mapbox/light-v11',
-    center: MONTREAL_CENTER,
-    zoom: 10,
+    center: initialCenter,
+    zoom: initialZoom,
     attributionControl: true,
     pitch: 0,
     bearing: 0
@@ -99,15 +250,11 @@ export async function initMap() {
     showZoom: true
   }));
 
-  // Click on map to set center
+  // Click on map to set the radius reference point.
   map.on('click', (e) => {
     const features = map.queryRenderedFeatures(e.point);
     if (features.length > 0) return;
-    
-    MONTREAL_CENTER[0] = e.lngLat.lng;
-    MONTREAL_CENTER[1] = e.lngLat.lat;
-    addRangeCircle();
-    updateStats();
+    setReferencePoint(e.lngLat.lng, e.lngLat.lat, { zoom: map.getZoom(), fly: false, source: 'map-click' });
   });
 }
 
@@ -140,14 +287,20 @@ export async function loadStations() {
   try {
     const response = await fetch('data/stations.json');
     const data = await response.json();
-    currentStations = data;
-    stationCount = data.metadata.total_stations;
-    
-    console.log('Loaded', data.features.length, 'stations');
-    
+
+    // Exclude official records with invalid coordinates (currently the (0,0)
+    // "Hub Régie" record) from every downstream consumer: map, list, stats,
+    // regional benchmarks and province fitBounds.
+    const rawFeatures = Array.isArray(data.features) ? data.features : [];
+    const validFeatures = rawFeatures.filter(isValidStation);
+    currentStations = { ...data, features: validFeatures };
+    stationCount = validFeatures.length;
+
+    console.log('Loaded', validFeatures.length, 'stations (excluded', rawFeatures.length - validFeatures.length, 'invalid coordinates)');
+
     // Initialize brand filters — sorted by popularity (most stations first)
     const brandCount = {};
-    data.features.forEach(f => {
+    validFeatures.forEach(f => {
       const b = f.properties.brand;
       if (b) brandCount[b] = (brandCount[b] || 0) + 1;
     });
@@ -234,7 +387,7 @@ export async function loadStations() {
     
     // Initialize region filter
     const regionContainer = document.getElementById('region-filter');
-    const regions = [...new Set(data.features.map(f => f.properties.region))].sort();
+    const regions = [...new Set(validFeatures.map(f => f.properties.region))].sort();
     regions.forEach(region => {
       const option = document.createElement('option');
       option.value = region;
@@ -245,8 +398,12 @@ export async function loadStations() {
     // Add layers
     addStationLayers();
     
-    // Add range circle
+    // Add range circle (only when radius mode is active)
     addRangeCircle();
+
+    // First visit (no saved radius view) shows the whole province, never a
+    // silent Montréal zoom.
+    if (!radiusMode) fitQuebecBounds();
     
     // Update UI (pwa.js renders #data-status, including honest offline label)
     setDataSnapshot({
@@ -258,7 +415,7 @@ export async function loadStations() {
 
     // Let dependent modules (e.g. the price-watch list) evaluate once the
     // real snapshot is available.
-    window.dispatchEvent(new CustomEvent('stations:loaded', { detail: data }));
+    window.dispatchEvent(new CustomEvent('stations:loaded', { detail: currentStations }));
     
   } catch (error) {
     console.error('Error loading stations:', error);
@@ -457,7 +614,33 @@ export function updateFuelPriceLayer() {
   }
 }
 
-// Add range circle
+// Fit the map to valid station bounds (or the Québec bbox as a fallback).
+function fitQuebecBounds() {
+  if (!map || !map.fitBounds) return;
+
+  let bounds = QUEBEC_BOUNDS;
+  if (currentStations && Array.isArray(currentStations.features) && currentStations.features.length) {
+    let minLng = Infinity;
+    let minLat = Infinity;
+    let maxLng = -Infinity;
+    let maxLat = -Infinity;
+    currentStations.features.forEach((f) => {
+      const [lng, lat] = f.geometry?.coordinates || [];
+      if (!isValidQuebecCoordinate(lng, lat)) return;
+      if (lng < minLng) minLng = lng;
+      if (lat < minLat) minLat = lat;
+      if (lng > maxLng) maxLng = lng;
+      if (lat > maxLat) maxLat = lat;
+    });
+    if (Number.isFinite(minLng) && Number.isFinite(minLat) && Number.isFinite(maxLng) && Number.isFinite(maxLat)) {
+      bounds = [[minLng, minLat], [maxLng, maxLat]];
+    }
+  }
+
+  map.fitBounds(bounds, { padding: { top: 80, bottom: 80, left: 80, right: 80 }, duration: 0 });
+}
+
+// Add / remove the range circle. The circle only exists in radius mode.
 function addRangeCircle() {
   if (map.getSource('range-circle')) {
     map.removeSource('range-circle');
@@ -469,8 +652,10 @@ function addRangeCircle() {
     map.removeLayer('range-circle-border');
   }
 
-  // Calculate circle coordinates
-  const circle = createCircle(MONTREAL_CENTER, rangeRadius.value);
+  if (!radiusMode) return;
+
+  // Calculate circle coordinates around the current reference point.
+  const circle = createCircle(getEffectiveReferencePoint(), rangeRadius.value);
   
   map.addSource('range-circle', {
     type: 'geojson',
@@ -560,7 +745,16 @@ window.__qcGasMap = {
     const source = map && map.getSource ? map.getSource('stations') : null;
     if (!source) return -1;
     return source._data?.features?.length ?? -1;
-  }
+  },
+  getStationFeatures: () => {
+    const source = map && map.getSource ? map.getSource('stations') : null;
+    return source?._data?.features ?? [];
+  },
+  hasRangeCircle: () => Boolean(map && map.getSource && map.getSource('range-circle')),
+  isValidQuebecCoordinate,
+  isRadiusMode,
+  getReferencePoint,
+  getEffectiveReferencePoint
 };
 
 export { map, currentStations, MONTREAL_CENTER, addRangeCircle };

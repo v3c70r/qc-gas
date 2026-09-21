@@ -146,6 +146,10 @@
             </button>
             <span class="favorites-count" id="favorites-count" aria-live="polite">0</span>
           </div>
+          <button id="locate-around-btn" class="locate-around-btn">
+            <span aria-hidden="true">📍</span>
+            <span data-i18n="aroundMe">Voir les prix autour de moi</span>
+          </button>
           <div id="station-list"></div>
         </div>
       </div>
@@ -171,13 +175,14 @@
       </div>
 
       <div id="radius-control" class="map-overlay-control">
-        <div class="radius-label" data-i18n="radius">Rayon</div>
+        <div class="radius-label" id="radius-label" data-i18n="radius">Rayon</div>
         <div class="radius-buttons">
           <button class="radius-btn" data-radius="5">5km</button>
           <button class="radius-btn" data-radius="10">10km</button>
           <button class="radius-btn active" data-radius="25">25km</button>
           <button class="radius-btn" data-radius="50">50km</button>
         </div>
+        <div class="radius-source" id="radius-source" hidden></div>
       </div>
 
       <div id="loading">

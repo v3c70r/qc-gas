@@ -1,4 +1,4 @@
-import { map, MONTREAL_CENTER, currentStations } from './map.js';
+import { map, currentStations, isRadiusMode, getReferencePoint, getEffectiveReferencePoint, rangeRadius } from './map.js';
 import { tf, translations, getLanguage, t, onLanguageChange } from './i18n.js';
 import { brandColor, brandAbbr } from './constants.js';
 import { isFavorite, toggleFavorite, getFavoriteCount, subscribe, STAR_ICON } from './favorites.js';
@@ -27,9 +27,9 @@ function getActiveFuelPriceKey() {
 }
 
 function getFilterCriteria() {
-  const radiusBtn = document.querySelector('.radius-btn.active');
   return {
-    radiusKm: radiusBtn ? parseFloat(radiusBtn.dataset.radius) : 25,
+    radiusKm: rangeRadius.value,
+    radiusMode: isRadiusMode(),
     selectedRegion: document.getElementById('region-filter').value,
     priceMin: parseFloat(document.getElementById('min-price').value),
     priceMax: parseFloat(document.getElementById('max-price').value),
@@ -46,8 +46,11 @@ function matchesNonBrandFilters(feat, criteria, searchMode = false) {
   const props = feat.properties;
   const coords = feat.geometry.coordinates;
   if (!searchMode) {
-    const distance = haversineDistance(MONTREAL_CENTER[0], MONTREAL_CENTER[1], coords[0], coords[1]);
-    if (distance > criteria.radiusKm) return false;
+    if (criteria.radiusMode) {
+      const reference = getEffectiveReferencePoint();
+      const distance = haversineDistance(reference[0], reference[1], coords[0], coords[1]);
+      if (distance > criteria.radiusKm) return false;
+    }
     if (criteria.selectedRegion && props.region !== criteria.selectedRegion) return false;
   }
 
@@ -284,7 +287,11 @@ function updateStationList(filteredStations = null) {
 
   filteredStations.slice(0, 30).forEach(feat => {
     const props = feat.properties;
-    const distance = haversineDistance(MONTREAL_CENTER[0], MONTREAL_CENTER[1], feat.geometry.coordinates[0], feat.geometry.coordinates[1]);
+    const reference = getReferencePoint();
+    const distance = reference
+      ? haversineDistance(reference[0], reference[1], feat.geometry.coordinates[0], feat.geometry.coordinates[1])
+      : null;
+    const distanceText = distance != null ? `${distance.toFixed(1)} km` : '—';
     const color = brandColor(props.brand);
     const abbr = brandAbbr(props.brand);
     const stationPrice = props[priceKey];
@@ -302,7 +309,7 @@ function updateStationList(filteredStations = null) {
       <button class="fav-star ${isFav ? 'on' : ''}" data-fav aria-label="${isFav ? t('unfavorite') : t('favorite')}" aria-pressed="${isFav}">${STAR_ICON}</button>
       <div class="price-block">
         <div class="price">${stationPrice ? stationPrice.toFixed(1) + '¢' : '—'}</div>
-        <div class="distance">${distance.toFixed(1)} km</div>
+        <div class="distance">${distanceText}</div>
       </div>`;
 
     item.querySelector('.fav-star').addEventListener('click', (e) => {
