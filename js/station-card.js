@@ -8,7 +8,7 @@ import { computeRegionBenchmark } from './benchmark.js';
 import { loadChartJS } from './chartjs.js';
 import { isFavorite, toggleFavorite, stationId, STAR_ICON } from './favorites.js';
 import { addFillup, localDateKey } from './fillups.js';
-import { MONTREAL_CENTER, currentStations } from './map.js';
+import { getEffectiveReferencePoint, currentStations } from './map.js';
 import { haversineDistance } from './stats.js';
 import { isWatching, getWatchEntry, setWatch, removeWatch, setWatchThreshold, setWatchFuel } from './watch.js';
 
@@ -875,7 +875,8 @@ function tripEstimate() {
   const validConsumption = raw.trim() !== '' && Number.isFinite(consumption) && consumption > 0;
 
   const [lng, lat] = detailFeature.geometry.coordinates;
-  const oneWayKm = haversineDistance(MONTREAL_CENTER[0], MONTREAL_CENTER[1], lng, lat);
+  const reference = getEffectiveReferencePoint();
+  const oneWayKm = haversineDistance(reference[0], reference[1], lng, lat);
   const distanceKm = oneWayKm * (tripPrefs.roundTrip ? 2 : 1);
   const priceCents = detailFeature.properties[detailFuel + '_price'];
 

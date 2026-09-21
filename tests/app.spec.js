@@ -1285,3 +1285,120 @@ test.describe('PWA installability and offline shell', () => {
     await expect(page.locator('#data-status')).not.toHaveClass(/offline/);
   });
 });
+
+test.describe('Province-first view & location memory (Issue #39)', () => {
+  const isValidCoord = (f) => {
+    const [lng, lat] = f.geometry.coordinates;
+    return Number.isFinite(lng) && Number.isFinite(lat) &&
+      lng >= -79.5 && lng <= -57.1 && lat >= 44.9 && lat <= 62.4;
+  };
+
+  const haversine = (lng1, lat1, lng2, lat2) => {
+    const R = 6371;
+    const toRad = (deg) => deg * Math.PI / 180;
+    const dLat = toRad(lat2 - lat1);
+    const dLon = toRad(lng2 - lng1);
+    const a = Math.sin(dLat / 2) ** 2 +
+      Math.cos(toRad(lat1)) * Math.cos(toRad(lat2)) * Math.sin(dLon / 2) ** 2;
+    return R * 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
+  };
+
+  // The default UI has all *known* brands checked, so features with a null
+  // brand are filtered out by the existing brand-filter logic.
+  const knownBrands = new Set(stationsFixture.features.map((f) => f.properties.brand).filter(Boolean));
+  const isDefaultVisible = (f) => knownBrands.has(f.properties.brand);
+
+  const provinceCount = stationsFixture.features.filter((f) => {
+    if (!isValidCoord(f) || !isDefaultVisible(f)) return false;
+    const p = f.properties.regular_price;
+    return p != null && p >= 150 && p <= 240;
+  }).length;
+
+  const radiusCount = (lng, lat, km) => stationsFixture.features.filter((f) => {
+    if (!isValidCoord(f) || !isDefaultVisible(f)) return false;
+    const p = f.properties.regular_price;
+    if (p == null || p < 150 || p > 240) return false;
+    return haversine(lng, lat, f.geometry.coordinates[0], f.geometry.coordinates[1]) <= km;
+  }).length;
+
+  test('first visit defaults to a province-wide view with no active radius', async ({ page }) => {
+    await page.addInitScript(() => localStorage.clear());
+    await page.goto(BASE_URL);
+    await page.waitForLoadState('networkidle', { timeout: 15000 }).catch(() => {});
+    await page.waitForFunction(() => window.__qcGasMap && window.__qcGasMap.getStationFeatureCount() > 0, null, { timeout: 15000 });
+
+    await expect(page.locator('.radius-btn.active')).toHaveCount(0);
+    await expect(page.locator('.radius-label')).toContainText(/Province|全省/);
+    await expect(page.locator('#locate-around-btn')).toBeVisible();
+
+    const count = await page.evaluate(() => window.__qcGasMap.getStationFeatureCount());
+    expect(count).toBe(provinceCount);
+
+    const hasCircle = await page.evaluate(() => window.__qcGasMap.hasRangeCircle());
+    expect(hasCircle).toBe(false);
+  });
+
+  test('restores a saved radius view from qc-gas-view', async ({ page }) => {
+    await page.addInitScript(() => {
+      localStorage.clear();
+      localStorage.setItem('qc-gas-view', JSON.stringify({ mode: 'radius', lng: -73.7, lat: 45.45, radiusKm: 10, zoom: 12 }));
+    });
+    await page.goto(BASE_URL);
+    await page.waitForLoadState('networkidle', { timeout: 15000 }).catch(() => {});
+    await page.waitForFunction(() => window.__qcGasMap && window.__qcGasMap.getStationFeatureCount() > 0, null, { timeout: 15000 });
+
+    await expect(page.locator('.radius-btn[data-radius="10"]')).toHaveClass(/active/);
+    await expect(page.locator('.radius-label')).toContainText(/Rayon|Radius|半径/);
+
+    const hasCircle = await page.evaluate(() => window.__qcGasMap.hasRangeCircle());
+    expect(hasCircle).toBe(true);
+
+    const count = await page.evaluate(() => window.__qcGasMap.getStationFeatureCount());
+    expect(count).toBe(radiusCount(-73.7, 45.45, 10));
+  });
+
+  test('clicking a radius button enters radius mode and persists the view', async ({ page }) => {
+    await page.addInitScript(() => localStorage.clear());
+    await page.goto(BASE_URL);
+    await page.waitForLoadState('networkidle', { timeout: 15000 }).catch(() => {});
+    await page.waitForFunction(() => window.__qcGasMap && window.__qcGasMap.getStationFeatureCount() > 0, null, { timeout: 15000 });
+
+    await expect(page.locator('.radius-btn.active')).toHaveCount(0);
+    await page.locator('.radius-btn[data-radius="25"]').click();
+    await page.waitForTimeout(500);
+
+    await expect(page.locator('.radius-btn[data-radius="25"]')).toHaveClass(/active/);
+    const hasCircle = await page.evaluate(() => window.__qcGasMap.hasRangeCircle());
+    expect(hasCircle).toBe(true);
+
+    const count = await page.evaluate(() => window.__qcGasMap.getStationFeatureCount());
+    expect(count).toBe(radiusCount(-73.7, 45.45, 25));
+
+    const raw = await page.evaluate(() => localStorage.getItem('qc-gas-view'));
+    expect(raw).toContain('"mode":"radius"');
+  });
+
+  test('invalid-coordinate Hub Régie station is excluded from the map source', async ({ page }) => {
+    await page.addInitScript(() => localStorage.clear());
+    await page.goto(BASE_URL);
+    await page.waitForLoadState('networkidle', { timeout: 15000 }).catch(() => {});
+    await page.waitForFunction(() => window.__qcGasMap && window.__qcGasMap.getStationFeatureCount() > 0, null, { timeout: 15000 });
+
+    const result = await page.evaluate(() => {
+      const features = window.__qcGasMap.getStationFeatures();
+      return {
+        count: features.length,
+        hasHub: features.some((f) => f.properties.name === 'Hub Régie'),
+        allValid: features.every((f) => {
+          const [lng, lat] = f.geometry.coordinates;
+          return Number.isFinite(lng) && Number.isFinite(lat) &&
+            lng >= -79.5 && lng <= -57.1 && lat >= 44.9 && lat <= 62.4;
+        })
+      };
+    });
+
+    expect(result.hasHub).toBe(false);
+    expect(result.allValid).toBe(true);
+    expect(result.count).toBe(provinceCount);
+  });
+});

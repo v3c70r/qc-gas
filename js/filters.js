@@ -1,5 +1,5 @@
 import { updateStats, updateStationList } from './stats.js';
-import { map, MONTREAL_CENTER, rangeRadius, addRangeCircle, updateFuelPriceLayer } from './map.js';
+import { setRadiusKm, setReferencePoint, updateFuelPriceLayer } from './map.js';
 import { t } from './i18n.js';
 
 // ── Debounce helper ──
@@ -96,52 +96,53 @@ function initFilters() {
 
   document.querySelectorAll('.radius-btn').forEach(btn => {
     btn.addEventListener('click', () => {
-      document.querySelectorAll('.radius-btn').forEach(b => b.classList.remove('active'));
-      btn.classList.add('active');
-      // Sync the shared radius variable and redraw the circle on the map
-      const newRadius = parseFloat(btn.dataset.radius);
-      rangeRadius.value = newRadius;
-      addRangeCircle();
-      updateStats();
+      // Enter radius mode explicitly. If the user has not located themselves
+      // or clicked the map yet, the legacy Montréal fallback reference is
+      // used (same behavior as before this change).
+      setRadiusKm(parseFloat(btn.dataset.radius));
     });
   });
 }
 
+function requestGeolocation(btn) {
+  if (!navigator.geolocation) {
+    alert(t('geolocationError'));
+    return;
+  }
+
+  btn.disabled = true;
+  btn.style.opacity = '0.6';
+
+  navigator.geolocation.getCurrentPosition(
+    (position) => {
+      const { latitude, longitude } = position.coords;
+      btn.disabled = false;
+      btn.style.opacity = '1';
+      // Enter radius mode around the user and persist the view.
+      setReferencePoint(longitude, latitude, { zoom: 13, source: 'geolocation' });
+    },
+    (error) => {
+      btn.disabled = false;
+      btn.style.opacity = '1';
+      const messages = {
+        1: t('geolocationDenied'),
+        2: t('geolocationUnavailable'),
+        3: t('geolocationTimeout')
+      };
+      alert(messages[error.code] || t('geolocationError'));
+    },
+    { enableHighAccuracy: true, timeout: 10000, maximumAge: 300000 }
+  );
+}
+
 function initGeolocation() {
   const btn = document.getElementById('locate-btn');
+  btn.addEventListener('click', () => requestGeolocation(btn));
 
-  btn.addEventListener('click', () => {
-    if (!navigator.geolocation) {
-      alert(t('geolocationError'));
-      return;
-    }
-
-    btn.disabled = true;
-    btn.style.opacity = '0.6';
-
-    navigator.geolocation.getCurrentPosition(
-      (position) => {
-        const { latitude, longitude } = position.coords;
-        MONTREAL_CENTER[0] = longitude;
-        MONTREAL_CENTER[1] = latitude;
-        map.flyTo({ center: [longitude, latitude], zoom: 13, duration: 1200 });
-        btn.disabled = false;
-        btn.style.opacity = '1';
-        setTimeout(() => updateStats(), 1300);
-      },
-      (error) => {
-        btn.disabled = false;
-        btn.style.opacity = '1';
-        const messages = {
-          1: t('geolocationDenied'),
-          2: t('geolocationUnavailable'),
-          3: t('geolocationTimeout')
-        };
-        alert(messages[error.code] || t('geolocationError'));
-      },
-      { enableHighAccuracy: true, timeout: 10000, maximumAge: 300000 }
-    );
-  });
+  // Explicit, non-auto-permission entry point in the list (the FAB alone is
+  // easy to miss and the app must not silently request permission on load).
+  const inlineBtn = document.getElementById('locate-around-btn');
+  if (inlineBtn) inlineBtn.addEventListener('click', () => requestGeolocation(inlineBtn));
 }
 
 function initSidebarToggle() {
