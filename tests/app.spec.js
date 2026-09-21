@@ -1191,3 +1191,97 @@ test.describe('Same-day regional benchmark', () => {
     await expect(page.locator('.sd-bench-grid .sd-bench-item')).toHaveCount(5);
   });
 });
+
+test.describe('PWA installability and offline shell', () => {
+  test.beforeEach(async ({ page }) => {
+    await page.goto(BASE_URL);
+    await page.waitForLoadState('networkidle', { timeout: 15000 }).catch(() => {});
+  });
+
+  test('manifest is accessible and satisfies installability basics', async ({ request }) => {
+    const res = await request.get(`${BASE_URL}/manifest.webmanifest`);
+    expect(res.status()).toBe(200);
+
+    const manifest = await res.json();
+    expect(manifest.name).toBeTruthy();
+    expect(manifest.short_name).toBeTruthy();
+    expect(manifest.start_url).toBeTruthy();
+    expect(manifest.scope).toBeTruthy();
+    expect(manifest.display).toBe('standalone');
+
+    const sizes = manifest.icons.map((icon) => icon.sizes);
+    expect(sizes).toContain('192x192');
+    expect(sizes).toContain('512x512');
+    expect(manifest.icons.some((icon) => icon.purpose === 'any')).toBe(true);
+    expect(manifest.icons.some((icon) => icon.purpose === 'maskable')).toBe(true);
+  });
+
+  test('service worker and icons are served with valid PNG bytes', async ({ request }) => {
+    const sw = await request.get(`${BASE_URL}/sw.js`);
+    expect(sw.status()).toBe(200);
+    expect(await sw.text()).toContain('qc-gas-v1');
+
+    const pngSignature = [0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a];
+    for (const icon of ['icon-192.png', 'icon-512.png', 'maskable-512.png', 'apple-touch-icon-180.png']) {
+      const res = await request.get(`${BASE_URL}/icons/${icon}`);
+      expect(res.status()).toBe(200);
+      expect(res.headers()['content-type']).toContain('image/png');
+      const body = await res.body();
+      expect([...body.slice(0, 8)]).toEqual(pngSignature);
+    }
+  });
+
+  test('beforeinstallprompt shows a closable install entry', async ({ page }) => {
+    await page.evaluate(() => {
+      window.dispatchEvent(new Event('beforeinstallprompt', { cancelable: true }));
+    });
+
+    const banner = page.locator('#pwa-install');
+    await expect(banner).toBeVisible();
+    await expect(page.locator('#pwa-install-btn')).toBeVisible();
+    await expect(page.locator('#pwa-install-close')).toBeVisible();
+
+    await page.locator('#pwa-install-close').click();
+    await expect(banner).toHaveCount(0);
+  });
+
+  test('install entry is hidden when already running standalone', async ({ page }) => {
+    await page.addInitScript(() => {
+      const originalMatchMedia = window.matchMedia.bind(window);
+      window.matchMedia = (query) => {
+        if (query === '(display-mode: standalone)') {
+          return {
+            matches: true,
+            media: query,
+            onchange: null,
+            addListener() {},
+            removeListener() {},
+            addEventListener() {},
+            removeEventListener() {},
+            dispatchEvent() { return false; }
+          };
+        }
+        return originalMatchMedia(query);
+      };
+    });
+
+    await page.goto(BASE_URL);
+    await page.waitForLoadState('networkidle', { timeout: 15000 }).catch(() => {});
+
+    await page.evaluate(() => {
+      window.dispatchEvent(new Event('beforeinstallprompt', { cancelable: true }));
+    });
+
+    await expect(page.locator('#pwa-install')).toHaveCount(0);
+  });
+
+  test('offline status is shown honestly and restored when back online', async ({ page }) => {
+    await page.evaluate(() => window.dispatchEvent(new Event('offline')));
+    await expect(page.locator('#data-status')).toContainText(/Offline|离线|Hors ligne/);
+    await expect(page.locator('#data-status')).toHaveClass(/offline/);
+
+    await page.evaluate(() => window.dispatchEvent(new Event('online')));
+    await expect(page.locator('#data-status')).not.toContainText(/Offline|离线|Hors ligne/);
+    await expect(page.locator('#data-status')).not.toHaveClass(/offline/);
+  });
+});
