@@ -26,6 +26,7 @@ import { execFileSync } from 'node:child_process';
 import { mkdirSync, readFileSync, writeFileSync, existsSync, copyFileSync, symlinkSync, rmSync } from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { detectBase, resolvePi, sh } from './lib.mjs';
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const AGENT = path.join(ROOT, '.agent');
@@ -33,22 +34,6 @@ const STATE_FILE = path.join(AGENT, 'state.json');
 const LOG_DIR = path.join(AGENT, 'logs');
 const TMP = path.join(AGENT, 'tmp');
 const LABEL_APPROVED = 'agent-approved';
-// default branch auto-detected (main/master); override with AGENT_BASE.
-// NOTE: `refs/remotes/origin/HEAD` is often MISSING on fresh clones (e.g. after
-// `gh repo create --source=. --push`), so never let detection throw at import time.
-function detectBase() {
-  if (process.env.AGENT_BASE) return process.env.AGENT_BASE;
-  const tryOut = (args) => { try { return sh(args).trim(); } catch { return ''; } };
-  const sym = tryOut(['git', 'symbolic-ref', '--short', 'refs/remotes/origin/HEAD']).replace(/^origin\//, '');
-  if (sym) return sym;
-  for (const cand of ['main', 'master']) {
-    if (tryOut(['git', 'rev-parse', '--verify', `origin/${cand}`])) return cand;
-  }
-  const ls = tryOut(['git', 'ls-remote', '--symref', 'origin', 'HEAD']);
-  const m = ls.match(/^ref:\s+refs\/heads\/(\S+)\s+HEAD/m);
-  if (m) return m[1];
-  return 'master';
-}
 const BASE = detectBase();
 
 // ── upstream feedback (self-improvement of the agent-dev-team skill) ──
@@ -76,31 +61,8 @@ function reportGap(title, body) {
   } catch (e) { console.warn('[feedback] failed:', e.message); }
 }
 
-// ── locate the real pi binary ──
-// `npm run` prepends node_modules/.bin to PATH, and a transitive dep also
-// ships a (much older) `pi` CLI that shadows the real one. Skip those dirs.
-let PI_BIN = null;
-function resolvePi() {
-  if (PI_BIN) return PI_BIN;
-  if (process.env.PI_BIN) { PI_BIN = process.env.PI_BIN; return PI_BIN; }
-  const dirs = (process.env.PATH || '').split(path.delimiter)
-    .filter(d => d && !d.includes('node_modules'));
-  for (const d of dirs) {
-    const c = path.join(d, 'pi');
-    if (existsSync(c)) { PI_BIN = c; return PI_BIN; }
-  }
-  PI_BIN = 'pi';
-  return PI_BIN;
-}
-
 // ── tiny helpers ──
-function sh(cmd, opts = {}) {
-  const out = execFileSync(cmd[0], cmd.slice(1), {
-    cwd: opts.cwd || ROOT, encoding: 'utf8', stdio: ['pipe', 'pipe', 'pipe'],
-    ...opts.shell !== undefined ? {} : {},
-  });
-  return out.trim();
-}
+function ghJson(args) { return JSON.parse(gh(args)); }
 function gh(args, opts = {}) {
   return sh(['gh', ...args], opts);
 }
@@ -209,9 +171,29 @@ function parseReviewVerdict(out) {
   return { verdict: 'REQUEST_CHANGES', source: sentinel ? 'sentinel' : 'heuristic' };
 }
 
+// Model outages (billing/quota/rate-limit) must not dead-end the loop:
+// fall back to another model for this round, leave a paper trail, and report
+// the gap upstream (opt-in). Discovered live when the review model ran out of credit.
+function isModelUnavailable(err) {
+  const s = String((err && (err.stderr || err.stdout || err.message)) || '');
+  return /\b429\b|insufficient|balance|quota|无可用资源|余额不足|欠费|rate.?limit|too many requests|capacity|overload/i.test(s);
+}
+
 async function runReviewRound(issueNum, prNum) {
   const prompt = buildPrompt('reviewer', { issue: { number: issueNum }, pr: prNum });
-  const out = runPi(`agent-review-${prNum}`, prompt, null, REVIEW);
+  let out;
+  try {
+    out = runPi(`agent-review-${prNum}`, prompt, null, REVIEW);
+  } catch (err) {
+    if (!isModelUnavailable(err)) throw err;
+    const fallback = { provider: process.env.REVIEW_FALLBACK_PROVIDER || '', model: process.env.REVIEW_FALLBACK_MODEL || '' };
+    const detail = String((err.stderr || err.message || '')).slice(0, 300);
+    console.warn(`[review] ${describeModel(REVIEW)} unavailable → fallback ${describeModel(fallback)}: ${detail}`);
+    log(issueNum, `B: 模型不可用（${describeModel(REVIEW)}）→ 回退到 ${describeModel(fallback)}`);
+    try { commentOnPr(prNum, `⚠️ **审查模型不可用**（\`${describeModel(REVIEW)}\`）：\`${detail.replace(/\n/g, ' ')}\`\n\n已自动回退到 \`${describeModel(fallback)}\` 完成本轮审查（不影响合并）。\n长期方案：为账户充值，或设置 \`REVIEW_PROVIDER\`/\`REVIEW_MODEL\` 指向可用模型。`); } catch {}
+    reportGap(`审查模型不可用（${describeModel(REVIEW)}）`, `## 现象\n审查轮次调用模型失败，错误被判定为额度/限流类。\n\n## 模型\n- 主: ${describeModel(REVIEW)}\n- 回退: ${describeModel(fallback)}\n\n## 错误\n\`\`\`\n${detail}\n\`\`\`\n\n## 建议\n模板已自动回退；可考虑在 doctor 中预检模型额度（\`pi auth check\` 不检测余额），或支持多模型候选列表。`);
+    out = runPi(`agent-review-${prNum}`, prompt, null, fallback);
+  }
   const { verdict, source } = parseReviewVerdict(out);
   log(issueNum, `B: verdict=${verdict} (${source}, model=${describeModel(REVIEW)})`);
   log(issueNum, `B: review 输出:\n${out.split('\n').slice(-30).join('\n')}`);
@@ -444,6 +426,20 @@ async function main() {
   const cmd = process.argv[2] || 'watch';
   const once = process.argv.includes('--once');
   mkdirSync(LOG_DIR, { recursive: true });
+
+  if (cmd === 'feedback') {
+    // manual gap report: node .agent/pipeline.mjs feedback "<title>" [body]
+    const cfg = loadConfig();
+    if (!cfg.upstream) { console.error('no upstream configured in .agent/config.json'); process.exit(2); }
+    if (!cfg.feedbackOptIn && !process.argv.includes('--force')) {
+      console.error('feedbackOptIn=false（如需强制上报加 --force）'); process.exit(2);
+    }
+    const title = process.argv[3] || 'manual gap report';
+    const body = process.argv[4] || '(no details provided)';
+    reportGap(title, body);
+    console.log('feedback submitted (or attempted) — see warnings above');
+    return;
+  }
 
   if (cmd === 'status') {
     console.log(JSON.stringify(state.load(), null, 2));
