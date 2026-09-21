@@ -35,3 +35,7 @@ Written in English ASCII, on its own line, even if the rest of your reply is in
 Chinese or another language. An automated orchestrator parses this line; if it is
 missing or translated, the loop cannot tell that you approved and will keep
 asking the implementer for changes until the round budget is exhausted.
+
+## 参考
+
+- 审查上下文的组织方式参考 `.agents/skills/requesting-code-review/SKILL.md`（本仓库中 review 由你执行，无需派发 subagent）
