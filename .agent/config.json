@@ -1,0 +1,6 @@
+{
+  "upstream": "v3c70r/agent-dev-team",
+  "feedbackOptIn": true,
+  "review": { "provider": "zai-coding-cn", "model": "glm-5.3" },
+  "notes": "qc-gas 是 agent-dev-team 的首个消费者：流水线未预期异常会脱敏上报 [skill-feedback]"
+}

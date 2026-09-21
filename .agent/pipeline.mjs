@@ -33,7 +33,48 @@ const STATE_FILE = path.join(AGENT, 'state.json');
 const LOG_DIR = path.join(AGENT, 'logs');
 const TMP = path.join(AGENT, 'tmp');
 const LABEL_APPROVED = 'agent-approved';
-const BASE = 'master';
+// default branch auto-detected (main/master); override with AGENT_BASE.
+// NOTE: `refs/remotes/origin/HEAD` is often MISSING on fresh clones (e.g. after
+// `gh repo create --source=. --push`), so never let detection throw at import time.
+function detectBase() {
+  if (process.env.AGENT_BASE) return process.env.AGENT_BASE;
+  const tryOut = (args) => { try { return sh(args).trim(); } catch { return ''; } };
+  const sym = tryOut(['git', 'symbolic-ref', '--short', 'refs/remotes/origin/HEAD']).replace(/^origin\//, '');
+  if (sym) return sym;
+  for (const cand of ['main', 'master']) {
+    if (tryOut(['git', 'rev-parse', '--verify', `origin/${cand}`])) return cand;
+  }
+  const ls = tryOut(['git', 'ls-remote', '--symref', 'origin', 'HEAD']);
+  const m = ls.match(/^ref:\s+refs\/heads\/(\S+)\s+HEAD/m);
+  if (m) return m[1];
+  return 'master';
+}
+const BASE = detectBase();
+
+// ── upstream feedback (self-improvement of the agent-dev-team skill) ──
+// .agent/config.json: { "upstream": "<owner>/<repo>", "feedbackOptIn": true }
+function loadConfig() {
+  try { return JSON.parse(readFileSync(path.join(AGENT, 'config.json'), 'utf8')); } catch { return {}; }
+}
+function reportGap(title, body) {
+  const cfg = loadConfig();
+  if (!cfg.feedbackOptIn || !cfg.upstream) return;
+  try {
+    // anti-spam: at most 3 feedback issues per rolling day
+    const since = new Date(Date.now() - 864e5).toISOString().slice(0, 10);
+    const recent = ghJson(['issue', 'list', '-R', cfg.upstream, '--state', 'all',
+      '--search', `[skill-feedback] created:>=${since}`, '--limit', '10', '--json', 'number']);
+    if (recent.length >= 3) { console.warn('[feedback] daily cap reached, skip'); return; }
+    const full = `${body}\n\n---\n_自动反馈来自 agent-dev-team 流水线（opt-in）。不应包含用户代码；如包含请维护者删除。 ${new Date().toISOString()}_`;
+    try {
+      gh(['issue', 'create', '-R', cfg.upstream, '--label', 'skill-feedback', '--title', `[skill-feedback] ${title}`, '--body', full]);
+    } catch {
+      // most users lack label rights upstream — retry without label
+      gh(['issue', 'create', '-R', cfg.upstream, '--title', `[skill-feedback] ${title}`, '--body', full]);
+    }
+    console.warn(`[feedback] filed upstream: [skill-feedback] ${title}`);
+  } catch (e) { console.warn('[feedback] failed:', e.message); }
+}
 
 // ── locate the real pi binary ──
 // `npm run` prepends node_modules/.bin to PATH, and a transitive dep also
@@ -196,8 +237,12 @@ function runTester(issueNum, prNum, branch) {
       sh(['git', 'worktree', 'add', '--detach', wt, branch]);
       added = true;
     }
-    // reuse node_modules via symlink (vite/esbuild tolerate it)
-    if (!existsSync(path.join(wt, 'node_modules'))) symlinkSync(path.join(ROOT, 'node_modules'), path.join(wt, 'node_modules'), 'dir');
+    // reuse node_modules via symlink when the repo has them (vite/esbuild tolerate it).
+    // Repos without dependencies (e.g. this template repo) simply skip this.
+    const rootModules = path.join(ROOT, 'node_modules');
+    if (existsSync(rootModules) && !existsSync(path.join(wt, 'node_modules'))) {
+      symlinkSync(rootModules, path.join(wt, 'node_modules'), 'dir');
+    }
     if (process.env.TEST_ENV_FILE && existsSync(process.env.TEST_ENV_FILE)) copyFileSync(process.env.TEST_ENV_FILE, path.join(wt, '.env'));
     sh(['npm', 'run', 'build'], { cwd: wt });
     const report = sh(['npm', 'test'], { cwd: wt }).split('\n').slice(-60).join('\n');
@@ -478,6 +523,12 @@ async function main() {
           sf[issue.number].error = String(err.message);
           state.save(sf);
           try { commentOnIssue(issue.number, `⚠️ 处理该 issue 时出错，已交给人工：\`${err.message}\``); } catch {}
+          // self-improvement: unexpected pipeline errors are exactly the gaps
+          // the skill wants to learn about (opt-in, sanitized, rate-limited)
+          reportGap(`流水线异常: ${String(err.message).slice(0, 120)}`,
+            `## 现象\n处理 issue 时流水线抛出未预期异常。\n\n## 详情\n\
+\`\`\`\n${String(err.stack || err.message).slice(0, 1500)}\n\
+\`\`\`\n\n## 环坑提示\n如果这是模板本身的问题（而非用户仓库环境问题），请改进 agent-dev-team 模板并补充 docs/lessons.md。`);
         }
       }
       pollFailures = 0;
