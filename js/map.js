@@ -1,7 +1,8 @@
 // Mapbox initialization and map configuration
-import { t, tf, onLanguageChange } from './i18n.js';
+import { t, onLanguageChange } from './i18n.js';
 import { brandColor, brandAbbr, isMembershipBrand } from './constants.js';
 import { updateStats } from './stats.js';
+import { setDataSnapshot, isResponseFromCache } from './pwa.js';
 
 const mapboxToken = import.meta.env.VITE_MAPBOX_ACCESS_TOKEN;
 
@@ -112,19 +113,6 @@ export async function initMap() {
 
 // Station count for i18n reactivity
 let stationCount = 0;
-
-function updateDataStatus() {
-  const el = document.getElementById('data-status');
-  if (stationCount > 0) {
-    el.textContent = tf('dataLoaded', { n: stationCount });
-  } else {
-    el.textContent = t('dataLoading');
-  }
-  el.dataset.count = stationCount;
-}
-
-// Listen for language changes to keep data-status in sync
-onLanguageChange(() => updateDataStatus());
 
 // Keep brand-item tooltips in sync with the active language (the markup itself
 // is built once in loadStations, so only attribute text needs refreshing).
@@ -260,8 +248,12 @@ export async function loadStations() {
     // Add range circle
     addRangeCircle();
     
-    // Update UI
-    updateDataStatus();
+    // Update UI (pwa.js renders #data-status, including honest offline label)
+    setDataSnapshot({
+      generatedAt: data.metadata?.generated_at || null,
+      fromCache: isResponseFromCache(response),
+      stationCount
+    });
     updateStats();
 
     // Let dependent modules (e.g. the price-watch list) evaluate once the

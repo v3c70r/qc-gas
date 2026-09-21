@@ -8,6 +8,7 @@ on:
       - 'js/**'
       - 'css/**'
       - 'index.html'
+      - 'public/**'
       - 'vite.config.**'
       - 'package.json'
       - 'package-lock.json'

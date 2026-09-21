@@ -8,6 +8,7 @@ import './benchmark.js';
 import { initFillups } from './fillups.js';
 import { initWatch } from './watch.js';
 import { initSearch, clearSearch, isSearchActive } from './search.js';
+import { initPWA } from './pwa.js';
 
 function initKeyboardShortcuts() {
   document.addEventListener('keydown', (e) => {
@@ -72,6 +73,7 @@ function initApp() {
   initFillups();
   initWatch();
   initKeyboardShortcuts();
+  initPWA();
 
   // Warm the history caches (used by station cards + trends dashboard)
   loadHistoryData().catch(() => {});
