@@ -31,8 +31,13 @@ jobs:
       name: Credentials
     runs-on: ubuntu-latest
     steps:
+      # Check out the *latest* branch tip instead of the schedule-time SHA.
+      # update-data pushes a new data commit during this run; checking out the
+      # pinned github.sha would build/deploy the stale (pre-update) snapshot.
       - name: Checkout
         uses: actions/checkout@v4
+        with:
+          ref: ${{ github.ref }}
 
       - name: Setup Node
         uses: actions/setup-node@v4
