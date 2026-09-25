@@ -1219,7 +1219,7 @@ test.describe('PWA installability and offline shell', () => {
   test('service worker and icons are served with valid PNG bytes', async ({ request }) => {
     const sw = await request.get(`${BASE_URL}/sw.js`);
     expect(sw.status()).toBe(200);
-    expect(await sw.text()).toContain('qc-gas-v1');
+    expect(await sw.text()).toMatch(/qc-gas-v\d/);
 
     const pngSignature = [0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a];
     for (const icon of ['icon-192.png', 'icon-512.png', 'maskable-512.png', 'apple-touch-icon-180.png']) {
@@ -1400,5 +1400,435 @@ test.describe('Province-first view & location memory (Issue #39)', () => {
     expect(result.hasHub).toBe(false);
     expect(result.allValid).toBe(true);
     expect(result.count).toBe(provinceCount);
+  });
+});
+
+test.describe('PWA update strategy (Issue #45)', () => {
+  const SW_PATH = path.join(path.dirname(fileURLToPath(import.meta.url)), '../public/sw.js');
+  const SW_SCRIPT_URL = 'https://example.test/qc-gas/sw.js';
+  const SCOPE = 'https://example.test/qc-gas/';
+  const SW_SOURCE = readFileSync(SW_PATH, 'utf8');
+
+  // Runs the real public/sw.js in a sandbox with a fake CacheStorage + fetch,
+  // so the cache strategy is asserted on behaviour instead of on source text.
+  function loadServiceWorker() {
+    const listeners = new Map();
+    const stores = new Map();
+    const scriptUrl = new URL(SW_SCRIPT_URL);
+    let online = true;
+    let networkCalls = 0;
+    let skipWaitingCalls = 0;
+
+    const bucket = (name) => {
+      if (!stores.has(name)) stores.set(name, new Map());
+      return stores.get(name);
+    };
+
+    const cacheHandle = (store) => ({
+      addAll: async (entries) => {
+        for (const entry of entries) {
+          store.set(new URL(entry, scriptUrl).href, new Response(`precached:${entry}`, { status: 200 }));
+        }
+      },
+      put: async (request, response) => {
+        store.set(typeof request === 'string' ? request : request.url, response);
+      },
+      match: async (request) => store.get(typeof request === 'string' ? request : request.url),
+      keys: async () => [...store.keys()]
+    });
+
+    const caches = {
+      open: async (name) => cacheHandle(bucket(name)),
+      keys: async () => [...stores.keys()],
+      delete: async (name) => stores.delete(name)
+    };
+
+    const fetchImpl = async (request) => {
+      networkCalls += 1;
+      const url = typeof request === 'string' ? request : request.url;
+      if (!online) throw new TypeError('Failed to fetch');
+      if (url.includes('/data/')) {
+        return new Response('{"generated_at":"2026-09-25T13:15:00Z"}', {
+          status: 200,
+          headers: { 'Content-Type': 'application/json' }
+        });
+      }
+      if (url === SCOPE || url.endsWith('/index.html')) {
+        return new Response('<html><body>shell from network</body></html>', {
+          status: 200,
+          headers: { 'Content-Type': 'text/html' }
+        });
+      }
+      return new Response(`asset:${url}`, {
+        status: 200,
+        headers: { 'Content-Type': 'application/javascript' }
+      });
+    };
+
+    const swSelf = {
+      location: scriptUrl,
+      registration: { scope: SCOPE },
+      clients: { claim: async () => {} },
+      skipWaiting: async () => { skipWaitingCalls += 1; },
+      addEventListener: (type, handler) => {
+        const list = listeners.get(type) || [];
+        list.push(handler);
+        listeners.set(type, list);
+      }
+    };
+
+    new Function('self', 'caches', 'fetch', 'Response', 'Request', 'URL', 'console', SW_SOURCE)(
+      swSelf, caches, fetchImpl, Response, Request, URL, console
+    );
+
+    const runLifecycle = async (type) => {
+      const pending = [];
+      for (const handler of listeners.get(type) || []) {
+        handler({ type, waitUntil: (promise) => pending.push(promise) });
+      }
+      await Promise.all(pending);
+    };
+
+    return {
+      install: () => runLifecycle('install'),
+      activate: () => runLifecycle('activate'),
+      message: async (data) => {
+        const pending = [];
+        for (const handler of listeners.get('message') || []) {
+          handler({ data, waitUntil: (promise) => pending.push(promise) });
+        }
+        await Promise.all(pending);
+      },
+      fetch: async (request) => {
+        let handled;
+        for (const handler of listeners.get('fetch') || []) {
+          handler({ request, respondWith: (response) => { handled = response; } });
+        }
+        return handled === undefined ? undefined : await handled;
+      },
+      setOnline: (value) => { online = value; },
+      networkCalls: () => networkCalls,
+      skipWaitingCalls: () => skipWaitingCalls,
+      cacheNames: () => [...stores.keys()],
+      precachedUrls: () => [...stores.values()].flatMap((store) => [...store.keys()]),
+      createLegacyCache: (name) => { bucket(name); },
+      seedCachedShell: (body) => {
+        for (const store of stores.values()) {
+          store.set(`${SCOPE}index.html`, new Response(body, {
+            status: 200,
+            headers: { 'Content-Type': 'text/html' }
+          }));
+        }
+      }
+    };
+  }
+
+  const requestFor = (url, overrides = {}) => ({
+    url,
+    method: 'GET',
+    mode: 'no-cors',
+    destination: '',
+    headers: new Headers(),
+    ...overrides
+  });
+
+  const navigationRequest = () => requestFor(SCOPE, {
+    mode: 'navigate',
+    destination: 'document',
+    headers: new Headers({ accept: 'text/html,application/xhtml+xml' })
+  });
+
+  test('navigations hit the network first so installed users get the new shell', async () => {
+    const sw = loadServiceWorker();
+    await sw.install();
+    sw.seedCachedShell('<html><body>stale shell from the previous release</body></html>');
+
+    const response = await sw.fetch(navigationRequest());
+
+    expect(response.status).toBe(200);
+    expect(await response.text()).toContain('shell from network');
+  });
+
+  test('offline navigation falls back to the cached shell and says so', async () => {
+    const sw = loadServiceWorker();
+    await sw.install();
+    sw.seedCachedShell('<html><body>cached shell</body></html>');
+    sw.setOnline(false);
+
+    const response = await sw.fetch(navigationRequest());
+
+    expect(response.status).toBe(200);
+    expect(await response.text()).toContain('cached shell');
+    expect(response.headers.get('X-QCGas-From-Cache')).toBe('1');
+  });
+
+  test('hashed assets are cache-first and need no network once cached', async () => {
+    const sw = loadServiceWorker();
+    await sw.install();
+    const assetUrl = `${SCOPE}assets/index-DukmIqY3.js`;
+
+    const first = await sw.fetch(requestFor(assetUrl, { destination: 'script' }));
+    expect(await first.text()).toContain('asset:');
+    expect(sw.precachedUrls()).toContain(assetUrl);
+
+    const callsAfterFirst = sw.networkCalls();
+    const second = await sw.fetch(requestFor(assetUrl, { destination: 'script' }));
+    expect(await second.text()).toContain('asset:');
+    expect(sw.networkCalls()).toBe(callsAfterFirst);
+  });
+
+  test('data snapshots stay network-first and are labelled when served from cache', async () => {
+    const sw = loadServiceWorker();
+    await sw.install();
+    const dataUrl = `${SCOPE}data/stations.json`;
+
+    const fresh = await sw.fetch(requestFor(dataUrl));
+    expect(fresh.headers.get('X-QCGas-From-Cache')).toBeNull();
+    expect(await fresh.text()).toContain('generated_at');
+
+    sw.setOnline(false);
+    const cached = await sw.fetch(requestFor(dataUrl));
+    expect(cached.headers.get('X-QCGas-From-Cache')).toBe('1');
+    expect(await cached.text()).toContain('generated_at');
+  });
+
+  test('install precaches only static shell files and waits for SKIP_WAITING', async () => {
+    const sw = loadServiceWorker();
+    await sw.install();
+
+    const precached = sw.precachedUrls();
+    expect(precached).toContain(`${SCOPE}manifest.webmanifest`);
+    expect(precached).toContain(`${SCOPE}icons/icon-512.png`);
+    expect(precached).not.toContain(SCOPE);
+    expect(precached).not.toContain(`${SCOPE}index.html`);
+
+    // No forced skipWaiting: the user decides when the new version is applied.
+    expect(sw.skipWaitingCalls()).toBe(0);
+    await sw.message({ type: 'SKIP_WAITING' });
+    expect(sw.skipWaitingCalls()).toBe(1);
+  });
+
+  test('activate drops our older caches but leaves foreign ones alone', async () => {
+    const sw = loadServiceWorker();
+    sw.createLegacyCache('qc-gas-v1');
+    sw.createLegacyCache('mapbox-tiles');
+    await sw.install();
+    await sw.activate();
+
+    expect(sw.cacheNames()).not.toContain('qc-gas-v1');
+    expect(sw.cacheNames()).toContain('mapbox-tiles');
+    const own = sw.cacheNames().filter((name) => name.startsWith('qc-gas-'));
+    expect(own).toHaveLength(1);
+    expect(own[0]).toMatch(/^qc-gas-v\d/);
+  });
+
+  test('offline after a successful load labels the cached snapshot with its sync time', async ({ page }) => {
+    // A response served from the service-worker cache is flagged with
+    // X-QCGas-From-Cache; the UI must then say offline + last sync time
+    // instead of presenting cached prices as live.
+    await page.route('**/data/stations.json', async (route) => {
+      const response = await route.fetch();
+      await route.fulfill({
+        response,
+        headers: { ...response.headers(), 'X-QCGas-From-Cache': '1' }
+      });
+    });
+    await page.goto(BASE_URL);
+    await page.waitForFunction(() => window.__qcGasMap && window.__qcGasMap.getStationFeatureCount() > 0, null, { timeout: 15000 });
+
+    const status = page.locator('#data-status');
+    await expect(status).toHaveClass(/offline/);
+    await expect(status).toContainText(/Offline|离线|Hors ligne/);
+    await expect(status).toContainText(/Last synced|最后同步|Dernière synchro/);
+  });
+
+  test('a pending update shows a non-blocking banner with a 44px reload action', async ({ page }) => {
+    await page.goto(BASE_URL);
+    await page.waitForFunction(() => window.__qcGasPwa, null, { timeout: 15000 });
+    await page.locator('#lang-selector button[data-lang="fr-CA"]').click();
+
+    await expect(page.locator('#pwa-update')).toHaveCount(0);
+    await page.evaluate(() => window.__qcGasPwa.notifyUpdateAvailable({ postMessage: () => {} }));
+
+    const banner = page.locator('#pwa-update');
+    await expect(banner).toBeVisible();
+    await expect(banner).toHaveAttribute('role', 'status');
+    await expect(banner).toContainText('Nouvelle version disponible');
+
+    // Non-blocking: the app behind the banner stays usable.
+    await expect(page.locator('#map')).toBeVisible();
+    expect(await page.evaluate(() => window.__qcGasPwa.isUpdateAvailable())).toBe(true);
+
+    const reloadButton = page.locator('#pwa-update-btn');
+    await expect(reloadButton).toBeVisible();
+    await expect(reloadButton).toContainText('Recharger');
+    const box = await reloadButton.boundingBox();
+    expect(box.height).toBeGreaterThanOrEqual(44);
+  });
+
+  test('update banner copy follows the active language', async ({ page }) => {
+    await page.goto(BASE_URL);
+    await page.waitForFunction(() => window.__qcGasPwa, null, { timeout: 15000 });
+    await page.locator('#lang-selector button[data-lang="fr-CA"]').click();
+    await page.evaluate(() => window.__qcGasPwa.notifyUpdateAvailable({ postMessage: () => {} }));
+    await expect(page.locator('#pwa-update')).toContainText('Nouvelle version disponible');
+
+    await page.locator('#lang-selector button[data-lang="zh-Hans"]').click();
+    await expect(page.locator('#pwa-update')).toContainText('新版本可用');
+    await expect(page.locator('#pwa-update-btn')).toContainText('重新加载');
+
+    await page.locator('#lang-selector button[data-lang="en-CA"]').click();
+    await expect(page.locator('#pwa-update')).toContainText('New version available');
+    await expect(page.locator('#pwa-update-btn')).toContainText('Reload');
+  });
+
+  test('no banner and no service-worker registration while nothing is pending (dev)', async ({ page }) => {
+    const swRequests = [];
+    page.on('request', (request) => {
+      if (request.url().includes('sw.js')) swRequests.push(request.url());
+    });
+
+    await page.goto(BASE_URL);
+    await page.waitForFunction(() => window.__qcGasPwa, null, { timeout: 15000 });
+    await page.waitForTimeout(300);
+
+    await expect(page.locator('#pwa-update')).toHaveCount(0);
+    expect(await page.evaluate(() => window.__qcGasPwa.isUpdateAvailable())).toBe(false);
+
+    await page.evaluate(() => {
+      window.__qcGasPwa.checkForUpdate();
+      window.dispatchEvent(new Event('focus'));
+      document.dispatchEvent(new Event('visibilitychange'));
+    });
+    await page.waitForTimeout(200);
+
+    await expect(page.locator('#pwa-update')).toHaveCount(0);
+    expect(swRequests).toEqual([]);
+  });
+
+  test('update checks are throttled and re-run when the page is focused again', async ({ page }) => {
+    await page.goto(BASE_URL);
+    await page.waitForFunction(() => window.__qcGasPwa, null, { timeout: 15000 });
+
+    const updates = await page.evaluate(async () => {
+      const realNow = Date.now;
+      let clock = realNow();
+      Date.now = () => clock;
+
+      let count = 0;
+      window.__qcGasPwa.setRegistration({
+        update: () => { count += 1; return Promise.resolve(); },
+        addEventListener: () => {}
+      });
+
+      window.__qcGasPwa.checkForUpdate();
+      window.__qcGasPwa.checkForUpdate();
+      window.dispatchEvent(new Event('focus'));
+      document.dispatchEvent(new Event('visibilitychange'));
+
+      clock += 60 * 60 * 1000; // long after the throttle window
+      window.dispatchEvent(new Event('focus'));
+
+      await new Promise((resolve) => setTimeout(resolve, 50));
+      Date.now = realNow;
+      return count;
+    });
+
+    expect(updates).toBe(2);
+  });
+
+  test('a first install (no controller yet) never shows the update banner', async ({ page }) => {
+    await page.addInitScript(() => {
+      const containerListeners = {};
+      const workerListeners = {};
+      const worker = {
+        state: 'installing',
+        postMessage: () => {},
+        addEventListener: (type, handler) => {
+          (workerListeners[type] = workerListeners[type] || []).push(handler);
+        }
+      };
+      const registration = {
+        waiting: null,
+        installing: worker,
+        update: () => Promise.resolve(),
+        addEventListener: (type, handler) => {
+          (containerListeners[type] = containerListeners[type] || []).push(handler);
+        }
+      };
+      window.__fakeReg = {
+        registration,
+        emitUpdateFound: () => (containerListeners.updatefound || []).forEach((handler) => handler({ type: 'updatefound' })),
+        emitInstalled: () => {
+          worker.state = 'installed';
+          (workerListeners.statechange || []).forEach((handler) => handler({ type: 'statechange' }));
+        }
+      };
+      Object.defineProperty(navigator, 'serviceWorker', {
+        value: {
+          controller: null,
+          addEventListener: () => {},
+          removeEventListener: () => {}
+        },
+        configurable: true
+      });
+    });
+
+    await page.goto(BASE_URL);
+    await page.waitForFunction(() => window.__qcGasPwa, null, { timeout: 15000 });
+
+    await page.evaluate(() => {
+      window.__qcGasPwa.setRegistration(window.__fakeReg.registration);
+      window.__fakeReg.emitUpdateFound();
+      window.__fakeReg.emitInstalled();
+    });
+    await page.waitForTimeout(300);
+
+    expect(await page.evaluate(() => window.__qcGasPwa.isUpdateAvailable())).toBe(false);
+    await expect(page.locator('#pwa-update')).toHaveCount(0);
+  });
+
+  test('Recharger posts SKIP_WAITING and reloads exactly once', async ({ page }) => {
+    await page.addInitScript(() => {
+      const loads = Number(sessionStorage.getItem('__pwaLoads') || '0') + 1;
+      sessionStorage.setItem('__pwaLoads', String(loads));
+      window.__pwaLoads = loads;
+
+      const listeners = {};
+      window.__fakeSw = {
+        controller: { state: 'activated' },
+        addEventListener: (type, handler) => {
+          (listeners[type] = listeners[type] || []).push(handler);
+        },
+        removeEventListener: () => {},
+        emit: (type) => (listeners[type] || []).forEach((handler) => handler({ type }))
+      };
+      Object.defineProperty(navigator, 'serviceWorker', {
+        value: window.__fakeSw,
+        configurable: true
+      });
+    });
+
+    await page.goto(BASE_URL);
+    await page.waitForFunction(() => window.__qcGasPwa, null, { timeout: 15000 });
+
+    const posted = await page.evaluate(() => {
+      window.__posted = [];
+      window.__qcGasPwa.notifyUpdateAvailable({ postMessage: (message) => window.__posted.push(message) });
+      document.getElementById('pwa-update-btn').click();
+      return window.__posted;
+    });
+    expect(posted).toEqual([{ type: 'SKIP_WAITING' }]);
+    expect(await page.evaluate(() => window.__pwaLoads)).toBe(1);
+
+    // The new worker taking over is what triggers the single reload.
+    await page.evaluate(() => window.__fakeSw.emit('controllerchange'));
+    await page.waitForFunction(() => window.__pwaLoads === 2, null, { timeout: 10000 });
+
+    // Anti-loop guard: a second controllerchange must not reload again.
+    await page.waitForFunction(() => window.__qcGasPwa, null, { timeout: 15000 });
+    await page.evaluate(() => window.__fakeSw.emit('controllerchange'));
+    await page.waitForTimeout(500);
+    expect(await page.evaluate(() => window.__pwaLoads)).toBe(2);
   });
 });
