@@ -22,8 +22,10 @@
 | 其他同源 GET | stale-while-revalidate | 先给缓存、后台刷新 |
 | `data/*.json` | **network-first**（不变） | 价格快照必须最新；离线回退缓存并带 `X-QCGas-From-Cache: 1`，UI 据此显示「离线 · 最后同步 \<时间\>」 |
 
-- `APP_SHELL` **只预缓存真正静态的文件**：manifest + 4 个图标。
-  `'./'` 与 `'./index.html'` **不再预缓存**——它们每次发布都会变，改由导航请求实时刷新。
+- `APP_SHELL` 预缓存 **导航离线 fallback（`'./'`、`'./index.html'`）+ manifest + 4 个图标**。
+  shell 条目**只用来回答离线导航**：在线导航始终 network-first 并刷新该缓存键；`install` 只在
+  `sw.js` 字节变化（＝新版本发布）时运行，所以这里缓存的就是当前版本的 shell。
+  若完全不预缓存 shell，**首次访问**（那次导航发生在 SW 接管之前，不会被拦截）后断网再打开会得到空白 503。
 - 缓存名带版本（`qc-gas-v<N>-<date>`）：**改动 `sw.js` 时同步 bump `CACHE_VERSION`**；
   `activate` 会删除 `qc-gas-*` 的旧版本缓存（**不动其他来源的缓存**，例如 Mapbox 的瓦片缓存），
   然后 `clients.claim()`。
@@ -32,7 +34,8 @@
 ## 更新策略（`js/pwa.js`）
 
 1. `register('./sw.js')` 成功后立即 `registration.update()`；此外在 `load`、页面重新可见
-   （`visibilitychange`）与 `focus` 时再检查一次，**60 分钟节流**，避免频繁请求。
+   （`visibilitychange`）与 `focus` 时再检查一次，**60 分钟节流**，避免频繁请求；
+   若某次检查失败（离线/网络抖动），节流窗口会被重置，下次 focus/可见时立即重试。
 2. `updatefound` → 新 worker `state === 'installed'` **且页面已有 controller**（即这是"更新"而非首次安装）
    → 显示**非阻塞**提示条 `#pwa-update`（`role="status"`、`aria-live="polite"`）：
    文案三语（`updateAvailable` / `updateReload` / `updateDismiss`），"Recharger" 按钮 ≥44px。
@@ -78,7 +81,9 @@ npm run preview        # 用真实产物验证（dev 不注册 SW，只能验 UI
 4. 不做任何操作时页面**不会**自动刷新，也不会丢状态。
 5. 断网验证：DevTools → Network → Offline，重新打开页面 → 仍显示缓存的 `index.html`，
    且状态栏为「离线 · 最后同步 \<时间\>」（缓存价格绝不标成实时）。
-6. 首次安装验证：清空站点数据（DevTools → Application → Clear storage）后重新打开，
+6. **首次访问后离线**（最容易踩的边界）：清空站点数据 → 联网打开一次（SW 安装并接管）→
+   **不要刷新**，直接断网 → 重新打开地址 → 仍能显示应用外壳（不是空白页）。
+7. 首次安装验证：清空站点数据（DevTools → Application → Clear storage）后重新打开，
    安装完成时**不应**出现更新提示条（此时没有 controller）。
 
 自动化覆盖见 `tests/app.spec.js` → `PWA update strategy (Issue #45)`

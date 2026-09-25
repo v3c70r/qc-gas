@@ -271,7 +271,11 @@ function checkForUpdate() {
   lastUpdateCheck = now;
 
   const result = registration.update();
-  if (result && typeof result.catch === 'function') result.catch(() => {});
+  if (result && typeof result.catch === 'function') {
+    // A transient failure (offline, flaky network) must not lock the next
+    // check out for a whole interval.
+    result.catch(() => { lastUpdateCheck = 0; });
+  }
 }
 
 function initUpdateFlow() {

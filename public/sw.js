@@ -10,8 +10,12 @@
  *  - data/*.json (price snapshots) → network-first; on success the response
  *    is cached and returned, on failure the last cached snapshot is served
  *    with an `X-QCGas-From-Cache` header so the UI can label it honestly.
- *  - `'./'` and `'./index.html'` are deliberately NOT precached: they change
- *    on every release, so navigation requests refresh them instead.
+ *  - `'./'` and `'./index.html'` are precached **only as the offline fallback**
+ *    for navigation requests. They are never served cache-first: install runs
+ *    when this file changes (= a new release), so the shell cached here is the
+ *    current one, and every online navigation refreshes it from the network.
+ *    Without it, a first visit (whose own navigation is never intercepted) would
+ *    leave the cache empty and the next offline launch would show a blank 503.
  *  - The cache name carries a version — bump CACHE_VERSION whenever this file
  *    changes; `activate` removes our older caches (and only ours).
  *  - install does not call skipWaiting(): the page shows an update banner and
@@ -29,9 +33,12 @@ const APP_BASE = new URL('./', self.location).href;
 // Canonical cache key for the navigation fallback (the current shell).
 const INDEX_URL = new URL('index.html', APP_BASE).href;
 
-// Only truly static files: the manifest and the icons. Nothing here changes
-// between releases in a way that would break a stale copy.
+// The navigation fallback (the deployed shell) plus the truly static files.
+// The shell entries only ever answer offline navigations; they are refreshed
+// from the network on every online visit (see navigationNetworkFirst).
 const APP_SHELL = [
+  './',
+  './index.html',
   './manifest.webmanifest',
   './icons/icon-192.png',
   './icons/icon-512.png',

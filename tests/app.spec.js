@@ -1592,15 +1592,32 @@ test.describe('PWA update strategy (Issue #45)', () => {
     expect(await cached.text()).toContain('generated_at');
   });
 
-  test('install precaches only static shell files and waits for SKIP_WAITING', async () => {
+  test('a brand-new install can still open offline (the shell is precached)', async () => {
+    // A first visit installs and claims the worker *after* its own navigation,
+    // so that navigation is never a cacheable one. Without a precached shell
+    // the next (offline) launch would get an empty 503 page.
+    const sw = loadServiceWorker();
+    await sw.install();
+    sw.setOnline(false);
+
+    const response = await sw.fetch(navigationRequest());
+
+    expect(response.status).toBe(200);
+    expect(await response.text()).toContain('precached');
+    expect(response.headers.get('X-QCGas-From-Cache')).toBe('1');
+  });
+
+  test('install precaches a navigation fallback plus static files and waits for SKIP_WAITING', async () => {
     const sw = loadServiceWorker();
     await sw.install();
 
     const precached = sw.precachedUrls();
     expect(precached).toContain(`${SCOPE}manifest.webmanifest`);
     expect(precached).toContain(`${SCOPE}icons/icon-512.png`);
-    expect(precached).not.toContain(SCOPE);
-    expect(precached).not.toContain(`${SCOPE}index.html`);
+    // The shell is the offline fallback; navigation requests still refresh it
+    // from the network on every visit.
+    expect(precached).toContain(SCOPE);
+    expect(precached).toContain(`${SCOPE}index.html`);
 
     // No forced skipWaiting: the user decides when the new version is applied.
     expect(sw.skipWaitingCalls()).toBe(0);
@@ -1735,6 +1752,30 @@ test.describe('PWA update strategy (Issue #45)', () => {
     });
 
     expect(updates).toBe(2);
+  });
+
+  test('a failed update check is retried instead of being throttled for a full interval', async ({ page }) => {
+    await page.goto(BASE_URL);
+    await page.waitForFunction(() => window.__qcGasPwa, null, { timeout: 15000 });
+
+    const counts = await page.evaluate(async () => {
+      let calls = 0;
+      window.__qcGasPwa.setRegistration({
+        update: () => { calls += 1; return Promise.reject(new Error('offline')); },
+        addEventListener: () => {}
+      });
+
+      window.__qcGasPwa.checkForUpdate();
+      window.__qcGasPwa.checkForUpdate();
+      const whileThrottled = calls;
+
+      await new Promise((resolve) => setTimeout(resolve, 30));
+      window.__qcGasPwa.checkForUpdate();
+      return { whileThrottled, total: calls };
+    });
+
+    expect(counts.whileThrottled).toBe(1);
+    expect(counts.total).toBe(2);
   });
 
   test('a first install (no controller yet) never shows the update banner', async ({ page }) => {
