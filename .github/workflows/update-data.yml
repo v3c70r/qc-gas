@@ -2,10 +2,16 @@ name: Update Gas Prices Data
 
 on:
   workflow_call:
+    outputs:
+      due:
+        description: 'true when this run actually polled the upstream price source'
+        value: ${{ jobs.update-data.outputs.due }}
 
 jobs:
   update-data:
     runs-on: ubuntu-latest
+    outputs:
+      due: ${{ steps.gate.outputs.due }}
     steps:
       # Check out the latest branch tip so the data commit is based on current
       # master (avoids losing a concurrent code merge when the data push fails).
@@ -18,18 +24,34 @@ jobs:
         with:
           python-version: '3.11'
 
+      # The schedule wakes this workflow often so a poll can land right after
+      # stations re-price; this gate keeps upstream load bounded by only
+      # downloading inside the learned change windows (plus a 3h freshness
+      # safety net). Non-scheduled runs (push / dispatch) always fetch.
+      - name: Decide whether to fetch (adaptive schedule)
+        id: gate
+        run: |
+          python scripts/should_fetch.py || {
+            echo "Gate failed; fetching to stay fresh"
+            echo "due=true" >> "$GITHUB_OUTPUT"
+          }
+
       - name: Download and process data
+        if: steps.gate.outputs.due == 'true'
         continue-on-error: true
         run: |
            python scripts/download_data.py || echo "No new data or download failed"
            python scripts/process_data.py || echo "Processing failed"
+           python scripts/update_profile.py || echo "Fetch profile update failed"
            python scripts/append_history.py || echo "History append failed"
 
       - name: Enforce data size budget
+        if: steps.gate.outputs.due == 'true'
         run: |
           python scripts/check_data_size.py
 
       - name: Commit and push if changed
+        if: steps.gate.outputs.due == 'true'
         continue-on-error: true
         run: |
           sudo apt-get install -y brotli
