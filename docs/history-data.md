@@ -1,16 +1,23 @@
 # Price history data — schema, granularity, retention & size budget
 
 The price history is **real region-level data** recorded automatically by the
-hourly GitHub Actions workflow (`.github/workflows/update-data.yml`). There is
-no external database: everything is committed back into this repository.
+GitHub Actions data workflow (`.github/workflows/update-data.yml`). Which runs
+may download is decided by the learned, budget-bounded schedule described in
+[`fetch-strategy.md`](./fetch-strategy.md): the workflow wakes every 15 minutes
+but only polls upstream on the planned slots. There is no external database:
+everything is committed back into this repository.
 
 ## How a snapshot is produced
 
-1. `scripts/download_data.py` downloads the latest `stations.geojson.gz`.
-2. `scripts/process_data.py` normalizes it into `data/stations.json`.
-3. `scripts/append_history.py` appends one **region-level** 6h bucket and one
+1. `scripts/should_fetch.py` gates the run (adaptive schedule + freshness net).
+2. `scripts/download_data.py` downloads the latest `stations.geojson.gz`.
+3. `scripts/process_data.py` normalizes it into `data/stations.json`.
+4. `scripts/update_profile.py` diffs the new snapshot against the previous
+   observation and rewrites `data/update-profile.json` (learned change hours)
+   and `data/fetch-schedule.json` (plan for the next runs).
+5. `scripts/append_history.py` appends one **region-level** 6h bucket and one
    **station-level daily** snapshot to the history store.
-4. The workflow commits the new files and pushes them back to the repo.
+6. The workflow commits the new files and pushes them back to the repo.
 
 ## Granularity & downsampling
 

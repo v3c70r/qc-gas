@@ -14,7 +14,10 @@ on:
       - 'package-lock.json'
   workflow_dispatch:
   schedule:
-    - cron: '0 * * * *'
+    # Wake often so a poll can land right after stations re-price; the
+    # update-data gate decides which of these wake-ups may hit upstream, so a
+    # non-due run costs a checkout + gate only (no download, no deploy).
+    - cron: '*/15 * * * *'
 
 permissions:
   contents: write
@@ -27,6 +30,9 @@ jobs:
 
   build-and-deploy:
     needs: update-data
+    # Skip the Pages build/deploy when the gate decided this run must not poll
+    # upstream (nothing changed), so we do not redeploy an identical snapshot.
+    if: needs.update-data.outputs.due == 'true'
     environment:
       name: Credentials
     runs-on: ubuntu-latest

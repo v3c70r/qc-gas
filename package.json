@@ -7,6 +7,8 @@
     "build": "vite build",
     "preview": "vite preview",
     "test": "playwright test",
+    "test:py": "python3 -m unittest discover -s scripts -p 'test_*.py'",
+    "test:all": "npm run test:py && npm test",
     "test:install": "playwright install chromium",
     "icons": "node scripts/create_pwa_icons.mjs",
     "agent:watch": "node .agent/pipeline.mjs watch",
