@@ -1873,3 +1873,284 @@ test.describe('PWA update strategy (Issue #45)', () => {
     expect(await page.evaluate(() => window.__pwaLoads)).toBe(2);
   });
 });
+
+// ── Data freshness & auto refresh (Issue #47) ──────────────────────────────
+test.describe('Data freshness & auto refresh (Issue #47)', () => {
+  const isoAgo = (ms) => new Date(Date.now() - ms).toISOString();
+
+  // A snapshot with a controlled `generated_at` and optionally one fixed
+  // regular price, so assertions never depend on the live data file.
+  function snapshot({ generatedAt = null, regularPrice = null } = {}) {
+    const clone = JSON.parse(JSON.stringify(stationsFixture));
+    if (generatedAt) clone.metadata = { ...clone.metadata, generated_at: generatedAt };
+    if (regularPrice != null) {
+      clone.features.forEach((f) => {
+        if (typeof f.properties.regular_price === 'number') f.properties.regular_price = regularPrice;
+      });
+    }
+    return JSON.stringify(clone);
+  }
+
+  function serveSnapshot(page, getBody) {
+    return page.route('**/data/stations.json', (route) =>
+      route.fulfill({ status: 200, contentType: 'application/json', body: getBody() }));
+  }
+
+  async function waitForStations(page) {
+    await page.waitForFunction(
+      () => window.__qcGasMap && window.__qcGasMap.getStationFeatureCount() > 0 && window.__qcGasFreshness,
+      null,
+      { timeout: 15000 }
+    );
+  }
+
+  async function selectLang(page, code) {
+    await page.locator(`#lang-selector button[data-lang="${code}"]`).click();
+  }
+
+  test('formatRelativeTime covers now / minutes / hours / days in three languages', async ({ page }) => {
+    await page.goto(BASE_URL);
+    await page.waitForFunction(() => window.__qcGasFreshness && window.__qcGasFreshness.formatRelativeTime, null, { timeout: 15000 });
+
+    const now = Date.parse('2026-09-26T12:00:00Z');
+    const out = await page.evaluate((nowMs) => {
+      const f = window.__qcGasFreshness.formatRelativeTime;
+      const at = (msAgo, lang) => f(nowMs - msAgo, nowMs, lang);
+      return {
+        fr: {
+          now: at(0, 'fr-CA'),
+          soon: at(30 * 1000, 'fr-CA'),
+          minutes: at(12 * 60 * 1000, 'fr-CA'),
+          hours: at(3 * 3600 * 1000, 'fr-CA'),
+          days: at(2 * 24 * 3600 * 1000, 'fr-CA')
+        },
+        en: {
+          now: at(0, 'en-CA'),
+          minutes: at(12 * 60 * 1000, 'en-CA'),
+          hours: at(3 * 3600 * 1000, 'en-CA'),
+          days: at(2 * 24 * 3600 * 1000, 'en-CA')
+        },
+        zh: { now: at(0, 'zh-Hans'), minutes: at(12 * 60 * 1000, 'zh-Hans') },
+        invalid: f(Number.NaN, nowMs, 'en-CA')
+      };
+    }, now);
+
+    expect(out.fr.now).toBe("à l'instant");
+    expect(out.fr.soon).toBe("à l'instant");
+    expect(out.fr.minutes).toMatch(/il y a 12 min/);
+    expect(out.fr.hours).toMatch(/il y a 3 h/);
+    expect(out.fr.days).toMatch(/il y a 2 j/);
+
+    expect(out.en.now).toBe('just now');
+    expect(out.en.minutes).toMatch(/^12 min/);
+    expect(out.en.minutes).toMatch(/ago$/);
+    expect(out.en.hours).toMatch(/^3 (hr|h)/);
+    expect(out.en.days).toMatch(/^2 days?/);
+
+    expect(out.zh.now).toBe('刚刚');
+    expect(out.zh.minutes).toMatch(/12 *分钟前/);
+    expect(out.invalid).toBe('');
+  });
+
+  test('a newer snapshot is applied in place and the header shows its age', async ({ page }) => {
+    const older = snapshot({ generatedAt: isoAgo(40 * 60 * 1000), regularPrice: 175.9 });
+    const newer = snapshot({ generatedAt: isoAgo(20 * 1000), regularPrice: 199.9 });
+    let body = older;
+    await serveSnapshot(page, () => body);
+
+    await page.goto(BASE_URL);
+    await waitForStations(page);
+    await selectLang(page, 'fr-CA');
+
+    await expect(page.locator('#quick-regular')).toHaveText('175.9¢');
+    await expect(page.locator('#data-status')).toContainText(/mis à jour il y a 40 min/);
+    const appliedBefore = await page.evaluate(() => window.__qcGasFreshness.getLastAppliedAt());
+
+    body = newer;
+    expect(await page.evaluate(() => window.__qcGasFreshness.refreshNow())).toBe(true);
+
+    await expect(page.locator('#quick-regular')).toHaveText('199.9¢');
+    await expect(page.locator('#station-list .list-item').first().locator('.price')).toHaveText('199.9¢');
+    await expect(page.locator('#data-status')).toContainText(/mis à jour à l'instant/);
+
+    const appliedAfter = await page.evaluate(() => window.__qcGasFreshness.getLastAppliedAt());
+    expect(appliedAfter).toBeGreaterThan(appliedBefore);
+    expect(appliedAfter).toBe(Date.parse(JSON.parse(newer).metadata.generated_at));
+  });
+
+  test('an older snapshot or a failed fetch never replaces what is displayed', async ({ page }) => {
+    const shown = snapshot({ generatedAt: isoAgo(5 * 60 * 1000), regularPrice: 175.9 });
+    const older = snapshot({ generatedAt: isoAgo(90 * 60 * 1000), regularPrice: 150.1 });
+    const newer = snapshot({ generatedAt: isoAgo(30 * 1000), regularPrice: 199.9 });
+    let mode = 'shown';
+    await page.route('**/data/stations.json', (route) => {
+      if (mode === 'fail') return route.fulfill({ status: 500, contentType: 'text/plain', body: 'boom' });
+      if (mode === 'empty') {
+        return route.fulfill({
+          status: 200,
+          contentType: 'application/json',
+          body: JSON.stringify({ type: 'FeatureCollection', features: [], metadata: { generated_at: isoAgo(1000) } })
+        });
+      }
+      const body = mode === 'older' ? older : mode === 'newer' ? newer : shown;
+      return route.fulfill({ status: 200, contentType: 'application/json', body });
+    });
+
+    await page.goto(BASE_URL);
+    await waitForStations(page);
+    await selectLang(page, 'fr-CA');
+
+    await expect(page.locator('#quick-regular')).toHaveText('175.9¢');
+    await expect(page.locator('#data-status')).toContainText(/il y a 5 min/);
+    const appliedAt = await page.evaluate(() => window.__qcGasFreshness.getLastAppliedAt());
+
+    mode = 'older';
+    expect(await page.evaluate(() => window.__qcGasFreshness.refreshNow())).toBe(false);
+    await expect(page.locator('#quick-regular')).toHaveText('175.9¢');
+    await expect(page.locator('#data-status')).not.toContainText(/à l'instant/);
+    expect(await page.evaluate(() => window.__qcGasFreshness.getLastAppliedAt())).toBe(appliedAt);
+
+    mode = 'newer';
+    expect(await page.evaluate(() => window.__qcGasFreshness.refreshNow())).toBe(true);
+    await expect(page.locator('#quick-regular')).toHaveText('199.9¢');
+    await expect(page.locator('#data-status')).toContainText(/à l'instant/);
+
+    // A failed refresh keeps the last good snapshot and its honest label.
+    mode = 'fail';
+    expect(await page.evaluate(() => window.__qcGasFreshness.refreshNow())).toBe(false);
+    await expect(page.locator('#quick-regular')).toHaveText('199.9¢');
+    await expect(page.locator('#data-status')).toContainText(/à l'instant/);
+
+    // Neither does a truncated payload with a newer timestamp.
+    mode = 'empty';
+    expect(await page.evaluate(() => window.__qcGasFreshness.refreshNow())).toBe(false);
+    await expect(page.locator('#quick-regular')).toHaveText('199.9¢');
+    expect(await page.evaluate(() => window.__qcGasMap.getStationFeatureCount())).toBeGreaterThan(0);
+  });
+
+  test('refresh is idempotent: DOM nodes and user filters survive', async ({ page }) => {
+    let body = snapshot({ generatedAt: isoAgo(40 * 60 * 1000), regularPrice: 175.9 });
+    await serveSnapshot(page, () => body);
+
+    await page.goto(BASE_URL);
+    await waitForStations(page);
+    await selectLang(page, 'fr-CA');
+    await page.locator('#filter-toggle').click();
+
+    // Deselect one brand, narrow the price range and pick a region.
+    const brandInput = page.locator('#brand-filters .brand-filter').first();
+    const brand = await brandInput.getAttribute('value');
+    // The checkbox itself is display:none in the UI; the label toggles it.
+    await page.locator('#brand-filters .brand-filter-item').first().click();
+    await expect(brandInput).not.toBeChecked();
+    await page.locator('#max-price').fill('200');
+    await page.waitForTimeout(400);
+    const region = await page.locator('#region-filter option').nth(1).getAttribute('value');
+    await page.locator('#region-filter').selectOption(region);
+    await page.locator('.radius-btn[data-radius="10"]').click();
+    await page.waitForTimeout(400);
+
+    const before = {
+      brands: await page.locator('#brand-filters .brand-filter-item').count(),
+      moreBrands: await page.locator('#more-brands .brand-filter-item').count(),
+      toggleRows: await page.locator('.brand-toggle-row').count(),
+      regionOptions: await page.locator('#region-filter option').count(),
+      mapFeatures: await page.evaluate(() => window.__qcGasMap.getStationFeatureCount()),
+      view: await page.evaluate(() => window.__qcGasMap.getView()),
+      reference: await page.evaluate(() => window.__qcGasMap.getReferencePoint())
+    };
+    expect(before.brands).toBeGreaterThan(0);
+
+    body = snapshot({ generatedAt: isoAgo(30 * 1000), regularPrice: 199.9 });
+    expect(await page.evaluate(() => window.__qcGasFreshness.refreshNow())).toBe(true);
+    await page.waitForTimeout(300);
+
+    expect(await page.locator('#brand-filters .brand-filter-item').count()).toBe(before.brands);
+    expect(await page.locator('#more-brands .brand-filter-item').count()).toBe(before.moreBrands);
+    expect(await page.locator('.brand-toggle-row').count()).toBe(before.toggleRows);
+    expect(await page.locator('#region-filter option').count()).toBe(before.regionOptions);
+    expect(await page.locator('#brand-filters .brand-filter[value="' + brand + '"]').isChecked()).toBe(false);
+    expect(await page.locator('#max-price').inputValue()).toBe('200');
+    expect(await page.locator('#region-filter').inputValue()).toBe(region);
+    expect(await page.locator('.radius-btn[data-radius="10"]')).toHaveClass(/active/);
+    expect(await page.evaluate(() => window.__qcGasMap.isRadiusMode())).toBe(true);
+    expect(await page.evaluate(() => window.__qcGasMap.hasRangeCircle())).toBe(true);
+    expect(await page.evaluate(() => window.__qcGasMap.getStationFeatureCount())).toBe(before.mapFeatures);
+    expect(await page.evaluate(() => window.__qcGasMap.getView())).toEqual(before.view);
+    expect(await page.evaluate(() => window.__qcGasMap.getReferencePoint())).toEqual(before.reference);
+    // The refreshed snapshot is what the list now reflects (no rows lost/duplicated).
+    expect(await page.evaluate(() => window.__qcGasFreshness.getLastAppliedAt()))
+      .toBe(Date.parse(JSON.parse(body).metadata.generated_at));
+  });
+
+  test('no request is made while hidden, offline, or inside the 5 minute gap', async ({ page, context }) => {
+    const snapshotBody = snapshot({ generatedAt: isoAgo(40 * 60 * 1000), regularPrice: 175.9 });
+    const requests = [];
+    page.on('request', (req) => {
+      if (req.url().includes('data/stations.json')) requests.push(req.url());
+    });
+    await serveSnapshot(page, () => snapshotBody);
+
+    await page.goto(BASE_URL);
+    await waitForStations(page);
+    const initial = requests.length;
+    expect(initial).toBeGreaterThan(0);
+
+    // Visible + online, but the 5 minute gap has not elapsed yet.
+    expect(await page.evaluate(() => window.__qcGasFreshness.maybeRefresh())).toBe(false);
+    await page.waitForTimeout(300);
+    expect(requests.length).toBe(initial);
+
+    // Hidden tab: neither an explicit refresh nor a visibilitychange fires.
+    await page.evaluate(() => Object.defineProperty(document, 'hidden', { configurable: true, get: () => true }));
+    expect(await page.evaluate(() => window.__qcGasFreshness.refreshNow())).toBe(false);
+    await page.evaluate(() => document.dispatchEvent(new Event('visibilitychange')));
+    await page.waitForTimeout(300);
+    expect(requests.length).toBe(initial);
+
+    // Back to the foreground, but offline: still nothing.
+    await page.evaluate(() => Object.defineProperty(document, 'hidden', { configurable: true, get: () => false }));
+    await context.setOffline(true);
+    expect(await page.evaluate(() => window.__qcGasFreshness.refreshNow())).toBe(false);
+    await page.evaluate(() => window.__qcGasFreshness.maybeRefresh());
+    await page.waitForTimeout(300);
+    expect(requests.length).toBe(initial);
+
+    // Online again and past the gap: the foreground trigger does fetch.
+    await context.setOffline(false);
+    await page.evaluate(() => window.__qcGasFreshness.setLastCheckAt(Date.now() - 6 * 60 * 1000));
+    await page.evaluate(() => document.dispatchEvent(new Event('visibilitychange')));
+    await expect.poll(() => requests.length, { timeout: 10000 }).toBeGreaterThan(initial);
+  });
+
+  test('the offline badge keeps its writer and the relative age comes back online', async ({ page }) => {
+    const snapshotBody = snapshot({ generatedAt: isoAgo(20 * 60 * 1000), regularPrice: 175.9 });
+    await serveSnapshot(page, () => snapshotBody);
+
+    await page.goto(BASE_URL);
+    await waitForStations(page);
+    await selectLang(page, 'fr-CA');
+
+    const status = page.locator('#data-status');
+    await expect(status).toContainText(/il y a 20 min/);
+    await expect(status).not.toHaveClass(/offline/);
+
+    await page.evaluate(() => window.dispatchEvent(new Event('offline')));
+    await expect(status).toHaveClass(/offline/);
+    await expect(status).toContainText(/Hors ligne/);
+    await expect(status).not.toContainText(/mis à jour/);
+
+    await page.evaluate(() => window.dispatchEvent(new Event('online')));
+    await expect(status).not.toHaveClass(/offline/);
+    await expect(status).toContainText(/il y a 20 min/);
+
+    // The label is derived from the current time (freshness.js ticks it once a
+    // minute), so a snapshot left on screen visibly ages without new data.
+    await page.evaluate(() => {
+      const realNow = Date.now.bind(Date);
+      Date.now = () => realNow() + 5 * 60 * 1000;
+      window.__qcGasFreshness.tick();
+    });
+    await expect(status).toContainText(/il y a 25 min/);
+  });
+});

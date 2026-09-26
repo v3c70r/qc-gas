@@ -1,4 +1,4 @@
-import { initMap, loadStations, MONTREAL_CENTER } from './map.js';
+import { initMap, initFreshness, loadStations, MONTREAL_CENTER } from './map.js';
 import { initFilters, initGeolocation, initSidebarToggle } from './filters.js';
 import { initFavorites } from './stats.js';
 import { getStoredLanguage, createLanguageSelector, applyTranslations } from './i18n.js';
@@ -65,6 +65,8 @@ function initApp() {
   applyTranslations(lang);
 
   initMap();
+  // Keep an open tab/PWA on the newest snapshot (issue #47).
+  initFreshness();
   initFilters();
   initGeolocation();
   initSidebarToggle();
