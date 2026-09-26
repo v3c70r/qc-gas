@@ -2143,5 +2143,14 @@ test.describe('Data freshness & auto refresh (Issue #47)', () => {
     await page.evaluate(() => window.dispatchEvent(new Event('online')));
     await expect(status).not.toHaveClass(/offline/);
     await expect(status).toContainText(/il y a 20 min/);
+
+    // The label is derived from the current time (freshness.js ticks it once a
+    // minute), so a snapshot left on screen visibly ages without new data.
+    await page.evaluate(() => {
+      const realNow = Date.now.bind(Date);
+      Date.now = () => realNow() + 5 * 60 * 1000;
+      window.__qcGasFreshness.tick();
+    });
+    await expect(status).toContainText(/il y a 25 min/);
   });
 });

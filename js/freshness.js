@@ -247,7 +247,6 @@ if (typeof window !== 'undefined') {
     getLastAppliedAt,
     getLastCheckAt,
     setLastCheckAt,
-    tick,
-    DATA_URL
+    tick
   };
 }

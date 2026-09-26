@@ -820,8 +820,7 @@ window.__qcGasMap = {
   isRadiusMode,
   getReferencePoint,
   getEffectiveReferencePoint,
-  getView: () => (map && map.getCenter ? { center: map.getCenter(), zoom: map.getZoom() } : null),
-  getStationCount: () => stationCount
+  getView: () => (map && map.getCenter ? { center: map.getCenter(), zoom: map.getZoom() } : null)
 };
 
 export { map, currentStations, MONTREAL_CENTER, addRangeCircle };
