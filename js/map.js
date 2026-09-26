@@ -3,6 +3,7 @@ import { t, onLanguageChange } from './i18n.js';
 import { brandColor, brandAbbr, isMembershipBrand } from './constants.js';
 import { updateStats } from './stats.js';
 import { setDataSnapshot, isResponseFromCache } from './pwa.js';
+import { startFreshness, setAppliedSnapshot } from './freshness.js';
 
 const mapboxToken = import.meta.env.VITE_MAPBOX_ACCESS_TOKEN;
 
@@ -262,7 +263,7 @@ export async function initMap() {
 let stationCount = 0;
 
 // Keep brand-item tooltips in sync with the active language (the markup itself
-// is built once in loadStations, so only attribute text needs refreshing).
+// is built by syncBrandFilters, so only attribute text needs refreshing).
 function refreshBrandItemLabels() {
   document.querySelectorAll('.brand-filter-item').forEach(item => {
     const membership = item.querySelector('.brand-membership');
@@ -280,143 +281,198 @@ function refreshBrandItemLabels() {
 }
 onLanguageChange(() => refreshBrandItemLabels());
 
-// Load stations data
-export async function loadStations() {
-  document.getElementById('loading').classList.add('active');
-  
-  try {
-    const response = await fetch('data/stations.json');
-    const data = await response.json();
+// ── Filter UI built from the snapshot ──
+// The initial load and every background refresh (issue #47) go through these
+// helpers, which rebuild the *contents* of the existing containers. Nodes are
+// never duplicated and the user's selection (brands, region) is preserved.
 
-    // Exclude official records with invalid coordinates (currently the (0,0)
-    // "Hub Régie" record) from every downstream consumer: map, list, stats,
-    // regional benchmarks and province fitBounds.
-    const rawFeatures = Array.isArray(data.features) ? data.features : [];
-    const validFeatures = rawFeatures.filter(isValidStation);
-    currentStations = { ...data, features: validFeatures };
-    stationCount = validFeatures.length;
+const BRAND_INLINE_LIMIT = 14;
 
-    console.log('Loaded', validFeatures.length, 'stations (excluded', rawFeatures.length - validFeatures.length, 'invalid coordinates)');
+function syncToggleState() {
+  const btn = document.getElementById('brand-select-all');
+  if (!btn) return;
+  const all = document.querySelectorAll('.brand-filter').length;
+  const checked = document.querySelectorAll('.brand-filter:checked').length;
+  if (all > 0 && checked === all) {
+    btn.textContent = t('deselectAllBrands');
+    btn.classList.add('deselect');
+  } else {
+    btn.textContent = t('selectAllBrands');
+    btn.classList.remove('deselect');
+  }
+}
 
-    // Initialize brand filters — sorted by popularity (most stations first)
-    const brandCount = {};
-    validFeatures.forEach(f => {
-      const b = f.properties.brand;
-      if (b) brandCount[b] = (brandCount[b] || 0) + 1;
-    });
-    const brands = Object.entries(brandCount)
-      .sort((a, b) => b[1] - a[1]); // descending by count
-    const brandContainer = document.getElementById('brand-filters');
-    const moreBrands = document.getElementById('more-brands');
+// Select / deselect all toggle — operates on the live DOM so it keeps working
+// after a refresh replaced the brand items.
+function onBrandToggleAllClick() {
+  const all = document.querySelectorAll('.brand-filter').length;
+  const allChecked = all > 0 && document.querySelectorAll('.brand-filter:checked').length === all;
+  window.__brandBatchUpdate = true;
+  document.querySelectorAll('.brand-filter').forEach(cb => { cb.checked = !allChecked; });
+  window.__brandBatchUpdate = false;
+  document.querySelectorAll('.brand-filter-item').forEach(item => {
+    const cb = item.querySelector('input');
+    item.classList.toggle('active', cb && cb.checked);
+  });
+  syncToggleState();
+  updateStats();
+}
 
-    // ── Select / deselect all toggle ──
-    const toggleRow = document.createElement('div');
-    toggleRow.className = 'brand-toggle-row';
-    toggleRow.innerHTML = `
+// Inserted once, no matter how many snapshots are applied.
+function ensureBrandToggleRow(brandCount) {
+  const brandContainer = document.getElementById('brand-filters');
+  let row = document.querySelector('.brand-toggle-row');
+  if (!row) {
+    row = document.createElement('div');
+    row.className = 'brand-toggle-row';
+    row.innerHTML = `
       <button class="brand-toggle-btn" id="brand-select-all" data-i18n="selectAllBrands">${t('selectAllBrands')}</button>
-      <span class="brand-toggle-count">${brands.length} ${t('brand').toLowerCase()}</span>
+      <span class="brand-toggle-count"></span>
     `;
-    brandContainer.parentNode.insertBefore(toggleRow, brandContainer);
+    row.querySelector('#brand-select-all').addEventListener('click', onBrandToggleAllClick);
+    brandContainer.parentNode.insertBefore(row, brandContainer);
+  }
+  const count = row.querySelector('.brand-toggle-count');
+  if (count) count.textContent = `${brandCount} ${t('brand').toLowerCase()}`;
+}
 
-    function syncToggleState() {
-      const allChecked = document.querySelectorAll('.brand-filter:checked').length === brands.length;
-      const noneChecked = document.querySelectorAll('.brand-filter:checked').length === 0;
-      const btn = document.getElementById('brand-select-all');
-      if (allChecked) {
-        btn.textContent = t('deselectAllBrands');
-        btn.classList.add('deselect');
-      } else {
-        btn.textContent = t('selectAllBrands');
-        btn.classList.remove('deselect');
-      }
-    }
+function createBrandItem(brand, count, compact, checked = true) {
+  const color = brandColor(brand);
+  const abbr = brandAbbr(brand);
+  const item = document.createElement('label');
+  item.className = 'brand-filter-item' + (checked ? ' active' : '');
+  if (compact) item.style.margin = '4px';
+  const iconSize = compact ? '18px' : '20px';
+  const fontSize = compact ? '7px' : '8px';
+  const membership = isMembershipBrand(brand)
+    ? `<span class="brand-membership" title="${t('membershipRequired')}" aria-label="${t('membershipRequired')}">🔒</span>`
+    : '';
+  item.innerHTML = `<input type="checkbox" class="brand-filter" value="${brand}"${checked ? ' checked' : ''}>
+    <span class="brand-icon" style="width:${iconSize};height:${iconSize};border-radius:4px;background:${color};display:inline-flex;align-items:center;justify-content:center;font-size:${fontSize};font-weight:700;color:#fff;flex-shrink:0;">${abbr}</span>
+    <span class="brand-name">${brand}</span>
+    ${membership}
+    <span class="brand-metrics">
+      <span class="brand-count" title="${t('stations')}">${count}</span>
+      <span class="brand-avg" title="${t('brandAvg')}">—</span>
+      <span class="brand-diff" title="${t('brandVsAvg')}">—</span>
+    </span>`;
+  item.addEventListener('click', () => {
+    // Let the label toggle the checkbox naturally, then sync
+    setTimeout(syncToggleState, 0);
+  });
+  return item;
+}
 
-    document.getElementById('brand-select-all').addEventListener('click', () => {
-      const allChecked = document.querySelectorAll('.brand-filter:checked').length === brands.length;
-      window.__brandBatchUpdate = true;
-      document.querySelectorAll('.brand-filter').forEach(cb => { cb.checked = !allChecked; });
-      window.__brandBatchUpdate = false;
-      document.querySelectorAll('.brand-filter-item').forEach(item => {
-        const cb = item.querySelector('input');
-        item.classList.toggle('active', cb && cb.checked);
-      });
-      syncToggleState();
-      updateStats();
+function syncBrandFilters(validFeatures) {
+  const brandContainer = document.getElementById('brand-filters');
+  const moreBrands = document.getElementById('more-brands');
+  if (!brandContainer || !moreBrands) return;
+
+  // Brand filters — sorted by popularity (most stations first)
+  const brandCount = {};
+  validFeatures.forEach(f => {
+    const b = f.properties.brand;
+    if (b) brandCount[b] = (brandCount[b] || 0) + 1;
+  });
+  const brands = Object.entries(brandCount)
+    .sort((a, b) => b[1] - a[1] || a[0].localeCompare(b[0])); // descending by count
+
+  // Remember what the user had checked: a refresh must not reset the filters.
+  const previousSelection = new Map();
+  document.querySelectorAll('.brand-filter').forEach(cb => previousSelection.set(cb.value, cb.checked));
+
+  ensureBrandToggleRow(brands.length);
+
+  brandContainer.innerHTML = '';
+  moreBrands.innerHTML = '';
+  brands.slice(0, BRAND_INLINE_LIMIT).forEach(([brand, count]) => {
+    brandContainer.appendChild(createBrandItem(brand, count, false, previousSelection.get(brand) ?? true));
+  });
+  if (brands.length > BRAND_INLINE_LIMIT) {
+    brands.slice(BRAND_INLINE_LIMIT).forEach(([brand, count]) => {
+      moreBrands.appendChild(createBrandItem(brand, count, true, previousSelection.get(brand) ?? true));
     });
+  }
 
-    // Build brand filter items with count badges
-    function createBrandItem(brand, count, compact) {
-      const color = brandColor(brand);
-      const abbr = brandAbbr(brand);
-      const item = document.createElement('label');
-      item.className = 'brand-filter-item active';
-      if (compact) item.style.margin = '4px';
-      const iconSize = compact ? '18px' : '20px';
-      const fontSize = compact ? '7px' : '8px';
-      const membership = isMembershipBrand(brand)
-        ? `<span class="brand-membership" title="${t('membershipRequired')}" aria-label="${t('membershipRequired')}">🔒</span>`
-        : '';
-      item.innerHTML = `<input type="checkbox" class="brand-filter" value="${brand}" checked>
-        <span class="brand-icon" style="width:${iconSize};height:${iconSize};border-radius:4px;background:${color};display:inline-flex;align-items:center;justify-content:center;font-size:${fontSize};font-weight:700;color:#fff;flex-shrink:0;">${abbr}</span>
-        <span class="brand-name">${brand}</span>
-        ${membership}
-        <span class="brand-metrics">
-          <span class="brand-count" title="${t('stations')}">${count}</span>
-          <span class="brand-avg" title="${t('brandAvg')}">—</span>
-          <span class="brand-diff" title="${t('brandVsAvg')}">—</span>
-        </span>`;
-      item.addEventListener('click', (e) => {
-        // Let the label toggle the checkbox naturally, then sync
-        setTimeout(syncToggleState, 0);
-      });
-      return item;
-    }
+  syncToggleState();
+}
 
-    brands.slice(0, 14).forEach(([brand, count]) => {
-      brandContainer.appendChild(createBrandItem(brand, count, false));
-    });
+function syncRegionOptions(validFeatures) {
+  const select = document.getElementById('region-filter');
+  if (!select) return;
+  const regions = [...new Set(validFeatures.map(f => f.properties.region).filter(Boolean))].sort();
+  const current = select.value;
+  const existing = [...select.options].slice(1).map(option => option.value);
+  const unchanged = existing.length === regions.length && regions.every((region, i) => region === existing[i]);
 
-    if (brands.length > 14) {
-      brands.slice(14).forEach(([brand, count]) => {
-        moreBrands.appendChild(createBrandItem(brand, count, true));
-      });
-    }
+  if (unchanged) {
+    // Same regions: keep the nodes (and the selection) exactly as they are.
+    if (regions.includes(current)) select.value = current;
+    return;
+  }
 
-    // Initial sync — all brands start checked, so button should say "Deselect all"
-    syncToggleState();
-    
-    // Initialize region filter
-    const regionContainer = document.getElementById('region-filter');
-    const regions = [...new Set(validFeatures.map(f => f.properties.region))].sort();
-    regions.forEach(region => {
-      const option = document.createElement('option');
-      option.value = region;
-      option.textContent = region;
-      regionContainer.appendChild(option);
-    });
+  while (select.options.length > 1) select.remove(1);
+  regions.forEach(region => {
+    const option = document.createElement('option');
+    option.value = region;
+    option.textContent = region;
+    select.appendChild(option);
+  });
+  select.value = regions.includes(current) ? current : '';
+}
 
-    // Add layers
+/**
+ * Render a snapshot (initial load or background refresh). Idempotent: it never
+ * duplicates the brand toggle row / brand items / region options and never
+ * resets the brand checkboxes, price range, region, radius mode or map view.
+ */
+export function applyStations(data, { fromCache = false } = {}) {
+  // Exclude official records with invalid coordinates (currently the (0,0)
+  // "Hub Régie" record) from every downstream consumer: map, list, stats,
+  // regional benchmarks and province fitBounds.
+  const rawFeatures = Array.isArray(data?.features) ? data.features : [];
+  const validFeatures = rawFeatures.filter(isValidStation);
+  currentStations = { ...data, features: validFeatures };
+  stationCount = validFeatures.length;
+
+  console.log('Loaded', validFeatures.length, 'stations (excluded', rawFeatures.length - validFeatures.length, 'invalid coordinates)');
+
+  syncBrandFilters(validFeatures);
+  syncRegionOptions(validFeatures);
+
+  // Layers are created once; a refresh only swaps the data behind them, so the
+  // current view (center, zoom, radius) is left untouched.
+  if (!map.getSource('stations')) {
     addStationLayers();
-    
-    // Add range circle (only when radius mode is active)
     addRangeCircle();
-
     // First visit (no saved radius view) shows the whole province, never a
     // silent Montréal zoom.
     if (!radiusMode) fitQuebecBounds();
-    
-    // Update UI (pwa.js renders #data-status, including honest offline label)
-    setDataSnapshot({
-      generatedAt: data.metadata?.generated_at || null,
-      fromCache: isResponseFromCache(response),
-      stationCount
-    });
-    updateStats();
+  }
 
-    // Let dependent modules (e.g. the price-watch list) evaluate once the
-    // real snapshot is available.
-    window.dispatchEvent(new CustomEvent('stations:loaded', { detail: currentStations }));
-    
+  // Update UI (pwa.js renders #data-status, including honest offline label)
+  setDataSnapshot({
+    generatedAt: data.metadata?.generated_at || null,
+    fromCache,
+    stationCount
+  });
+  // Freshness baseline: a later fetch only wins when it is strictly newer.
+  setAppliedSnapshot(data.metadata?.generated_at || null);
+  updateStats();
+
+  // Let dependent modules (e.g. the price-watch list) evaluate once the
+  // real snapshot is available.
+  window.dispatchEvent(new CustomEvent('stations:loaded', { detail: currentStations }));
+}
+
+// Load stations data (first paint only — later updates go through applyStations)
+export async function loadStations() {
+  document.getElementById('loading').classList.add('active');
+
+  try {
+    const response = await fetch('data/stations.json');
+    const data = await response.json();
+    applyStations(data, { fromCache: isResponseFromCache(response) });
   } catch (error) {
     console.error('Error loading stations:', error);
     document.getElementById('data-status').textContent = 'Erreur de chargement des données';
@@ -424,6 +480,15 @@ export async function loadStations() {
     document.getElementById('loading').classList.remove('active');
   }
 }
+
+// Automatic refresh triggers (issue #47): re-apply a newer snapshot in place
+// when the tab becomes visible again and every 10 minutes while it stays so.
+export function initFreshness() {
+  startFreshness({
+    applyStations: (data, response) => applyStations(data, { fromCache: isResponseFromCache(response) })
+  });
+}
+
 
 // Add station layers
 function addStationLayers() {
@@ -754,7 +819,9 @@ window.__qcGasMap = {
   isValidQuebecCoordinate,
   isRadiusMode,
   getReferencePoint,
-  getEffectiveReferencePoint
+  getEffectiveReferencePoint,
+  getView: () => (map && map.getCenter ? { center: map.getCenter(), zoom: map.getZoom() } : null),
+  getStationCount: () => stationCount
 };
 
 export { map, currentStations, MONTREAL_CENTER, addRangeCircle };

@@ -1,6 +1,7 @@
 // PWA lifecycle helpers: service-worker registration, update notice, install
 // prompt UI, iOS "Add to Home Screen" guidance, and honest offline status.
 import { t, tf, getLanguage, onLanguageChange } from './i18n.js';
+import { formatRelativeTime, subscribeFreshness } from './freshness.js';
 
 const FROM_CACHE_HEADER = 'X-QCGas-From-Cache';
 // A returning user should learn about a new release quickly, but focus storms
@@ -60,9 +61,19 @@ function renderStatus() {
       : t('offlineStatus');
   } else {
     el.classList.remove('offline');
-    el.textContent = stationCount > 0
-      ? tf('dataLoaded', { n: stationCount })
-      : t('dataLoading');
+    // Online: report how old the *displayed* snapshot is, derived from its
+    // generated_at. A snapshot we cannot date is never sold as "just now".
+    const generatedMs = Date.parse(generatedAt || '');
+    if (stationCount > 0) {
+      el.textContent = Number.isFinite(generatedMs)
+        ? tf('dataFreshness', {
+          n: stationCount,
+          time: formatRelativeTime(generatedMs, Date.now(), getLanguage())
+        })
+        : tf('dataLoaded', { n: stationCount });
+    } else {
+      el.textContent = t('dataLoading');
+    }
   }
   el.dataset.count = String(stationCount);
 }
@@ -322,6 +333,9 @@ export function initPWA() {
   registerServiceWorker();
   initOfflineUI();
   initInstallUI();
+  // The relative age is time-dependent: freshness.js ticks it once a minute and
+  // on every applied snapshot. This module stays the only #data-status writer.
+  subscribeFreshness(renderStatus);
   renderStatus();
 }
 

@@ -675,6 +675,9 @@ body {
   padding: 4px 10px;
   border-radius: 4px;
   width: fit-content;
+  /* The label now carries the snapshot's age (issue #47), so it can be long. */
+  max-width: min(72vw, 340px);
+  line-height: 1.4;
 }
 
 .data-status.offline {
