@@ -2154,3 +2154,251 @@ test.describe('Data freshness & auto refresh (Issue #47)', () => {
     await expect(status).toContainText(/il y a 25 min/);
   });
 });
+
+// ── Station card / detail panel follow the applied snapshot (Issue #51) ──────
+// After #47 the page can apply a newer snapshot in place while a card or the
+// detail panel is open. Both must read from that SAME snapshot, so one screen
+// can never show two different prices.
+test.describe('Station card follows the applied snapshot (Issue #51)', () => {
+  const isoAgo = (ms) => new Date(Date.now() - ms).toISOString();
+
+  // Every station shares the same regular/diesel price: the card price is then
+  // unambiguous, and a mixed-snapshot benchmark (old station price vs new
+  // regional median) could not stay at exactly 0.
+  function uniformSnapshot({ generatedAt, regular = 175.9, diesel = 254.9, omitName = null } = {}) {
+    const clone = JSON.parse(JSON.stringify(stationsFixture));
+    clone.metadata = { ...clone.metadata, generated_at: generatedAt };
+    if (omitName) clone.features = clone.features.filter((f) => f.properties.name !== omitName);
+    clone.features.forEach((f) => {
+      if (typeof f.properties.regular_price === 'number') f.properties.regular_price = regular;
+      if (typeof f.properties.diesel_price === 'number') f.properties.diesel_price = diesel;
+    });
+    return JSON.stringify(clone);
+  }
+
+  function serveSnapshot(page, getBody) {
+    return page.route('**/data/stations.json', (route) =>
+      route.fulfill({ status: 200, contentType: 'application/json', body: getBody() }));
+  }
+
+  async function waitForStations(page) {
+    await page.waitForFunction(
+      () => window.__qcGasMap && window.__qcGasMap.getStationFeatureCount() > 0 && window.__qcGasFreshness,
+      null,
+      { timeout: 15000 }
+    );
+  }
+
+  async function selectLang(page, code) {
+    await page.locator(`#lang-selector button[data-lang="${code}"]`).click();
+  }
+
+  // Click the first sidebar row and open its card; returns the station labels
+  // needed to look the same station up in the map source.
+  async function openFirstCard(page) {
+    const item = page.locator('#station-list .list-item').first();
+    await expect(item).toBeVisible();
+    await item.click();
+    await expect(page.locator('.mapboxgl-popup').first()).toBeVisible();
+    return {
+      name: await item.locator('.name').innerText(),
+      address: await item.locator('.details').innerText()
+    };
+  }
+
+  async function mapSourcePrice(page, { name, address }, fuelKey = 'regular_price') {
+    return page.evaluate(({ name, address, fuelKey }) => {
+      const f = window.__qcGasMap.getStationFeatures().find(
+        (x) => x.properties.name === name && x.properties.address === address
+      );
+      return f ? f.properties[fuelKey] : null;
+    }, { name, address, fuelKey });
+  }
+
+  test('a refresh updates the open card price, $/L, benchmark and timestamp', async ({ page }) => {
+    let body = uniformSnapshot({ generatedAt: isoAgo(40 * 60 * 1000), regular: 175.9 });
+    await serveSnapshot(page, () => body);
+
+    await page.goto(BASE_URL);
+    await waitForStations(page);
+    await selectLang(page, 'fr-CA');
+
+    const station = await openFirstCard(page);
+    const popup = page.locator('.mapboxgl-popup').first();
+    await expect(popup.locator('.sc-price')).toHaveText('175.9¢');
+    const updatedBefore = await popup.locator('.sc-updated').innerText();
+    expect(updatedBefore.length).toBeGreaterThan(0);
+
+    body = uniformSnapshot({ generatedAt: isoAgo(20 * 1000), regular: 199.9 });
+    expect(await page.evaluate(() => window.__qcGasFreshness.refreshNow())).toBe(true);
+
+    await expect(popup.locator('.sc-price')).toHaveText('199.9¢');
+    await expect(popup.locator('.sc-mini').filter({ hasText: '$/L' }).locator('b')).toHaveText('2.00');
+    // Station price and regional median come from the SAME snapshot ⇒ at median.
+    await expect(popup.locator('.sc-bench-item').nth(1).locator('b')).toHaveText('0.0¢');
+    await expect(popup.locator('.sc-updated')).not.toHaveText(updatedBefore);
+
+    // One screen, one truth: the map source holds the same price as the card.
+    const sourcePrice = await mapSourcePrice(page, station);
+    expect(sourcePrice).toBe(199.9);
+    await expect(popup.locator('.sc-price')).toHaveText(sourcePrice.toFixed(1) + '¢');
+  });
+
+  test('a refresh re-renders the detail panel without resetting user choices', async ({ page }) => {
+    let body = uniformSnapshot({ generatedAt: isoAgo(40 * 60 * 1000), regular: 175.9, diesel: 254.9 });
+    await serveSnapshot(page, () => body);
+
+    await page.goto(BASE_URL);
+    await waitForStations(page);
+
+    const list = page.locator('#station-list');
+    await expect(list.locator('.list-item').first()).toBeVisible();
+    await list.locator('.list-item').first().click();
+    await page.locator('.mapboxgl-popup [data-expand]').click();
+    const panel = page.locator('#station-panel');
+    await expect(panel).toHaveClass(/open/);
+
+    // User choices: diesel fuel, 1-week range, a threshold draft and a trip
+    // consumption that must survive the refresh.
+    await panel.locator('.sd-fuelpill[data-fuel="diesel"]').click();
+    await expect(panel.locator('.sd-fuelpill.on')).toHaveAttribute('data-fuel', 'diesel');
+    await panel.locator('.sd-rangepill[data-days="7"]').click();
+    await expect(panel.locator('.sd-rangepill[data-days="7"]')).toHaveClass(/on/);
+    await panel.locator('.sd-watch-threshold').fill('180.5');
+    await panel.locator('.sd-trip-input').fill('9.5');
+    await expect(panel.locator('.sd-bigprice')).toContainText('254.9');
+    const costBefore = parseFloat((await panel.locator('.sd-trip-cost').innerText()).replace(/[^0-9.]/g, ''));
+
+    body = uniformSnapshot({ generatedAt: isoAgo(20 * 1000), regular: 199.9, diesel: 274.9 });
+    expect(await page.evaluate(() => window.__qcGasFreshness.refreshNow())).toBe(true);
+
+    // Quote, benchmark and trip cost follow the new snapshot …
+    await expect(panel.locator('.sd-bigprice')).toContainText('274.9');
+    await expect(panel.locator('.sd-bench-item').nth(1).locator('b')).toHaveText('0.0¢');
+    const costAfter = parseFloat((await panel.locator('.sd-trip-cost').innerText()).replace(/[^0-9.]/g, ''));
+    expect(costAfter).toBeGreaterThan(costBefore);
+    // … while the user's selections are preserved.
+    await expect(panel.locator('.sd-fuelpill.on')).toHaveAttribute('data-fuel', 'diesel');
+    await expect(panel.locator('.sd-rangepill[data-days="7"]')).toHaveClass(/on/);
+    await expect(panel.locator('.sd-watch-threshold')).toHaveValue('180.5');
+    await expect(panel.locator('.sd-trip-input')).toHaveValue('9.5');
+  });
+
+  test('a station missing from the new snapshot closes the card with a localized notice', async ({ page }) => {
+    let body = uniformSnapshot({ generatedAt: isoAgo(40 * 60 * 1000), regular: 175.9 });
+    await serveSnapshot(page, () => body);
+
+    await page.goto(BASE_URL);
+    await waitForStations(page);
+    await selectLang(page, 'fr-CA');
+
+    const item = page.locator('#station-list .list-item').first();
+    await expect(item).toBeVisible();
+    const name = await item.locator('.name').innerText();
+    await item.click();
+    await expect(page.locator('.mapboxgl-popup').first()).toBeVisible();
+
+    body = uniformSnapshot({ generatedAt: isoAgo(20 * 1000), regular: 199.9, omitName: name });
+    expect(await page.evaluate(() => window.__qcGasFreshness.refreshNow())).toBe(true);
+
+    // Old numbers must not survive, and the reason is stated in the UI language.
+    await expect(page.locator('.mapboxgl-popup')).toHaveCount(0);
+    const notice = page.locator('#station-gone-notice');
+    await expect(notice).toBeVisible();
+    await expect(notice).toContainText(/données officielles/);
+
+    await selectLang(page, 'en-CA');
+    await expect(notice).toContainText(/official data/);
+    await selectLang(page, 'zh-Hans');
+    await expect(notice).toContainText(/官方数据/);
+  });
+
+  test('a station missing from the new snapshot closes the detail panel without throwing', async ({ page }) => {
+    const pageErrors = [];
+    page.on('pageerror', (err) => pageErrors.push(err.message));
+
+    let body = uniformSnapshot({ generatedAt: isoAgo(40 * 60 * 1000), regular: 175.9 });
+    await serveSnapshot(page, () => body);
+
+    await page.goto(BASE_URL);
+    await waitForStations(page);
+
+    const item = page.locator('#station-list .list-item').first();
+    await expect(item).toBeVisible();
+    const name = await item.locator('.name').innerText();
+    await item.click();
+    await page.locator('.mapboxgl-popup [data-expand]').click();
+    await expect(page.locator('#station-panel')).toHaveClass(/open/);
+
+    body = uniformSnapshot({ generatedAt: isoAgo(20 * 1000), regular: 199.9, omitName: name });
+    expect(await page.evaluate(() => window.__qcGasFreshness.refreshNow())).toBe(true);
+
+    await expect(page.locator('#station-panel')).not.toHaveClass(/open/);
+    await expect(page.locator('#station-gone-notice')).toBeVisible();
+    expect(pageErrors).toEqual([]);
+  });
+
+  test('the fill-up prefill follows the snapshot until the user edits it', async ({ page }) => {
+    let body = uniformSnapshot({ generatedAt: isoAgo(60 * 60 * 1000), regular: 175.9 });
+    await serveSnapshot(page, () => body);
+
+    await page.goto(BASE_URL);
+    await waitForStations(page);
+
+    const list = page.locator('#station-list');
+    await expect(list.locator('.list-item').first()).toBeVisible();
+    await list.locator('.list-item').first().click();
+    await page.locator('.mapboxgl-popup [data-expand]').click();
+    await expect(page.locator('#station-panel')).toHaveClass(/open/);
+
+    await page.locator('.sd-fillup-add').click();
+    const price = page.locator('.sd-fillup-price');
+    await expect(price).toHaveValue('175.9');
+
+    // Untouched prefill follows the new snapshot …
+    body = uniformSnapshot({ generatedAt: isoAgo(40 * 60 * 1000), regular: 190.9 });
+    expect(await page.evaluate(() => window.__qcGasFreshness.refreshNow())).toBe(true);
+    await expect(price).toHaveValue('190.9');
+
+    // … but a user-edited price is never overwritten.
+    await price.fill('111.1');
+    body = uniformSnapshot({ generatedAt: isoAgo(20 * 60 * 1000), regular: 199.9 });
+    expect(await page.evaluate(() => window.__qcGasFreshness.refreshNow())).toBe(true);
+    await expect(price).toHaveValue('111.1');
+
+    // The saved record keeps exactly the price the user saw.
+    await page.locator('.sd-fillup-liters').fill('40');
+    await page.locator('.sd-fillup-save').click();
+    const saved = await page.evaluate(() => JSON.parse(localStorage.getItem('qc-gas-fillups') || '[]'));
+    expect(saved[0].priceCents).toBe(111.1);
+  });
+
+  test('watching a refreshed station records the on-screen snapshot price (#31 regression)', async ({ page }) => {
+    let body = uniformSnapshot({ generatedAt: isoAgo(60 * 60 * 1000), regular: 175.9 });
+    await serveSnapshot(page, () => body);
+
+    await page.goto(BASE_URL);
+    await waitForStations(page);
+
+    const list = page.locator('#station-list');
+    await expect(list.locator('.list-item').first()).toBeVisible();
+    await list.locator('.list-item').first().click();
+    await page.locator('.mapboxgl-popup [data-expand]').click();
+    await expect(page.locator('#station-panel')).toHaveClass(/open/);
+
+    body = uniformSnapshot({ generatedAt: isoAgo(20 * 60 * 1000), regular: 199.9 });
+    expect(await page.evaluate(() => window.__qcGasFreshness.refreshNow())).toBe(true);
+
+    // The bell writes the price currently on screen (199.9), never the stale 175.9.
+    await page.locator('.sd-watch-toggle').click();
+    const entry = await page.evaluate(() => JSON.parse(localStorage.getItem('qc-gas-watch') || '[]')[0]);
+    expect(entry.lastSeenPriceCents).toBe(199.9);
+    // Default threshold is derived from the new snapshot price too (199.9 − 2).
+    expect(entry.thresholdCents).toBeCloseTo(197.9, 1);
+
+    // #31: a later refresh still reports the true change since that baseline.
+    body = uniformSnapshot({ generatedAt: isoAgo(10 * 60 * 1000), regular: 205.9 });
+    expect(await page.evaluate(() => window.__qcGasFreshness.refreshNow())).toBe(true);
+    await expect(page.locator('#watch-list .watch-item').first()).toContainText('+6.0¢');
+  });
+});

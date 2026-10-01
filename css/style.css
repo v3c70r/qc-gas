@@ -2380,3 +2380,24 @@ select:focus-visible {
   color: #94a3b8;
   line-height: 1.4;
 }
+
+/* Snapshot refresh (issue #51): the station on screen left the official data.
+   Non-blocking, localized, auto-dismissing status line. */
+.station-gone-notice {
+  position: fixed;
+  left: 50%;
+  bottom: 24px;
+  transform: translateX(-50%);
+  max-width: min(92vw, 460px);
+  padding: 10px 16px;
+  border-radius: 10px;
+  background: #0f172a;
+  color: #f8fafc;
+  font-size: 13px;
+  font-weight: 500;
+  line-height: 1.4;
+  text-align: center;
+  box-shadow: 0 8px 24px rgba(15, 23, 42, 0.28);
+  z-index: 3000;
+}
+.station-gone-notice[hidden] { display: none; }

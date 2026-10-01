@@ -27,6 +27,10 @@ let popupFuel = 'regular';
 let popupRange = 7;
 let popupUpdated = '';
 
+// Transient, localized notice shown when the displayed station is no longer in
+// the officially published snapshot.
+let goneNoticeTimer = null;
+
 // ── Trip cost estimator preferences (localStorage, no backend) ──
 const TRIP_STORAGE_KEY = 'qc-gas-trip';
 const DEFAULT_CONSUMPTION = 8; // L/100 km
@@ -56,6 +60,8 @@ function saveTripPrefs() {
 
 // Keep open popup/detail star labels in sync when the language changes.
 onLanguageChange(async () => {
+  const notice = document.getElementById('station-gone-notice');
+  if (notice && !notice.hidden) notice.textContent = t('stationGone');
   await loadStationHistoryData().catch(() => {});
   if (activePopup && currentFeature) {
     activePopup.setHTML(cardHTML(currentFeature));
@@ -149,12 +155,49 @@ function sparklineSVG(series, color) {
 
 // ── Same-day regional benchmark (full snapshot, filter-independent) ──
 function benchmarkFor(feature, fuel) {
-  const props = feature && feature.properties;
-  const region = props && props.region;
+  if (!currentStations || !Array.isArray(currentStations.features)) return null;
   const priceKey = fuel + '_price';
+  // Always price the station from the SAME array that provides the median, so
+  // an applied refresh can never mix an old station price with a new benchmark.
+  const live = findByStationId(currentStations, stationId(feature)) || feature;
+  const props = live && live.properties;
+  const region = props && props.region;
   const price = props && props[priceKey];
-  if (!region || price == null || !currentStations) return null;
+  if (!region || price == null || !Number.isFinite(price)) return null;
   return computeRegionBenchmark(currentStations, region, priceKey, price);
+}
+
+// Locate the station currently on screen inside a given snapshot using the
+// stable station key (name|address|postal_code — see favorites.stationId).
+function findByStationId(stations, id) {
+  if (!id || !stations || !Array.isArray(stations.features)) return null;
+  return stations.features.find(f => stationId(f) === id) || null;
+}
+
+// Same "updated at" copy stats.js builds when a card is opened.
+function updatedTextFor(snapshot) {
+  const ts = snapshot?.metadata?.generated_at;
+  if (!ts) return '';
+  const d = new Date(ts);
+  if (Number.isNaN(d.getTime())) return '';
+  const timeStr = d.toLocaleString(getLanguage(), { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' });
+  return tf('dataUpdated', { time: timeStr });
+}
+
+function showStationGoneNotice() {
+  let el = document.getElementById('station-gone-notice');
+  if (!el) {
+    el = document.createElement('div');
+    el.id = 'station-gone-notice';
+    el.className = 'station-gone-notice';
+    el.setAttribute('role', 'status');
+    el.setAttribute('aria-live', 'polite');
+    document.body.appendChild(el);
+  }
+  el.textContent = t('stationGone');
+  el.hidden = false;
+  clearTimeout(goneNoticeTimer);
+  goneNoticeTimer = setTimeout(() => { el.hidden = true; }, 8000);
 }
 
 function benchmarkBlockHTML(bench, prefix) {
@@ -364,6 +407,65 @@ let detailFuel = 'regular';
 let detailRange = 90;
 let detailMap = null;
 let detailUpdated = '';
+// True while the user has typed a threshold not yet committed, so a re-render
+// triggered by a snapshot refresh cannot reset their input.
+let watchThresholdDirty = false;
+// Last price value the fill-up form prefilled (see openFillupForm).
+let fillupPrefillPrice = '';
+
+// ── Keep the open card / panel on the applied snapshot (Issue #51) ──
+// #47 re-applies a newer snapshot in place; the popup card and the detail
+// panel must then read from that same snapshot so one screen never shows two
+// different prices.
+function handleSnapshotApplied(snapshot) {
+  const stations = (snapshot && Array.isArray(snapshot.features)) ? snapshot : currentStations;
+  if (!stations || !Array.isArray(stations.features)) return;
+  const nextUpdated = updatedTextFor(stations);
+
+  if (activePopup && currentFeature) {
+    const next = findByStationId(stations, stationId(currentFeature));
+    if (next) {
+      currentFeature = next;
+      if (nextUpdated) popupUpdated = nextUpdated;
+      activePopup.setHTML(cardHTML(next));
+    } else {
+      // The station is gone from the official data: never keep stale numbers.
+      activePopup.remove();
+      activePopup = null;
+      currentFeature = null;
+      showStationGoneNotice();
+    }
+  }
+
+  if (detailEl && detailEl.classList.contains('open') && detailFeature) {
+    const next = findByStationId(stations, stationId(detailFeature));
+    if (next) {
+      detailFeature = next;
+      if (nextUpdated) detailUpdated = nextUpdated;
+      syncFillupPrefill();
+      renderDetail().catch(() => {});
+    } else {
+      detailFeature = null;
+      closeStationDetail();
+      showStationGoneNotice();
+    }
+  }
+}
+
+// Re-fill the price input only while the user has not edited it: when the last
+// value still equals the tracked prefill, it is safe to follow the snapshot.
+function syncFillupPrefill() {
+  if (!detailEl || !detailFeature) return;
+  const form = detailEl.querySelector('.sd-fillup-form');
+  const input = detailEl.querySelector('.sd-fillup-price');
+  if (!form || form.hidden || !input) return;
+  if (input.value !== fillupPrefillPrice) return;
+  const fuelSel = detailEl.querySelector('.sd-fillup-fuel');
+  const fuel = fuelSel?.value || detailFuel;
+  const price = detailFeature.properties[fuel + '_price'];
+  input.value = price != null ? String(price) : '';
+  fillupPrefillPrice = input.value;
+}
 
 // ── Pull-down-to-dismiss for mobile bottom sheets ──
 function initSheetDrag(sheet, handle, onDismiss) {
@@ -547,13 +649,18 @@ function buildDetailPanel() {
     setWatchThreshold(detailFeature, threshold);
   };
   watchThresholdInput.addEventListener('input', () => {
+    watchThresholdDirty = true;
     if (!detailFeature || !isWatching(detailFeature)) return;
     clearTimeout(watchThresholdTimer);
     watchThresholdTimer = setTimeout(persistThreshold, 300);
   });
   watchThresholdInput.addEventListener('change', () => {
     clearTimeout(watchThresholdTimer);
+    const committed = !!(detailFeature && isWatching(detailFeature));
     persistThreshold();
+    // Only a committed watch entry becomes the source of truth again; an
+    // un-watched draft must survive a later snapshot re-render.
+    if (committed) watchThresholdDirty = false;
   });
 
   // Delegated fuel / range switching inside panel
@@ -608,7 +715,9 @@ function buildDetailPanel() {
   fillupFuelSel.addEventListener('change', () => {
     if (!detailFeature) return;
     const price = detailFeature.properties[fillupFuelSel.value + '_price'];
-    if (price != null) detailEl.querySelector('.sd-fillup-price').value = price;
+    const value = price != null ? String(price) : '';
+    detailEl.querySelector('.sd-fillup-price').value = value;
+    fillupPrefillPrice = value;
   });
   detailEl.querySelector('.sd-fillup-save').addEventListener('click', () => saveFillup());
 
@@ -631,7 +740,9 @@ function openFillupForm() {
   fuelSel.value = fuel;
 
   detailEl.querySelector('.sd-fillup-date').value = localDateKey(new Date()) || '';
-  detailEl.querySelector('.sd-fillup-price').value = props[fuel + '_price'] != null ? props[fuel + '_price'] : '';
+  const prefillPrice = props[fuel + '_price'] != null ? String(props[fuel + '_price']) : '';
+  detailEl.querySelector('.sd-fillup-price').value = prefillPrice;
+  fillupPrefillPrice = prefillPrice;
   detailEl.querySelector('.sd-fillup-liters').value = '';
   detailEl.querySelector('.sd-fillup-total').value = '';
   form.hidden = false;
@@ -714,11 +825,14 @@ function updateWatchRow() {
   }
   if (input) {
     input.setAttribute('aria-label', t('watchThresholdLabel'));
-    if (watching) {
-      input.value = entry.thresholdCents != null ? String(entry.thresholdCents) : '';
-    } else {
-      const current = detailFeature.properties?.[detailFuel + '_price'];
-      input.value = current != null ? String(Math.round((current - 2) * 10) / 10) : '';
+    // A refresh re-renders while the user may have typed a draft: never clobber it.
+    if (!watchThresholdDirty) {
+      if (watching) {
+        input.value = entry.thresholdCents != null ? String(entry.thresholdCents) : '';
+      } else {
+        const current = detailFeature.properties?.[detailFuel + '_price'];
+        input.value = current != null ? String(Math.round((current - 2) * 10) / 10) : '';
+      }
     }
   }
 }
@@ -740,6 +854,7 @@ export async function openStationDetail(feature, map, updatedText = '') {
   detailFeature = feature;
   detailMap = map;
   detailUpdated = updatedText || '';
+  watchThresholdDirty = false;
   // Default to sidebar fuel choice when possible
   const checked = document.querySelector('.fuel-filter:checked');
   const props = feature.properties;
@@ -994,4 +1109,12 @@ function updateDetailChart(series, color) {
 // Close panel when map container click / Escape handled elsewhere; expose helpers
 export function isStationPanelOpen() {
   return !!(detailEl && detailEl.classList.contains('open'));
+}
+
+// map.js dispatches this after every snapshot application (initial or refresh);
+// keeping the open card/panel in sync is what makes auto-refresh trustworthy.
+if (typeof window !== 'undefined') {
+  window.addEventListener('stations:loaded', (event) => {
+    handleSnapshotApplied(event?.detail);
+  });
 }
