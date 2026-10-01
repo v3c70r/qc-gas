@@ -1,6 +1,6 @@
 import { initMap, initFreshness, loadStations, MONTREAL_CENTER } from './map.js';
 import { initFilters, initGeolocation, initSidebarToggle } from './filters.js';
-import { initFavorites } from './stats.js';
+import { initFavorites, initStationListControls } from './stats.js';
 import { getStoredLanguage, createLanguageSelector, applyTranslations } from './i18n.js';
 import { togglePanel } from './dashboard.js';
 import { loadHistoryData, loadStationHistoryData } from './history.js';
@@ -72,6 +72,7 @@ function initApp() {
   initSidebarToggle();
   initSearch();
   initFavorites();
+  initStationListControls();
   initFillups();
   initWatch();
   initKeyboardShortcuts();

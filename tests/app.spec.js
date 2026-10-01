@@ -2402,3 +2402,236 @@ test.describe('Station card follows the applied snapshot (Issue #51)', () => {
     await expect(page.locator('#watch-list .watch-item').first()).toContainText('+6.0¢');
   });
 });
+
+test.describe('Sidebar station list — see all + sort by distance (Issue #50)', () => {
+  const LIST_ITEM = '#station-list .list-item';
+  const DISTANCE_BTN = '#list-sort [data-sort="distance"]';
+  const PRICE_BTN = '#list-sort [data-sort="price"]';
+
+  const waitForStations = async (page) => {
+    await page.waitForFunction(
+      () => window.__qcGasMap && window.__qcGasMap.getStationFeatureCount() > 0,
+      null,
+      { timeout: 15000 }
+    );
+  };
+
+  const sidebarTotal = async (page) =>
+    Number(await page.locator('#sidebar-station-count').getAttribute('data-count'));
+
+  const clickShowMoreUntilDone = async (page, max = 200) => {
+    const btn = page.locator('#show-more-stations');
+    let clicks = 0;
+    while (clicks < max) {
+      if (!(await btn.isVisible())) break;
+      await btn.click();
+      clicks += 1;
+    }
+    return clicks;
+  };
+
+  // Fast path for the province-wide run: hundreds of real clicks on a
+  // 2400-row list are needlessly slow, so drive the same button in-page.
+  const pageThroughAll = (page) => page.evaluate(() => {
+    const btn = document.getElementById('show-more-stations');
+    let guard = 0;
+    while (btn && !btn.hidden && guard < 1000) {
+      btn.click();
+      guard += 1;
+    }
+  });
+
+  const isValidCoord = (f) => {
+    const [lng, lat] = f.geometry.coordinates;
+    return Number.isFinite(lng) && Number.isFinite(lat) &&
+      lng >= -79.5 && lng <= -57.1 && lat >= 44.9 && lat <= 62.4;
+  };
+
+  const knownBrands = new Set(stationsFixture.features.map((f) => f.properties.brand).filter(Boolean));
+
+  // First 35 stations the default province view shows, used to prove that
+  // "Favorites only" is no longer truncated at 30 rows.
+  const favoriteIds = stationsFixture.features
+    .filter((f) => {
+      if (!isValidCoord(f) || !knownBrands.has(f.properties.brand)) return false;
+      const p = f.properties.regular_price;
+      return p != null && p >= 150 && p <= 240;
+    })
+    .slice(0, 35)
+    .map((f) => [f.properties.name, f.properties.address, f.properties.postal_code]
+      .map((v) => (v ?? '').trim()).join('|'));
+
+  const MONTREAL_VIEW = JSON.stringify({ mode: 'radius', lng: -73.7, lat: 45.45, radiusKm: 25, zoom: 12 });
+
+  // Seeds storage only on the first navigation so a later reload really
+  // exercises the persisted preferences (qc-gas-list) instead of resetting them.
+  const seedOnce = (page, view, favorites = null) => page.addInitScript(({ view, favorites }) => {
+    if (localStorage.getItem('qc-gas-test-seeded')) return;
+    localStorage.clear();
+    if (view) localStorage.setItem('qc-gas-view', view);
+    if (favorites) localStorage.setItem('qc-gas-favorites', JSON.stringify(favorites));
+    localStorage.setItem('qc-gas-test-seeded', '1');
+  }, { view, favorites });
+
+  test('renders 30 rows by default, count matches the sidebar total, "Voir plus" pages through the rest', async ({ page }) => {
+    await page.addInitScript(() => localStorage.clear());
+    await page.goto(BASE_URL);
+    await waitForStations(page);
+
+    const items = page.locator(LIST_ITEM);
+    await expect(items).toHaveCount(30);
+
+    const total = await sidebarTotal(page);
+    expect(total).toBeGreaterThan(30);
+    await expect(page.locator('#stations-shown-count')).toContainText('30');
+    await expect(page.locator('#stations-shown-count')).toContainText(String(total));
+
+    await page.locator('#show-more-stations').click();
+    await expect(items).toHaveCount(60);
+    await expect(page.locator('#stations-shown-count')).toContainText('60');
+
+    await pageThroughAll(page);
+    await expect(items).toHaveCount(total);
+    await expect(page.locator('#show-more-stations')).toBeHidden();
+    await expect(page.locator('#stations-shown-count')).toContainText(String(total));
+  });
+
+  test('"Voir plus" reaches every station in radius mode (Montréal ≤ 25 km)', async ({ page }) => {
+    await page.addInitScript((view) => {
+      localStorage.clear();
+      localStorage.setItem('qc-gas-view', view);
+    }, MONTREAL_VIEW);
+    await page.goto(BASE_URL);
+    await waitForStations(page);
+
+    const items = page.locator(LIST_ITEM);
+    const total = await sidebarTotal(page);
+    expect(total).toBeGreaterThan(200);
+
+    await expect(items).toHaveCount(30);
+    await clickShowMoreUntilDone(page);
+    await expect(items).toHaveCount(total);
+    await expect(page.locator('#show-more-stations')).toBeHidden();
+  });
+
+  test('"Favorites only" is not capped at 30 rows and matches #favorites-count', async ({ page }) => {
+    await page.addInitScript((ids) => {
+      localStorage.clear();
+      localStorage.setItem('qc-gas-favorites', JSON.stringify(ids));
+    }, favoriteIds);
+    await page.goto(BASE_URL);
+    await waitForStations(page);
+
+    await page.locator('#favorites-toggle').click();
+    await expect(page.locator('#favorites-toggle')).toHaveClass(/active/);
+    await expect(page.locator('#favorites-count')).toContainText('35');
+    await expect(page.locator('#sidebar-station-count')).toContainText('35');
+
+    const items = page.locator(LIST_ITEM);
+    await expect(items).toHaveCount(30);
+
+    await page.locator('#show-more-stations').click();
+    await expect(items).toHaveCount(35);
+    await expect(page.locator('#show-more-stations')).toBeHidden();
+    await expect(page.locator('#stations-shown-count')).toContainText('35');
+  });
+
+  test('distance sort is pure ascending distance, persists in qc-gas-list and survives a reload', async ({ page }) => {
+    await seedOnce(page, MONTREAL_VIEW);
+    await page.goto(BASE_URL);
+    await waitForStations(page);
+
+    await expect(page.locator(PRICE_BTN)).toHaveClass(/active/);
+
+    await page.locator(DISTANCE_BTN).click();
+    await expect(page.locator(DISTANCE_BTN)).toHaveClass(/active/);
+    await expect(page.locator(PRICE_BTN)).not.toHaveClass(/active/);
+    await expect(page.locator(LIST_ITEM).first()).toBeVisible();
+
+    const distances = (await page.locator(`${LIST_ITEM} .distance`).allTextContents()).map(parseFloat);
+    expect(distances.length).toBe(30);
+    expect(distances.every((n) => Number.isFinite(n))).toBe(true);
+    for (let i = 1; i < distances.length; i++) {
+      expect(distances[i]).toBeGreaterThanOrEqual(distances[i - 1]);
+    }
+
+    const stored = await page.evaluate(() => JSON.parse(localStorage.getItem('qc-gas-list') || 'null'));
+    expect(stored).toEqual({ sort: 'distance' });
+
+    await page.reload();
+    await waitForStations(page);
+    await expect(page.locator(DISTANCE_BTN)).toHaveClass(/active/);
+    // Re-rendering from page one after reload: no duplicated rows.
+    await expect(page.locator(LIST_ITEM)).toHaveCount(30);
+  });
+
+  test('without a reference point the distance sort is unavailable and explains why', async ({ page }) => {
+    await page.addInitScript(() => localStorage.clear());
+    await page.goto(BASE_URL);
+    await waitForStations(page);
+
+    await expect(page.locator(DISTANCE_BTN)).toHaveAttribute('data-unavailable', 'true');
+    await expect(page.locator(DISTANCE_BTN)).toHaveAttribute('title', /localisation|location|定位/);
+
+    await page.locator(DISTANCE_BTN).click();
+    const hint = page.locator('#sort-distance-hint');
+    await expect(hint).toBeVisible();
+    await expect(hint).toContainText(/localisation|location|定位/);
+
+    // Falls back to the price sort instead of rendering a meaningless/“— km” order.
+    await expect(page.locator(PRICE_BTN)).toHaveClass(/active/);
+    await expect(page.locator(DISTANCE_BTN)).not.toHaveClass(/active/);
+
+    const prices = (await page.locator(`${LIST_ITEM} .price`).allTextContents()).map(parseFloat);
+    expect(prices.length).toBe(30);
+    for (let i = 1; i < prices.length; i++) {
+      expect(prices[i]).toBeGreaterThanOrEqual(prices[i - 1]);
+    }
+  });
+
+  test('changing the search re-renders from page one without duplicating rows', async ({ page }) => {
+    await page.addInitScript(() => localStorage.clear());
+    await page.goto(BASE_URL);
+    await waitForStations(page);
+
+    await page.locator('#show-more-stations').click();
+    await expect(page.locator(LIST_ITEM)).toHaveCount(60);
+
+    await page.locator('#station-search').fill('rouyn');
+    await page.waitForTimeout(500);
+
+    const rows = await page.locator(LIST_ITEM).count();
+    const domRows = await page.locator('#station-list > .list-item').count();
+    expect(rows).toBeGreaterThan(0);
+    expect(rows).toBeLessThanOrEqual(30);
+    expect(domRows).toBe(rows);
+    await expect(page.locator('#stations-shown-count')).toContainText(String(rows));
+  });
+
+  test('the "best price" marker uses all filtered results, not just the rendered page', async ({ page }) => {
+    await page.addInitScript((view) => {
+      localStorage.clear();
+      localStorage.setItem('qc-gas-view', view);
+    }, MONTREAL_VIEW);
+    await page.goto(BASE_URL);
+    await waitForStations(page);
+
+    // Nearest-first ordering: the cheapest station is far beyond the first page.
+    await page.locator(DISTANCE_BTN).click();
+    await clickShowMoreUntilDone(page);
+
+    const result = await page.evaluate(() => {
+      const rows = [...document.querySelectorAll('#station-list .list-item')];
+      const bestPrices = [...new Set(rows
+        .filter((r) => r.classList.contains('best'))
+        .map((r) => parseFloat(r.querySelector('.price').textContent)))];
+      const prices = window.__qcGasMap.getStationFeatures()
+        .map((f) => f.properties.regular_price)
+        .filter((p) => p != null);
+      return { bestPrices, globalMin: Math.min(...prices) };
+    });
+
+    expect(result.bestPrices.length).toBeGreaterThan(0);
+    expect(result.bestPrices).toEqual([result.globalMin]);
+  });
+});

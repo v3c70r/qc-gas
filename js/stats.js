@@ -1,10 +1,46 @@
 import { map, currentStations, isRadiusMode, getReferencePoint, getEffectiveReferencePoint, rangeRadius } from './map.js';
-import { tf, translations, getLanguage, t, onLanguageChange } from './i18n.js';
+import { tf, t, getLanguage, onLanguageChange } from './i18n.js';
 import { brandColor, brandAbbr } from './constants.js';
 import { isFavorite, toggleFavorite, getFavoriteCount, subscribe, STAR_ICON } from './favorites.js';
 import { searchFeatures, getSearchQuery, isSearchActive, refreshSearchSuggestions } from './search.js';
 
+// The sidebar renders stations in pages so a big city (Montréal has ~500
+// stations within 25 km) stays browsable without dumping everything at once.
+const PAGE_SIZE = 30;
+const LIST_STORAGE_KEY = 'qc-gas-list';
+
 let favoritesOnly = false;
+// 'price' (default) = favorites pinned first then price ascending;
+// 'distance' = strict nearest-first. Persisted so the choice survives reloads.
+let sortMode = loadListPreferences().sort;
+// Set when the user asks for the distance sort without a reference point, so
+// the explanation stays visible until the location becomes available.
+let distanceHintVisible = false;
+let renderedStations = [];
+let renderedCount = 0;
+let cheapestVisiblePrice = Infinity;
+
+function loadListPreferences() {
+  try {
+    const parsed = JSON.parse(localStorage.getItem(LIST_STORAGE_KEY) || 'null');
+    if (parsed && parsed.sort === 'distance') return { sort: 'distance' };
+  } catch {
+    // Storage may be unavailable (private browsing); keep the default.
+  }
+  return { sort: 'price' };
+}
+
+function persistListPreferences() {
+  try {
+    localStorage.setItem(LIST_STORAGE_KEY, JSON.stringify({ sort: sortMode }));
+  } catch {
+    // Storage may be unavailable (private browsing); the choice still applies in-session.
+  }
+}
+
+function isDistanceSortAvailable() {
+  return getReferencePoint() !== null;
+}
 
 export function haversineDistance(lng1, lat1, lng2, lat2) {
   const R = 6371;
@@ -257,72 +293,188 @@ function pulseLowestPrice() {
   animate();
 }
 
-function updateStationList(filteredStations = null) {
-  if (filteredStations === null) {
-    filteredStations = filterStations();
-    if (favoritesOnly) filteredStations = filteredStations.filter(f => isFavorite(f));
+function stationDistance(reference, feat) {
+  return haversineDistance(reference[0], reference[1], feat.geometry.coordinates[0], feat.geometry.coordinates[1]);
+}
+
+// 'price' keeps the historical semantics (favorites pinned, then price
+// ascending). 'distance' is a strict nearest-first order: favorites are not
+// pinned, so the closest station always wins.
+function sortStationList(features, priceKey) {
+  const sorted = [...features];
+  const reference = getReferencePoint();
+  if (sortMode === 'distance' && reference) {
+    sorted.sort((a, b) => stationDistance(reference, a) - stationDistance(reference, b));
+    return sorted;
   }
-  const list = document.getElementById('station-list');
-  list.innerHTML = '';
-
-  if (filteredStations.length === 0) {
-    list.innerHTML = `<div style="padding:20px;text-align:center;color:#94a3b8;font-size:13px;" no-stations>${tf('noStations')}</div>`;
-    return;
-  }
-
-  // Determine active fuel type for price display
-  const activeFuel = document.querySelector('.fuel-filter:checked')?.value || 'regular';
-  const priceKey = activeFuel + '_price';
-  const dict = translations[getLanguage()];
-  const fuelLabel = (dict?.[activeFuel] || activeFuel).toLowerCase();
-
-  // Favorites are pinned above the price sort (acceptance: favorites first).
-  filteredStations.sort((a, b) => {
+  sorted.sort((a, b) => {
     const aFav = isFavorite(a) ? 0 : 1;
     const bFav = isFavorite(b) ? 0 : 1;
     if (aFav !== bFav) return aFav - bFav;
-    return (a.properties[priceKey] || Infinity) - (b.properties[priceKey] || Infinity);
+    return (a.properties[priceKey] ?? Infinity) - (b.properties[priceKey] ?? Infinity);
   });
-  const cheapestPrice = filteredStations.reduce((min, f) => Math.min(min, f.properties[priceKey] || Infinity), Infinity);
+  return sorted;
+}
 
-  filteredStations.slice(0, 30).forEach(feat => {
-    const props = feat.properties;
-    const reference = getReferencePoint();
-    const distance = reference
-      ? haversineDistance(reference[0], reference[1], feat.geometry.coordinates[0], feat.geometry.coordinates[1])
-      : null;
-    const distanceText = distance != null ? `${distance.toFixed(1)} km` : '—';
-    const color = brandColor(props.brand);
-    const abbr = brandAbbr(props.brand);
-    const stationPrice = props[priceKey];
-    const isBest = stationPrice === cheapestPrice;
-    const isFav = isFavorite(feat);
+function updateListCount(shown, total) {
+  const el = document.getElementById('stations-shown-count');
+  if (!el) return;
+  el.dataset.shown = String(shown);
+  el.dataset.total = String(total);
+  el.textContent = tf('shownCount', { shown, total });
+}
 
-    const item = document.createElement('div');
-    item.className = 'list-item' + (isBest ? ' best' : '');
-    item.innerHTML = `
-      <div class="brand-icon" style="background:${color}">${abbr}</div>
-      <div class="info">
-        <div class="name">${props.name || props.brand}</div>
-        <div class="details">${props.address}</div>
-      </div>
-      <button class="fav-star ${isFav ? 'on' : ''}" data-fav aria-label="${isFav ? t('unfavorite') : t('favorite')}" aria-pressed="${isFav}">${STAR_ICON}</button>
-      <div class="price-block">
-        <div class="price">${stationPrice ? stationPrice.toFixed(1) + '¢' : '—'}</div>
-        <div class="distance">${distanceText}</div>
-      </div>`;
+function updateShowMoreButton() {
+  const btn = document.getElementById('show-more-stations');
+  if (!btn) return;
+  const remaining = renderedStations.length - renderedCount;
+  if (remaining <= 0) {
+    btn.hidden = true;
+    return;
+  }
+  btn.hidden = false;
+  btn.textContent = tf('showMoreStations', { n: Math.min(PAGE_SIZE, remaining) });
+}
 
-    item.querySelector('.fav-star').addEventListener('click', (e) => {
-      e.stopPropagation();
-      toggleFavorite(feat);
-    });
+// The distance sort is only meaningful with a reference point; without one the
+// control refuses and explains itself instead of printing a column of “— km”.
+function renderSortControls() {
+  const container = document.getElementById('list-sort');
+  if (!container) return;
+  const available = isDistanceSortAvailable();
+  if (available) distanceHintVisible = false;
 
-    item.addEventListener('click', () => {
-      map.flyTo({ center: feat.geometry.coordinates, zoom: 15, duration: 800 });
-      updatePopup(feat);
-    });
-    list.appendChild(item);
+  container.setAttribute('aria-label', t('listSortLabel'));
+  container.querySelectorAll('.sort-btn').forEach(btn => {
+    const active = btn.dataset.sort === sortMode;
+    btn.classList.toggle('active', active);
+    btn.setAttribute('aria-pressed', String(active));
+    if (btn.dataset.sort !== 'distance') return;
+    // aria-disabled is deliberately not used: the click must still be able to
+    // surface the explanation below.
+    btn.dataset.unavailable = String(!available);
+    btn.classList.toggle('unavailable', !available);
+    if (available) btn.removeAttribute('title');
+    else btn.title = t('distanceSortNeedsLocation');
   });
+
+  const hint = document.getElementById('sort-distance-hint');
+  if (!hint) return;
+  const show = !available && (distanceHintVisible || sortMode === 'distance');
+  hint.hidden = !show;
+  if (show) hint.textContent = t('distanceSortNeedsLocation');
+}
+
+function createStationRow(feat, priceKey) {
+  const props = feat.properties;
+  const reference = getReferencePoint();
+  const distance = reference
+    ? haversineDistance(reference[0], reference[1], feat.geometry.coordinates[0], feat.geometry.coordinates[1])
+    : null;
+  const distanceText = distance != null ? `${distance.toFixed(1)} km` : '—';
+  const color = brandColor(props.brand);
+  const abbr = brandAbbr(props.brand);
+  const stationPrice = props[priceKey];
+  const isBest = stationPrice === cheapestVisiblePrice;
+  const isFav = isFavorite(feat);
+
+  const item = document.createElement('div');
+  item.className = 'list-item' + (isBest ? ' best' : '');
+  item.innerHTML = `
+    <div class="brand-icon" style="background:${color}">${abbr}</div>
+    <div class="info">
+      <div class="name">${props.name || props.brand}</div>
+      <div class="details">${props.address}</div>
+    </div>
+    <button class="fav-star ${isFav ? 'on' : ''}" data-fav aria-label="${isFav ? t('unfavorite') : t('favorite')}" aria-pressed="${isFav}">${STAR_ICON}</button>
+    <div class="price-block">
+      <div class="price">${stationPrice ? stationPrice.toFixed(1) + '¢' : '—'}</div>
+      <div class="distance">${distanceText}</div>
+    </div>`;
+
+  item.querySelector('.fav-star').addEventListener('click', (e) => {
+    e.stopPropagation();
+    toggleFavorite(feat);
+  });
+
+  item.addEventListener('click', () => {
+    map.flyTo({ center: feat.geometry.coordinates, zoom: 15, duration: 800 });
+    updatePopup(feat);
+  });
+  return item;
+}
+
+// Appends the next page of the already-sorted list. Called by "Voir plus"
+// only: every filter / sort / language change re-renders from page one.
+function appendStationPage() {
+  const list = document.getElementById('station-list');
+  if (!list) return;
+  const priceKey = getActiveFuelPriceKey();
+  const nextPage = renderedStations.slice(renderedCount, renderedCount + PAGE_SIZE);
+  nextPage.forEach(feat => list.appendChild(createStationRow(feat, priceKey)));
+  renderedCount += nextPage.length;
+  updateListCount(renderedCount, renderedStations.length);
+  updateShowMoreButton();
+}
+
+function updateStationList(filteredStations = null) {
+  if (filteredStations === null) filteredStations = getVisibleStations();
+  const list = document.getElementById('station-list');
+  list.innerHTML = '';
+  renderedStations = [];
+  renderedCount = 0;
+  cheapestVisiblePrice = Infinity;
+
+  if (filteredStations.length === 0) {
+    list.innerHTML = `<div style="padding:20px;text-align:center;color:#94a3b8;font-size:13px;" no-stations>${tf('noStations')}</div>`;
+    updateListCount(0, 0);
+    updateShowMoreButton();
+    renderSortControls();
+    return;
+  }
+
+  const priceKey = getActiveFuelPriceKey();
+  renderedStations = sortStationList(filteredStations, priceKey);
+  // "Best price" must reflect every filtered station, not just the rendered
+  // page (the cheapest Montréal station is often far beyond the first 30).
+  cheapestVisiblePrice = renderedStations.reduce(
+    (min, f) => Math.min(min, f.properties[priceKey] ?? Infinity),
+    Infinity
+  );
+
+  appendStationPage();
+  renderSortControls();
+}
+
+// Wired once from app.js: sort switch + "Voir plus" pagination.
+export function initStationListControls() {
+  const container = document.getElementById('list-sort');
+  if (container) {
+    container.addEventListener('click', (e) => {
+      const btn = e.target.closest('.sort-btn');
+      if (!btn) return;
+      const mode = btn.dataset.sort;
+      if (mode !== 'price' && mode !== 'distance') return;
+      if (mode === 'distance' && !isDistanceSortAvailable()) {
+        // No reference point: keep the price order and explain why.
+        distanceHintVisible = true;
+        updateStationList();
+        return;
+      }
+      if (mode === sortMode) {
+        renderSortControls();
+        return;
+      }
+      sortMode = mode;
+      distanceHintVisible = false;
+      persistListPreferences();
+      // Re-render from page one in the new order.
+      updateStationList();
+    });
+  }
+
+  const showMore = document.getElementById('show-more-stations');
+  if (showMore) showMore.addEventListener('click', () => appendStationPage());
 }
 
 export function showPopup(feature) {
