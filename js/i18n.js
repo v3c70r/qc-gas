@@ -16,7 +16,12 @@ export const translations = {
     referenceMapClick: '地图点选',
     referenceStored: '记忆位置',
     stations: '加油站',
-    sortByPrice: '按价格排序',
+    sortByPrice: '价格',
+    sortByDistance: '距离',
+    listSortLabel: '加油站排序',
+    showMoreStations: '加载更多 ({n})',
+    shownCount: '已显示 {shown} / 共 {total} 条',
+    distanceSortNeedsLocation: '请启用定位或选择半径后，才能按距离排序',
     noStations: '未找到加油站',
     favoritesOnly: '只看收藏',
     favoritesCount: '{n} 个收藏',
@@ -151,7 +156,12 @@ export const translations = {
     referenceMapClick: 'Map point',
     referenceStored: 'Saved location',
     stations: 'Stations',
-    sortByPrice: 'sorted by price',
+    sortByPrice: 'Price',
+    sortByDistance: 'Distance',
+    listSortLabel: 'Sort stations',
+    showMoreStations: 'Show more ({n})',
+    shownCount: 'Showing {shown} of {total}',
+    distanceSortNeedsLocation: 'Enable location or pick a radius to sort by distance',
     noStations: 'No stations found',
     favoritesOnly: 'Favorites only',
     favoritesCount: '{n} favorites',
@@ -286,7 +296,12 @@ export const translations = {
     referenceMapClick: 'Point sur la carte',
     referenceStored: 'Position mémorisée',
     stations: 'Stations',
-    sortByPrice: 'trié par prix',
+    sortByPrice: 'Prix',
+    sortByDistance: 'Distance',
+    listSortLabel: 'Trier les stations',
+    showMoreStations: 'Voir plus ({n})',
+    shownCount: 'Affichées {shown} / {total}',
+    distanceSortNeedsLocation: 'Activez la localisation ou choisissez un rayon pour trier par distance',
     noStations: 'Aucune station trouvée',
     favoritesOnly: 'Favoris seulement',
     favoritesCount: '{n} favoris',
@@ -493,6 +508,14 @@ export function applyTranslations(code) {
   const countEl = document.getElementById('sidebar-station-count');
   if (countEl && countEl.dataset.count !== undefined) {
     countEl.textContent = tf('stations_count', { n: countEl.dataset.count });
+  }
+
+  const shownEl = document.getElementById('stations-shown-count');
+  if (shownEl && shownEl.dataset.total !== undefined) {
+    shownEl.textContent = tf('shownCount', {
+      shown: shownEl.dataset.shown,
+      total: shownEl.dataset.total
+    });
   }
 
   const noStationsEl = document.querySelector('#station-list > div[no-stations]');

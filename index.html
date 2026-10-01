@@ -136,9 +136,16 @@
 
         <div class="station-list-section">
           <div class="section-header" id="station-list-header">
-            <span data-i18n="stations">Stations</span>
-            <span class="sort-hint" data-i18n="sortByPrice">trié par prix</span>
+            <span class="section-header-title">
+              <span data-i18n="stations">Stations</span>
+              <span class="list-count" id="stations-shown-count" aria-live="polite"></span>
+            </span>
+            <div class="sort-switch" id="list-sort" role="group" aria-label="Trier les stations">
+              <button type="button" class="sort-btn active" data-sort="price" data-i18n="sortByPrice" aria-pressed="true">Prix</button>
+              <button type="button" class="sort-btn" data-sort="distance" data-i18n="sortByDistance" aria-pressed="false">Distance</button>
+            </div>
           </div>
+          <div class="sort-hint-message" id="sort-distance-hint" role="status" hidden></div>
           <div class="favorites-bar">
             <button id="favorites-toggle" class="favorites-toggle" aria-pressed="false">
               <svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><polygon points="12 2 15.09 8.26 22 9.27 17 14.14 18.18 21.02 12 17.77 5.82 21.02 7 14.14 2 9.27 8.91 8.26 12 2"/></svg>
@@ -151,6 +158,7 @@
             <span data-i18n="aroundMe">Voir les prix autour de moi</span>
           </button>
           <div id="station-list"></div>
+          <button type="button" id="show-more-stations" class="show-more-stations" hidden></button>
         </div>
       </div>
     </div>
