@@ -1,1 +1,1 @@
-{"v":1,"last_fetch_at":"2026-10-01T04:03:21Z","fetches":31,"last_reason":"event \"push\": fetching unconditionally","event":"push"}
+{"v":1,"last_fetch_at":"2026-10-01T07:47:56Z","fetches":32,"last_reason":"stale: last fetch 225 min ago (> 180 min)","event":"schedule"}
