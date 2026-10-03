@@ -148,7 +148,11 @@ function initGeolocation() {
 function initSidebarToggle() {
   const sidebar = document.getElementById('sidebar');
   const handle = document.getElementById('sidebar-handle');
-  const PEEK = 60;
+  // Single source of truth for the collapsed peek height (see --bottom-sheet-peek,
+  // also used to keep map overlay controls clear of the sheet).
+  const PEEK = parseFloat(
+    getComputedStyle(document.documentElement).getPropertyValue('--bottom-sheet-peek')
+  ) || 60;
   let startY = 0;
   let startOffset = 0;
   let dragged = false;

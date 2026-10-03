@@ -1,4 +1,11 @@
 /* Base */
+:root {
+  /* Height of the mobile bottom sheet that stays visible when collapsed.
+     Map overlay controls must sit above it, otherwise iPhone Safari users
+     cannot reach them (issue #55). Kept in sync with PEEK in js/filters.js. */
+  --bottom-sheet-peek: 60px;
+}
+
 * { box-sizing: border-box; }
 
 body {
@@ -1097,7 +1104,7 @@ body {
     transition: transform 0.3s ease;
   }
 
-  #sidebar.collapsed { transform: translateY(calc(100% - 60px)); }
+  #sidebar.collapsed { transform: translateY(calc(100% - var(--bottom-sheet-peek))); }
   #sidebar.dragging { transition: none; }
   #sidebar-handle { display: block; }
 
@@ -1105,7 +1112,11 @@ body {
 
   #header h1 { font-size: 15px; padding: 6px 12px; }
 
-  #radius-control { bottom: 12px; padding: 6px 10px; }
+  /* Clear the collapsed sheet handle, plus the iOS home indicator area. */
+  #radius-control {
+    bottom: calc(12px + var(--bottom-sheet-peek) + env(safe-area-inset-bottom, 0px));
+    padding: 6px 10px;
+  }
   .radius-label { display: none; }
   .radius-btn { min-height: 44px; padding: 10px 12px; }
   .brand-filter-item { min-height: 44px; padding: 10px 12px; }
