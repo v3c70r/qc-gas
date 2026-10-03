@@ -163,6 +163,32 @@ test.describe('Mobile Responsiveness', () => {
     await handle.click();
     await expect(sidebar).not.toHaveClass(/collapsed/);
   });
+
+  test('radius filter is not covered by the collapsed bottom sheet (Issue #55)', async ({ page }) => {
+    await page.setViewportSize({ width: 390, height: 844 });
+    await page.goto(BASE_URL);
+    await page.waitForLoadState('networkidle', { timeout: 15000 }).catch(() => {});
+
+    await expect(page.locator('#sidebar')).toHaveClass(/collapsed/);
+    await page.waitForTimeout(500); // let the collapse transition settle
+
+    const control = await page.locator('#radius-control').boundingBox();
+    const handle = await page.locator('#sidebar-handle').boundingBox();
+    expect(control.y + control.height).toBeLessThanOrEqual(handle.y + 1);
+
+    // Every radius button must receive its own taps: iOS Safari leaves the
+    // control visible but behind the sheet, so geometry alone is not enough.
+    const covered = await page.evaluate(() =>
+      [...document.querySelectorAll('.radius-btn')]
+        .filter((btn) => {
+          const r = btn.getBoundingClientRect();
+          const top = document.elementFromPoint(r.x + r.width / 2, r.y + r.height / 2);
+          return !btn.contains(top);
+        })
+        .map((btn) => btn.dataset.radius)
+    );
+    expect(covered).toEqual([]);
+  });
 });
 
 test.describe('Desktop Layout', () => {
