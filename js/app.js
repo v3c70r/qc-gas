@@ -7,6 +7,7 @@ import { loadHistoryData, loadStationHistoryData } from './history.js';
 import './benchmark.js';
 import { initFillups } from './fillups.js';
 import { initWatch } from './watch.js';
+import { initDataBackup } from './databackup.js';
 import { initSearch, clearSearch, isSearchActive } from './search.js';
 import { initPWA } from './pwa.js';
 
@@ -75,6 +76,7 @@ function initApp() {
   initStationListControls();
   initFillups();
   initWatch();
+  initDataBackup();
   initKeyboardShortcuts();
   initPWA();
 

@@ -77,6 +77,41 @@
           </div>
         </div>
 
+        <div class="databackup-section" id="databackup-section">
+          <button id="databackup-toggle" class="databackup-toggle" aria-expanded="false" aria-controls="databackup-panel">
+            <span class="databackup-title">💾 <span data-i18n="dataTitle">Mes données</span></span>
+            <svg class="chevron" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+              <polyline points="6 9 12 15 18 9"></polyline>
+            </svg>
+          </button>
+          <div class="databackup-panel" id="databackup-panel">
+            <div class="databackup-actions">
+              <button type="button" id="databackup-export" class="databackup-btn" data-i18n="dataExport">Exporter (JSON)</button>
+              <button type="button" id="databackup-import" class="databackup-btn" data-i18n="dataImport">Importer (JSON)</button>
+            </div>
+            <input type="file" id="databackup-file" class="databackup-file" accept="application/json,.json" hidden>
+            <div class="databackup-modes" role="radiogroup">
+              <label class="databackup-mode">
+                <input type="radio" name="databackup-mode" value="merge" checked>
+                <span data-i18n="dataMerge">Fusionner</span>
+              </label>
+              <label class="databackup-mode">
+                <input type="radio" name="databackup-mode" value="replace">
+                <span data-i18n="dataReplace">Remplacer</span>
+              </label>
+            </div>
+            <div class="databackup-confirm" id="databackup-confirm" hidden>
+              <p class="databackup-confirm-text" data-i18n="dataReplaceConfirm">Remplacer effacera toutes les données actuelles. Continuer ?</p>
+              <div class="databackup-confirm-actions">
+                <button type="button" id="databackup-confirm-yes" class="databackup-btn databackup-btn-danger" data-i18n="dataConfirm">Confirmer</button>
+                <button type="button" id="databackup-confirm-no" class="databackup-btn" data-i18n="dataCancel">Annuler</button>
+              </div>
+            </div>
+            <p class="databackup-note" data-i18n="dataNote">Vos données restent dans ce navigateur seulement ; sur iPhone elles peuvent être effacées après 7 jours sans visite — installez l'application sur l'écran d'accueil.</p>
+            <div class="databackup-status" id="databackup-status" role="status" aria-live="polite"></div>
+          </div>
+        </div>
+
         <div class="filter-toggle" id="filter-toggle">
           <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
             <polygon points="22 3 2 3 10 12.46 10 19 14 21 14 12.46 22 3"></polygon>

@@ -76,6 +76,14 @@ function notify() {
   listeners.forEach(fn => fn());
 }
 
+// Re-read the log from localStorage. Used by the JSON restore flow (issue
+// #57) so an import is reflected in the UI without a page reload.
+export function reloadFillups() {
+  fillups = loadFillups();
+  notify();
+  return getFillups();
+}
+
 export function getFillups() {
   return fillups.slice().sort((a, b) => {
     const byDate = String(b.date || '').localeCompare(String(a.date || ''));
