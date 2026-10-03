@@ -1349,6 +1349,12 @@ select:focus-visible {
   text-transform: uppercase;
   letter-spacing: 0.5px;
 }
+.dashboard-ranking-note {
+  font-size: 10px;
+  line-height: 1.35;
+  color: #94a3b8;
+}
+.dashboard-ranking-note[hidden] { display: none; }
 .dashboard-ranking-table-wrap {
   max-height: 220px;
   overflow-y: auto;
@@ -1406,6 +1412,7 @@ select:focus-visible {
 .ranking-change { font-weight: 600; }
 .ranking-change.up { color: #dc2626; }
 .ranking-change.down { color: #16a34a; }
+.ranking-margin { color: #475569; font-variant-numeric: tabular-nums; }
 
 /* Mobile: bottom sheet */
 @media (max-width: 767px) {
@@ -1954,6 +1961,30 @@ select:focus-visible {
   font-size: 10px;
   color: #64748b;
   text-align: center;
+}
+
+/* Official Régie weekly retail margin (region-level, before taxes) */
+.sc-regie,
+.sd-regie {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 8px;
+  margin-top: 8px;
+  padding-top: 8px;
+  border-top: 1px dashed #e2e8f0;
+  font-size: 11px;
+  line-height: 1.35;
+  color: #64748b;
+}
+.sd-regie { font-size: 12px; }
+.sc-regie span,
+.sd-regie span { min-width: 0; }
+.sc-regie b,
+.sd-regie b {
+  white-space: nowrap;
+  color: #0f172a;
+  font-variant-numeric: tabular-nums;
 }
 
 /* Data coverage hint under the range switcher */

@@ -45,6 +45,18 @@ jobs:
            python scripts/update_profile.py || echo "Fetch profile update failed"
            python scripts/append_history.py || echo "History append failed"
 
+      # Weekly Régie Bulletin: official region-level retail margins. The script
+      # makes a conditional request and only rewrites the data file when the
+      # bulletin actually changed, so this never produces empty commits.
+      - name: Fetch Régie weekly Bulletin (retail margins)
+        if: steps.gate.outputs.due == 'true'
+        continue-on-error: true
+        run: |
+          if ! command -v pdftotext >/dev/null 2>&1; then
+            sudo apt-get install -y poppler-utils || echo "poppler-utils install failed"
+          fi
+          python scripts/fetch_bulletin.py || echo "Bulletin fetch failed; keeping previous data"
+
       - name: Enforce data size budget
         if: steps.gate.outputs.due == 'true'
         run: |
@@ -58,6 +70,7 @@ jobs:
           brotli -fZ data/stations.json -o data/stations.json.br
           brotli -fZ data/stats.json -o data/stats.json.br
           brotli -fZ data/history.json -o data/history.json.br
+          [ -f data/regie-margin.json ] && brotli -fZ data/regie-margin.json -o data/regie-margin.json.br
           for f in data/history/*.json; do
             [ -f "$f" ] || continue
             brotli -fZ "$f" -o "$f.br"

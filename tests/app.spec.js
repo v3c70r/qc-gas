@@ -2635,3 +2635,194 @@ test.describe('Sidebar station list — see all + sort by distance (Issue #50)',
     expect(result.bestPrices).toEqual([result.globalMin]);
   });
 });
+
+test.describe('Régie weekly retail margin', () => {
+  const openDashboard = async (page) => {
+    await page.locator('#dashboard-trigger').click();
+    await expect(page.locator('#dashboard-panel')).toHaveClass(/open/);
+  };
+
+  const sample = (date, avg) => ({
+    date,
+    regular: { avg, min: avg - 5, max: avg + 5 },
+    super: { avg: avg + 20, min: avg + 15, max: avg + 25 },
+    diesel: { avg: avg + 30, min: avg + 25, max: avg + 35 }
+  });
+
+  const historyFixture = {
+    regions: {
+      'Montréal': { points: [sample('2026-09-28T12:00:00Z', 197.0)] },
+      'Capitale-Nationale': { points: [sample('2026-09-28T12:00:00Z', 192.5)] }
+    },
+    overall: { points: [sample('2026-09-28T12:00:00Z', 192.0)] },
+    metadata: {
+      generated_at: '2026-09-28T18:00:00Z',
+      latest: '2026-09-28T12:00:00Z',
+      interval_hours: 6,
+      regions: ['Montréal', 'Capitale-Nationale'],
+      source: 'test'
+    }
+  };
+
+  // {prev_mean, mean, delta, margin} — margin is the official Régie value.
+  const entry = (margin, mean = 197.0) => ({ prev_mean: 199.6, mean, delta: -2.7, margin });
+
+  const regieFixture = {
+    v: 1,
+    generated_at: '2026-10-02T15:00:00Z',
+    source_url: 'https://www.regie-energie.qc.ca/bulletin.pdf',
+    week: { start: '2026-09-21', end: '2026-09-28', published_at: '2026-10-02' },
+    fuels: {
+      regular: {
+        regions: {
+          'Montréal': entry(1.4),
+          'Capitale-Nationale': entry(9.3, 192.5),
+          'Gaspésie–Iles-de-la-Madeleine': entry(7.1, 199.3),
+          'Saguenay–Lac-Saint-Jean': entry(-6.9, 181.0),
+          'Nord-du-Québec': entry(13.4, 211.1)
+        },
+        quebec: entry(-0.6, 192.0)
+      },
+      super: { regions: {}, quebec: entry(-2.0, 218.0) },
+      diesel: { regions: {}, quebec: entry(-4.0, 290.3) }
+    },
+    rack: []
+  };
+
+  test('dashboard ranking shows the Régie margin column with signed values and a source note', async ({ page }) => {
+    await page.route('**/data/history.json', route => route.fulfill({ json: historyFixture }));
+    await page.route('**/data/regie-margin.json', route => route.fulfill({ json: regieFixture }));
+    await page.goto(BASE_URL);
+    await openDashboard(page);
+
+    const head = page.locator('#dashboard-ranking-head th[data-sort="margin"]');
+    await expect(head).toBeVisible();
+    await expect(head).toContainText('Régie');
+
+    const mtl = page.locator('#dashboard-ranking-body tr').filter({ hasText: 'Montréal' }).first();
+    await expect(mtl.locator('td.ranking-margin')).toContainText('+1.4');
+    const cap = page.locator('#dashboard-ranking-body tr').filter({ hasText: 'Capitale-Nationale' }).first();
+    await expect(cap.locator('td.ranking-margin')).toContainText('+9.3');
+    const overall = page.locator('#dashboard-ranking-body tr').filter({ hasText: 'Province' }).first();
+    await expect(overall.locator('td.ranking-margin')).toContainText('−0.6');
+
+    await expect(page.locator('#dashboard-ranking-note')).toBeVisible();
+    await expect(page.locator('#dashboard-ranking-note')).toContainText('Régie');
+  });
+
+  test('margin column is sortable and keeps missing values last', async ({ page }) => {
+    const sparse = JSON.parse(JSON.stringify(regieFixture));
+    sparse.fuels.regular.regions = { 'Montréal': entry(1.4) };
+    await page.route('**/data/history.json', route => route.fulfill({ json: historyFixture }));
+    await page.route('**/data/regie-margin.json', route => route.fulfill({ json: sparse }));
+    await page.goto(BASE_URL);
+    await openDashboard(page);
+
+    await page.locator('#dashboard-ranking-head th[data-sort="margin"]').click();
+    await page.waitForTimeout(300);
+
+    const rows = page.locator('#dashboard-ranking-body tr');
+    await expect(rows.first().locator('td.ranking-margin')).toContainText('−0.6');
+    await expect(rows.nth(1).locator('td.ranking-margin')).toContainText('+1.4');
+    await expect(rows.last().locator('td.ranking-margin')).toHaveText('—');
+  });
+
+  test('missing Régie data hides the margin column and the note entirely', async ({ page }) => {
+    let available = true;
+    await page.route('**/data/history.json', route => route.fulfill({ json: historyFixture }));
+    await page.route('**/data/regie-margin.json', route => available
+      ? route.fulfill({ json: regieFixture })
+      : route.fulfill({ status: 404, body: 'not found' }));
+
+    // With data the column is present...
+    await page.goto(BASE_URL);
+    await openDashboard(page);
+    await expect(page.locator('#dashboard-ranking-head th[data-sort="margin"]')).toHaveCount(1);
+
+    // ...and when the file is unavailable it must disappear, not degrade to 0/NaN.
+    available = false;
+    await page.reload();
+    await openDashboard(page);
+    await expect(page.locator('#dashboard-ranking-head th[data-sort="margin"]')).toHaveCount(0);
+    await expect(page.locator('#dashboard-ranking-body td.ranking-margin')).toHaveCount(0);
+    await expect(page.locator('#dashboard-ranking-note')).toBeHidden();
+    await expect(page.locator('#dashboard-ranking-body')).not.toContainText('NaN');
+  });
+
+  test('region-name matching tolerates accents, en dashes and Iles/Îles', async ({ page }) => {
+    await page.route('**/data/regie-margin.json', route => route.fulfill({ json: regieFixture }));
+    await page.goto(BASE_URL);
+    await page.waitForFunction(() => window.__qcGasRegie, null, { timeout: 15000 });
+    await page.evaluate(() => window.__qcGasRegie.loadRegieData());
+
+    const result = await page.evaluate(() => {
+      const g = window.__qcGasRegie;
+      return {
+        gasp: g.getRegionMargin('Gaspésie-Îles-de-la-Madeleine', 'regular')?.margin,
+        sag: g.getRegionMargin('Saguenay-Lac-Saint-Jean', 'regular')?.margin,
+        ndq: g.getRegionMargin('Nord-du-Québec', 'regular')?.margin,
+        missing: g.getRegionMargin('Municipalités hors MRC \\ CMM', 'regular'),
+        overall: g.getRegionMargin('overall', 'regular')?.margin
+      };
+    });
+
+    expect(result.gasp).toBe(7.1);
+    expect(result.sag).toBe(-6.9);
+    expect(result.ndq).toBe(13.4);
+    expect(result.missing).toBeNull();
+    expect(result.overall).toBe(-0.6);
+  });
+
+  test('station card and detail panel show the regional margin line', async ({ page }) => {
+    const regions = {};
+    for (const feature of stationsFixture.features) {
+      const region = feature.properties.region;
+      if (!region) continue;
+      regions[region] = entry(region === 'Laurentides' ? 5.0 : 3.0);
+    }
+    delete regions['Municipalités hors MRC \\ CMM'];
+    const fixture = JSON.parse(JSON.stringify(regieFixture));
+    fixture.fuels.regular.regions = regions;
+    await page.route('**/data/regie-margin.json', route => route.fulfill({ json: fixture }));
+
+    await page.goto(BASE_URL);
+    await page.waitForLoadState('networkidle', { timeout: 15000 }).catch(() => {});
+    await page.waitForTimeout(3000);
+
+    const list = page.locator('#station-list');
+    await expect(list.locator('.list-item').first()).toBeVisible();
+    await list.locator('.list-item').first().click();
+    await expect(page.locator('.mapboxgl-popup').first()).toBeVisible();
+
+    const popup = page.locator('.mapboxgl-popup').first();
+    await expect(popup.locator('.sc-regie')).toBeVisible();
+    await expect(popup.locator('.sc-regie')).toContainText('5.0');
+    await expect(popup.locator('.sc-regie')).toContainText('¢/L');
+
+    await popup.locator('[data-expand]').click();
+    await expect(page.locator('#station-panel')).toHaveClass(/open/);
+    await expect(page.locator('.sd-regie')).toBeVisible();
+    await expect(page.locator('.sd-regie')).toContainText('5.0');
+  });
+
+  test('missing Régie data also hides the station-card margin line', async ({ page }) => {
+    await page.route('**/data/regie-margin.json',
+      route => route.fulfill({ status: 404, body: 'not found' }));
+    await page.goto(BASE_URL);
+    await page.waitForLoadState('networkidle', { timeout: 15000 }).catch(() => {});
+    await page.waitForTimeout(3000);
+
+    const list = page.locator('#station-list');
+    await expect(list.locator('.list-item').first()).toBeVisible();
+    await list.locator('.list-item').first().click();
+
+    const popup = page.locator('.mapboxgl-popup').first();
+    await expect(popup).toBeVisible();
+    await expect(popup.locator('.sc-regie')).toHaveCount(0);
+    await expect(popup).not.toContainText('NaN');
+
+    await popup.locator('[data-expand]').click();
+    await expect(page.locator('#station-panel')).toHaveClass(/open/);
+    await expect(page.locator('.sd-regie')).toHaveCount(0);
+  });
+});
