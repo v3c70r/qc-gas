@@ -5,6 +5,7 @@
 import { t, tf, translations, getLanguage, onLanguageChange } from './i18n.js';
 import { getStationHistory, getStationHistoryCoverage, loadStationHistoryData } from './history.js';
 import { computeRegionBenchmark } from './benchmark.js';
+import { getRegionMargin, loadRegieData } from './regie.js';
 import { loadChartJS } from './chartjs.js';
 import { isFavorite, toggleFavorite, stationId, STAR_ICON } from './favorites.js';
 import { addFillup, localDateKey } from './fillups.js';
@@ -228,6 +229,26 @@ function benchmarkBlockHTML(bench, prefix) {
     <div class="${prefix}-bench-note">${percentilePhrase}</div>`;
 }
 
+// Official Régie weekly retail margin for the station's whole region. This is
+// labelled with the region and the bulletin week so it can never be mistaken
+// for the station's own margin. Missing regions (e.g. "Municipalités hors MRC
+// \ CMM", absent from the Bulletin) render nothing at all.
+function regieMarginLineHTML(prefix, feature, fuel) {
+  const info = getRegionMargin(feature?.properties?.region, fuel);
+  if (!info || !info.week?.end) return '';
+  const date = new Date(`${info.week.end}T12:00:00Z`);
+  const dateText = Number.isNaN(date.getTime())
+    ? info.week.end
+    : date.toLocaleDateString(getLanguage(), { day: 'numeric', month: 'short' });
+  const label = tf('regieMarginLabel', { date: dateText });
+  const tip = escapeHtml(t('regieMarginTooltip'));
+  const cls = info.margin > 0 ? 'regie-pos' : info.margin < 0 ? 'regie-neg' : 'regie-zero';
+  const sign = info.margin > 0 ? '+' : info.margin < 0 ? '−' : '';
+  const value = `${sign}${Math.abs(info.margin).toFixed(1)} ¢/L`;
+  return `<div class="${prefix}-regie ${cls}" title="${tip}">`
+    + `<span>${escapeHtml(label)}</span><b>${value}</b></div>`;
+}
+
 function rangePillsHTML(prefix, activeDays, coverageDays) {
   return RANGES.map(r => {
     const disabled = coverageDays > 0 && r.days > coverageDays;
@@ -262,6 +283,8 @@ function cardHTML(feature) {
   const priceVal = props[popupFuel + '_price'];
   const available = FUEL_KEYS.filter(f => props[f + '_price'] != null);
   const bench = benchmarkFor(feature, popupFuel);
+  const benchHTML = bench ? benchmarkBlockHTML(bench, 'sc') : '';
+  const regieHTML = regieMarginLineHTML('sc', feature, popupFuel);
 
   const fuelPills = available.map(f => `
     <button class="sc-pill ${f === popupFuel ? 'on' : ''}" data-fuel="${f}">${fuelLabel(f)}</button>`).join('');
@@ -302,7 +325,7 @@ function cardHTML(feature) {
       <div class="sc-price">${priceVal != null ? fmt(priceVal) : '—'}<span class="sc-unit">¢</span></div>
       ${changeHTML}
     </div>
-    ${bench ? `<div class="sc-bench">${benchmarkBlockHTML(bench, 'sc')}</div>` : ''}
+    ${(benchHTML || regieHTML) ? `<div class="sc-bench">${benchHTML}${regieHTML}</div>` : ''}
     <div class="sc-range">${rangePills}</div>
     ${coverageHTML('sc', coverage)}
     ${series.length ? `<div class="sc-chart">${sparklineSVG(series, color)}</div>` : `<div class="sc-empty">${t('noHistory')}</div>`}
@@ -337,6 +360,7 @@ export async function showStationCard(feature, map, updatedText = '') {
   currentFeature = feature;
 
   await loadStationHistoryData().catch(() => {});
+  await loadRegieData();
   const coverage = getStationHistoryCoverage(feature, popupFuel);
   if (coverage.days > 0) popupRange = Math.min(popupRange, coverage.days);
 
@@ -873,6 +897,7 @@ export async function openStationDetail(feature, map, updatedText = '') {
   panel.classList.add('open');
   document.getElementById('map-container').classList.add('panel-open');
   await loadStationHistoryData().catch(() => {});
+  await loadRegieData();
   const coverage = getStationHistoryCoverage(feature, detailFuel);
   if (coverage.days > 0) detailRange = Math.min(detailRange, coverage.days);
   renderDetail();
@@ -881,6 +906,7 @@ export async function openStationDetail(feature, map, updatedText = '') {
 async function renderDetail() {
   if (!detailFeature) return;
   await loadStationHistoryData().catch(() => {});
+  await loadRegieData();
   const props = detailFeature.properties;
   const available = FUEL_KEYS.filter(f => props[f + '_price'] != null);
 
@@ -928,11 +954,13 @@ async function renderDetail() {
   detailEl.querySelector('.sd-range').innerHTML = rangePillsHTML('sd', detailRange, coverage.days);
   detailEl.querySelector('.sd-coverage').innerHTML = coverageHTML('sd', coverage);
 
-  // Same-day regional benchmark block
+  // Same-day regional benchmark block + official Régie weekly margin line
   const benchEl = detailEl.querySelector('.sd-bench');
-  if (bench) {
+  const benchHTML = bench ? benchmarkBlockHTML(bench, 'sd') : '';
+  const regieHTML = regieMarginLineHTML('sd', detailFeature, detailFuel);
+  if (benchHTML || regieHTML) {
     benchEl.hidden = false;
-    benchEl.innerHTML = benchmarkBlockHTML(bench, 'sd');
+    benchEl.innerHTML = benchHTML + regieHTML;
   } else {
     benchEl.hidden = true;
     benchEl.innerHTML = '';

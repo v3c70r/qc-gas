@@ -4,6 +4,7 @@
 import { t, tf, translations, getLanguage, onLanguageChange } from './i18n.js';
 import { loadHistoryData, filterByDays, aggregateRegionDaily, buildRegionRanking } from './history.js';
 import { loadChartJS } from './chartjs.js';
+import { getRegionMargin, getRegieWeek, hasRegieData, loadRegieData } from './regie.js';
 
 const DAY_MS = 24 * 60 * 60 * 1000;
 
@@ -66,6 +67,7 @@ function createPanel() {
       </div>
       <div class="dashboard-ranking">
         <div class="dashboard-ranking-title">${t('regionRanking')}</div>
+        <div class="dashboard-ranking-note" id="dashboard-ranking-note" hidden></div>
         <div class="dashboard-ranking-table-wrap">
           <table class="dashboard-ranking-table" id="dashboard-ranking-table">
             <thead id="dashboard-ranking-head"></thead>
@@ -178,6 +180,30 @@ function sortArrow(key) {
   return rankSortDir === 1 ? ' ▲' : ' ▼';
 }
 
+// Official Régie retail margin (¢/L, before taxes). The sign is meaningful:
+// a negative value means the pump price barely covers supply costs.
+function fmtMargin(value) {
+  if (value == null || !Number.isFinite(value)) return '—';
+  const sign = value > 0 ? '+' : value < 0 ? '−' : '';
+  return `${sign}${Math.abs(value).toFixed(1)}¢`;
+}
+
+function regieWeekLabel(iso) {
+  if (!iso) return '';
+  const date = new Date(`${iso}T12:00:00Z`);
+  if (Number.isNaN(date.getTime())) return iso;
+  return date.toLocaleDateString(getLanguage(), { day: 'numeric', month: 'short' });
+}
+
+function renderRegieNote() {
+  const noteEl = panelEl?.querySelector('#dashboard-ranking-note');
+  if (!noteEl) return;
+  const week = hasRegieData() ? getRegieWeek() : null;
+  const text = week?.end ? tf('regieRankingNote', { date: regieWeekLabel(week.end) }) : '';
+  noteEl.textContent = text;
+  noteEl.hidden = !text;
+}
+
 function sortRanking(rows) {
   const dir = rankSortDir;
   return rows.slice().sort((a, b) => {
@@ -197,6 +223,10 @@ function renderRanking() {
   const body = table.querySelector('#dashboard-ranking-body');
   if (!head || !body) return;
 
+  // The official Régie column only exists when the weekly Bulletin loaded.
+  const showRegie = hasRegieData();
+  renderRegieNote();
+
   const th = (key, label, sortable) => {
     const cls = sortable
       ? `ranking-sortable ${rankSortKey === key ? 'sorted' : ''} ${rankSortKey === key && rankSortDir === -1 ? 'desc' : ''}`
@@ -212,10 +242,16 @@ function renderRanking() {
       ${th('max', t('maxPrice'), true)}
       ${th('spread', t('spread'), true)}
       <th>${t('vsYesterday')}</th>
+      ${showRegie ? th('margin', t('regieMarginCol'), true) : ''}
     </tr>
   `;
 
   const rows = buildRegionRanking(historyData, filterFuel);
+  if (showRegie) {
+    for (const row of rows) {
+      row.margin = getRegionMargin(row.region, filterFuel)?.margin ?? null;
+    }
+  }
   const sorted = sortRanking(rows);
   body.innerHTML = '';
 
@@ -232,6 +268,7 @@ function renderRanking() {
       <td class="ranking-num">${fmt(row.max)}</td>
       <td class="ranking-num">${fmt(row.spread)}</td>
       <td class="ranking-change ${changeCls}">${changeText(row.change)}</td>
+      ${showRegie ? `<td class="ranking-margin">${fmtMargin(row.margin)}</td>` : ''}
     `;
     body.appendChild(tr);
   });
@@ -375,6 +412,8 @@ export async function openPanel() {
     import('./station-card.js').then(m => m.closeStationDetail());
   }
   const panel = createPanel();
+  // The official margin is a courtesy layer: a missing file must not block.
+  await loadRegieData();
   historyData = await loadHistoryData();
   const history = historyData;
   if (history && history.metadata) {
