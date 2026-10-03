@@ -38,6 +38,16 @@ function persistListPreferences() {
   }
 }
 
+// Re-read the sort preference from localStorage. Used by the JSON restore flow
+// (issue #57) so an import is reflected in the list without a page reload.
+export function reloadListPreferences() {
+  sortMode = loadListPreferences().sort;
+  distanceHintVisible = false;
+  renderSortControls();
+  updateStationList();
+  return sortMode;
+}
+
 function isDistanceSortAvailable() {
   return getReferencePoint() !== null;
 }

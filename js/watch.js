@@ -122,6 +122,14 @@ export function getWatchEntries() {
   return watchEntries.slice();
 }
 
+// Re-read the watch list from localStorage. Used by the JSON restore flow
+// (issue #57) so an import is reflected in the UI without a page reload.
+export function reloadWatch() {
+  watchEntries = loadWatch();
+  notify();
+  return watchEntries.slice();
+}
+
 export function getWatchEntry(feature) {
   const id = stationId(feature);
   if (!id) return undefined;

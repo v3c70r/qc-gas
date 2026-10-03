@@ -59,6 +59,16 @@ function saveTripPrefs() {
   }
 }
 
+// Re-read the estimator preferences from localStorage. Used by the JSON
+// restore flow (issue #57) so an import is reflected without a page reload.
+export function reloadTripPrefs() {
+  tripPrefs = loadTripPrefs();
+  if (detailEl && detailFeature && detailEl.classList.contains('open')) {
+    renderDetail().catch(() => {});
+  }
+  return { ...tripPrefs };
+}
+
 // Keep open popup/detail star labels in sync when the language changes.
 onLanguageChange(async () => {
   const notice = document.getElementById('station-gone-notice');

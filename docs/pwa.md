@@ -65,6 +65,50 @@ npm run icons
 - iOS Safari 显示“分享 → 添加到主屏”指引（iOS 不派发 `beforeinstallprompt`）。
 - 断网或数据来自缓存时，`#data-status` 显示“离线 · 最后同步 `<generated_at>`”，不会把缓存价格伪装成实时；恢复在线后自动恢复。
 
+## 个人数据与备份（`js/databackup.js`）
+
+应用的全部个人数据**只存在当前浏览器的 `localStorage` 里**：无账号、无云同步、无额外网络请求。
+
+| 键 | 内容 |
+| --- | --- |
+| `qc-gas-favorites` | 收藏站点（`name\|address\|postal_code` 派生的 id） |
+| `qc-gas-fillups` | 加油日志（日期 / 油品 / 单价 / 升数 / 总额） |
+| `qc-gas-watch` | 关注站（阈值 + `lastSeenPriceCents` 基线） |
+| `qc-gas-trip` | 油耗（L/100 km）与单程/往返偏好 |
+| `qc-gas-list` | 列表排序偏好（价格 / 距离） |
+| `qc-gas-view` | 上次视图 / 半径（**仅本机**，不参与备份） |
+
+### 为什么要备份：Safari 的 7 天清理规则
+
+**Safari（iOS / macOS）会在某个 origin 连续 7 天没有用户交互时，删除该 origin 的脚本可写存储（含 `localStorage`）。**
+因此收藏、整个加油账本与关注阈值可能在用户没打开应用的一周后一起消失；清缓存、换浏览器、换手机也是同样的结果。
+
+- MDN《Storage quotas and eviction criteria》：“Safari proactively evicts data … If an origin has no user interaction … in the last seven days of browser use, its data created from script will be deleted.” — https://developer.mozilla.org/en-US/docs/Web/API/Storage_API/Storage_quotas_and_eviction_criteria
+- WebKit 公告（ITP 2.3）小标题即 **“7-Day Cap on All Script-Writeable Storage”**：“deleting all of a website's script-writable storage after seven days of Safari use without user interaction on the site.” — https://webkit.org/blog/10218/full-third-party-cookie-blocking-and-more/
+
+**降低风险的最有效办法是把应用装到主屏**（Safari 会把已安装的 Web App 视作有持续交互；安装入口见 `js/pwa.js` / #37）。
+
+### 导出 / 导入
+
+侧栏「Mes données」区块（`index.html` → `#databackup-section`，默认收起）提供：
+
+- **Exporter (JSON)**：在浏览器内生成一个版本化信封并触发下载，文件名带日期（`essence-quebec-sauvegarde-YYYY-MM-DD.json`）：
+  ```json
+  { "v": 1, "app": "essence-quebec", "exported_at": "2026-10-03T12:00:00.000Z",
+    "data": { "favorites": [], "fillups": [], "watch": [], "tripPrefs": {}, "listPrefs": {} } }
+  ```
+  离线也能导出（不发任何网络请求）。设备相关的 `qc-gas-view` **有意不导出**。
+- **Importer (JSON)** 两种模式：
+  - **Fusionner（合并）**：按 id 去重（收藏用 `stationId`，日志用 `id`，关注用站点 id）；重复计数为「跳过」；
+    重复的关注项保留**最近观测到的基线**（`lastSeenAt` 较新者胜；时间不可比时保留较大的 `lastSeenPriceCents`），本机已设阈值不会被静默覆盖。
+  - **Remplacer（替换）**：整体替换全部数据集，**必须二次确认**。
+- 导入后显示计数（导入 / 跳过 / 无效，`aria-live="polite"`）；数据真的可用：收藏计数、加油日志条数、关注阈值与油耗偏好立即反映到 UI（各 store 提供 `reload*` 重新读取 localStorage）。
+- **坏文件绝不写入**：非 JSON、结构不符、版本未知、空文件、或逐条校验失败的记录，都不会触碰现有数据；错误提示本地化。
+- 无新依赖、无新增网络请求、不引入账号 / 云同步。
+
+自动化覆盖见 `tests/app.spec.js` → `Mes données backup / restore (Issue #57)`
+（导出内容、合并去重、坏文件不损坏数据、替换二次确认、往返一致）。
+
 ## 手动验证步骤（更新策略）
 
 ```bash

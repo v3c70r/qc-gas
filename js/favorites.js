@@ -63,6 +63,14 @@ export function getFavoriteCount() {
   return favorites.length;
 }
 
+// Re-read the store from localStorage. Used by the JSON restore flow (issue
+// #57) so an import is reflected in the UI without a page reload.
+export function reloadFavorites() {
+  favorites = load();
+  notify();
+  return favorites.slice();
+}
+
 export function subscribe(fn) {
   listeners.add(fn);
   return () => listeners.delete(fn);

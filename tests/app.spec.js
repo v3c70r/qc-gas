@@ -2852,3 +2852,288 @@ test.describe('Régie weekly retail margin', () => {
     await expect(page.locator('.sd-regie')).toHaveCount(0);
   });
 });
+
+test.describe('Mes données backup / restore (Issue #57)', () => {
+  const KEYS = ['qc-gas-favorites', 'qc-gas-fillups', 'qc-gas-watch', 'qc-gas-trip', 'qc-gas-list'];
+  // Watch entries that reference a real station survive the app's one-shot
+  // evaluation on load (fictional ids are auto-cleaned), so the fixture must
+  // point at a station that exists in data/stations.json.
+  const realFeature = stationsFixture.features.find(f => f.properties.regular_price != null) || stationsFixture.features[0];
+  const REAL_STATION_ID = [realFeature.properties.name, realFeature.properties.address, realFeature.properties.postal_code]
+    .map(v => (v ?? '').trim()).join('|');
+  const SEED = {
+    favorites: ['Station A|1 rue|H0H 0H0', 'Station B|2 rue|H1H 1H1'],
+    fillups: [
+      { id: 'f1', stationId: 'Station A|1 rue|H0H 0H0', stationName: 'Station A', brand: 'X', region: 'Montréal', fuel: 'regular', date: '2026-09-15', priceCents: 189.9, liters: 40, totalPrice: null, createdAt: '2026-09-15T12:00:00.000Z' },
+      { id: 'f2', stationId: 'Station B|2 rue|H1H 1H1', stationName: 'Station B', brand: 'Y', region: 'Montréal', fuel: 'regular', date: '2026-09-16', priceCents: 184.5, liters: 30, totalPrice: null, createdAt: '2026-09-16T12:00:00.000Z' }
+    ],
+    watch: [
+      { id: REAL_STATION_ID, name: realFeature.properties.name, brand: realFeature.properties.brand, address: realFeature.properties.address, region: realFeature.properties.region, fuel: 'regular', thresholdCents: 175, lastSeenPriceCents: 189.9, lastSeenAt: '2026-09-14T10:00:00.000Z', lng: realFeature.geometry.coordinates[0], lat: realFeature.geometry.coordinates[1] }
+    ],
+    trip: { consumption: 9.5, roundTrip: true },
+    list: { sort: 'distance' }
+  };
+
+  const snapshotStorage = (page) => page.evaluate((keys) => {
+    const out = {};
+    keys.forEach(k => { out[k] = localStorage.getItem(k); });
+    return out;
+  }, KEYS);
+
+  async function seed(page, data = SEED) {
+    await page.goto(BASE_URL);
+    await page.evaluate((d) => {
+      localStorage.setItem('qc-gas-favorites', JSON.stringify(d.favorites));
+      localStorage.setItem('qc-gas-fillups', JSON.stringify(d.fillups));
+      localStorage.setItem('qc-gas-watch', JSON.stringify(d.watch));
+      localStorage.setItem('qc-gas-trip', JSON.stringify(d.trip));
+      localStorage.setItem('qc-gas-list', JSON.stringify(d.list));
+    }, data);
+    await page.reload();
+    await page.waitForLoadState('networkidle', { timeout: 15000 }).catch(() => {});
+  }
+
+  async function waitHook(page) {
+    await page.waitForFunction(() => window.__qcGasBackup, null, { timeout: 15000 });
+  }
+
+  test('buildBackup produces a versioned envelope covering every personal dataset', async ({ page }) => {
+    await seed(page);
+    await waitHook(page);
+
+    const backup = await page.evaluate(() => window.__qcGasBackup.buildBackup(new Date('2026-10-03T12:00:00Z')));
+
+    expect(backup.v).toBe(1);
+    expect(backup.app).toBe('essence-quebec');
+    expect(backup.exported_at).toBe('2026-10-03T12:00:00.000Z');
+    expect(Object.keys(backup.data).sort()).toEqual(['favorites', 'fillups', 'listPrefs', 'tripPrefs', 'watch']);
+    expect(backup.data.favorites).toHaveLength(2);
+    expect(backup.data.fillups).toHaveLength(2);
+    expect(backup.data.fillups.map(f => f.priceCents).sort((a, b) => a - b)).toEqual([184.5, 189.9]);
+    expect(backup.data.watch).toHaveLength(1);
+    expect(backup.data.watch[0].thresholdCents).toBe(175);
+    expect(Number.isFinite(backup.data.watch[0].lastSeenPriceCents)).toBe(true);
+    expect(backup.data.tripPrefs).toEqual({ consumption: 9.5, roundTrip: true });
+    expect(backup.data.listPrefs).toEqual({ sort: 'distance' });
+    expect(JSON.stringify(backup)).not.toContain('qc-gas-view');
+  });
+
+  test('export triggers a dated JSON download with the same content', async ({ page }) => {
+    await seed(page);
+    await waitHook(page);
+    await page.locator('#databackup-toggle').click();
+
+    const [download] = await Promise.all([
+      page.waitForEvent('download'),
+      page.locator('#databackup-export').click()
+    ]);
+
+    expect(download.suggestedFilename()).toMatch(/^essence-quebec-sauvegarde-\d{4}-\d{2}-\d{2}\.json$/);
+    const parsed = JSON.parse(readFileSync(await download.path(), 'utf8'));
+    expect(parsed.v).toBe(1);
+    expect(parsed.app).toBe('essence-quebec');
+    expect(parsed.data.favorites).toHaveLength(2);
+    expect(parsed.data.fillups).toHaveLength(2);
+  });
+
+  test('merge dedupes by id, keeps existing fill-ups and the newer watch baseline', async ({ page }) => {
+    await page.goto(BASE_URL);
+    await page.waitForLoadState('networkidle', { timeout: 15000 }).catch(() => {});
+    await waitHook(page);
+
+    const result = await page.evaluate(() => {
+      const b = window.__qcGasBackup;
+      const base = {
+        favorites: [],
+        fillups: [],
+        watch: [],
+        tripPrefs: { consumption: 8, roundTrip: false },
+        listPrefs: { sort: 'price' }
+      };
+      const merge = b.applyImport({
+        favorites: ['A', 'B'],
+        fillups: [
+          { id: 'f1', date: '2026-09-02', priceCents: 190 },
+          { id: 'f2', date: '2026-09-03', priceCents: 185 }
+        ],
+        watch: [{ id: 'W', lastSeenPriceCents: 190, lastSeenAt: '2026-09-05T00:00:00.000Z' }],
+        tripPrefs: { consumption: 9, roundTrip: true },
+        listPrefs: { sort: 'distance' }
+      }, 'merge', {
+        ...base,
+        favorites: ['A'],
+        fillups: [{ id: 'f1', date: '2026-09-01', priceCents: 180 }],
+        watch: []
+      });
+      // A duplicate watch id must keep the more recently observed baseline.
+      const watchMerge = b.applyImport({
+        favorites: [],
+        fillups: [],
+        watch: [{ id: 'W', lastSeenPriceCents: 190, lastSeenAt: '2026-09-05T00:00:00.000Z' }],
+        tripPrefs: base.tripPrefs,
+        listPrefs: base.listPrefs
+      }, 'merge', {
+        ...base,
+        watch: [{ id: 'W', lastSeenPriceCents: 200, lastSeenAt: '2026-09-01T00:00:00.000Z' }]
+      });
+      return {
+        favorites: merge.data.favorites,
+        fillupIds: merge.data.fillups.map(f => f.id).sort(),
+        mergedFillup: merge.data.fillups.find(f => f.id === 'f1'),
+        watchBaseline: watchMerge.data.watch[0].lastSeenPriceCents,
+        watchMergeSkipped: watchMerge.skipped,
+        imported: merge.imported,
+        skipped: merge.skipped
+      };
+    });
+
+    expect(result.favorites).toEqual(['A', 'B']);
+    expect(result.fillupIds).toEqual(['f1', 'f2']);
+    expect(result.mergedFillup.date).toBe('2026-09-01');
+    expect(result.watchBaseline).toBe(190);
+    expect(result.watchMergeSkipped).toBe(1);
+    expect(result.imported).toBe(3); // B + f2 + W
+    expect(result.skipped).toBe(2); // A + f1
+  });
+
+  test('a malformed backup reports errors and never touches existing data', async ({ page }) => {
+    await seed(page);
+    await waitHook(page);
+    const before = await snapshotStorage(page);
+
+    const results = await page.evaluate(() => {
+      const b = window.__qcGasBackup;
+      return {
+        notJson: b.importFromText('not json at all', 'merge'),
+        empty: b.importFromText('', 'merge'),
+        wrongShape: b.importFromText(JSON.stringify({ hello: 'world' }), 'merge'),
+        wrongVersion: b.importFromText(JSON.stringify({ v: 99, app: 'essence-quebec', exported_at: 'x', data: {} }), 'merge'),
+        wrongApp: b.importFromText(JSON.stringify({ v: 1, app: 'other-app', exported_at: 'x', data: { favorites: ['z'] } }), 'merge')
+      };
+    });
+
+    for (const r of Object.values(results)) {
+      expect(r.ok).toBe(false);
+      expect(r.errors.length).toBeGreaterThan(0);
+      expect(r.imported).toBe(0);
+    }
+
+    const after = await snapshotStorage(page);
+    expect(after).toEqual(before);
+  });
+
+  test('importing a bad file through the UI shows a localized error and keeps data', async ({ page }) => {
+    await seed(page);
+    await waitHook(page);
+    await page.locator('#databackup-toggle').click();
+
+    await page.locator('#databackup-file').setInputFiles({
+      name: 'broken.json',
+      mimeType: 'application/json',
+      buffer: Buffer.from('definitely not json')
+    });
+
+    await expect(page.locator('#databackup-status')).toContainText(/JSON/i);
+    const raw = await page.evaluate(() => localStorage.getItem('qc-gas-favorites'));
+    expect(JSON.parse(raw)).toHaveLength(2);
+  });
+
+  test('replace mode asks for a second confirmation before writing', async ({ page }) => {
+    await seed(page);
+    await waitHook(page);
+    await page.locator('#databackup-toggle').click();
+    await page.locator('input[name="databackup-mode"][value="replace"]').check();
+
+    const incoming = JSON.stringify({
+      v: 1,
+      app: 'essence-quebec',
+      exported_at: '2026-10-03T00:00:00.000Z',
+      data: { favorites: ['Only'], fillups: [], watch: [], tripPrefs: { consumption: 8, roundTrip: false }, listPrefs: { sort: 'price' } }
+    });
+    await page.locator('#databackup-file').setInputFiles({
+      name: 'backup.json',
+      mimeType: 'application/json',
+      buffer: Buffer.from(incoming)
+    });
+
+    await expect(page.locator('#databackup-confirm')).toBeVisible();
+    expect(await page.evaluate(() => JSON.parse(localStorage.getItem('qc-gas-favorites')))).toHaveLength(2);
+
+    await page.locator('#databackup-confirm-yes').click();
+    await expect(page.locator('#databackup-status')).toContainText(/Import|导入/);
+    const after = await page.evaluate(() => JSON.parse(localStorage.getItem('qc-gas-favorites')));
+    expect(after).toEqual(['Only']);
+  });
+
+  test('round-trip: export → wipe → import (replace) restores every dataset in the UI', async ({ page }) => {
+    await seed(page);
+    await waitHook(page);
+    // Make sure the one-shot watch evaluation has already run so it cannot
+    // clean the restored test entry behind our back.
+    await page.waitForFunction(() => window.__qcGasMap && window.__qcGasMap.getStationFeatureCount() > 0, null, { timeout: 15000 }).catch(() => {});
+    const backupObj = await page.evaluate(() => window.__qcGasBackup.buildBackup());
+    expect(backupObj.data.watch).toHaveLength(1);
+    const expectedWatchBaseline = backupObj.data.watch[0].lastSeenPriceCents;
+    const backup = JSON.stringify(backupObj);
+
+    const result = await page.evaluate((json) => {
+      ['qc-gas-favorites', 'qc-gas-fillups', 'qc-gas-watch', 'qc-gas-trip', 'qc-gas-list']
+        .forEach(k => localStorage.removeItem(k));
+      return window.__qcGasBackup.importFromText(json, 'replace');
+    }, backup);
+
+    expect(result.ok).toBe(true);
+    expect(result.imported).toBe(5);
+    expect(result.invalid).toBe(0);
+
+    // The in-memory watch store is re-read without a reload; the restored
+    // threshold and baseline must match what the backup carried.
+    await page.waitForFunction(
+      () => window.__qcGasWatch?.getWatchEntries().length === 1,
+      null,
+      { timeout: 10000 }
+    );
+    const entries = await page.evaluate(() => window.__qcGasWatch.getWatchEntries());
+    expect(entries[0].thresholdCents).toBe(175);
+    expect(entries[0].lastSeenPriceCents).toBe(expectedWatchBaseline);
+
+    await page.reload();
+    await page.waitForLoadState('networkidle', { timeout: 15000 }).catch(() => {});
+    await page.waitForTimeout(3000);
+
+    await expect(page.locator('#fillups-list .fillup-item')).toHaveCount(2);
+    await expect(page.locator('#favorites-count')).toContainText('2');
+    await expect(page.locator('#fillups-list')).toContainText('189.9');
+
+    const list = page.locator('#station-list');
+    await expect(list.locator('.list-item').first()).toBeVisible();
+    await list.locator('.list-item').first().click();
+    await page.locator('.mapboxgl-popup [data-expand]').click();
+    await expect(page.locator('.sd-trip-input')).toHaveValue('9.5');
+  });
+
+  test('backup controls are 44px, keyboard reachable and the status is aria-live', async ({ page }) => {
+    await seed(page);
+    await page.waitForTimeout(2000);
+    await page.locator('#databackup-toggle').click();
+
+    for (const sel of ['#databackup-export', '#databackup-import']) {
+      const box = await page.locator(sel).boundingBox();
+      expect(box.height).toBeGreaterThanOrEqual(44);
+    }
+    await expect(page.locator('#databackup-status')).toHaveAttribute('aria-live', 'polite');
+
+    await page.locator('#databackup-toggle').focus();
+    await page.keyboard.press('Tab');
+    await expect(page.locator('#databackup-export')).toBeFocused();
+  });
+
+  test('backup panel is usable with no personal data (for restoring a file)', async ({ page }) => {
+    await page.goto(BASE_URL);
+    await page.waitForLoadState('networkidle', { timeout: 15000 }).catch(() => {});
+    await page.locator('#databackup-toggle').click();
+
+    await expect(page.locator('#databackup-export')).toBeVisible();
+    await expect(page.locator('#databackup-import')).toBeVisible();
+  });
+});

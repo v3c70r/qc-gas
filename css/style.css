@@ -2283,6 +2283,125 @@ select:focus-visible {
 .sd-fillup-cancel:hover { background: #f8fafc; color: #334155; }
 
 /* ══════════════════════════════════════
+   Personal data backup — sidebar section
+   ══════════════════════════════════════ */
+.databackup-section {
+  border-bottom: 1px solid #e2e8f0;
+  flex-shrink: 0;
+}
+.databackup-toggle {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  width: 100%;
+  min-height: 44px;
+  padding: 12px 16px;
+  background: #fff;
+  border: none;
+  cursor: pointer;
+  color: #475569;
+  font-size: 13px;
+  font-weight: 600;
+  text-align: left;
+}
+.databackup-toggle:hover { background: #f8fafc; }
+.databackup-toggle .chevron {
+  margin-left: auto;
+  transition: transform 0.2s;
+  flex-shrink: 0;
+}
+.databackup-section.open .chevron { transform: rotate(180deg); }
+
+.databackup-panel {
+  display: none;
+  padding: 0 12px 12px;
+}
+.databackup-section.open .databackup-panel { display: block; }
+
+.databackup-actions {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 8px;
+  margin-bottom: 8px;
+}
+.databackup-btn {
+  min-height: 44px;
+  padding: 0 10px;
+  border: 1px solid #e2e8f0;
+  border-radius: 9px;
+  background: #fff;
+  color: #1a73e8;
+  font-size: 12px;
+  font-weight: 600;
+  cursor: pointer;
+  transition: all 0.15s;
+}
+.databackup-btn:hover { background: #f1f5f9; border-color: #cbd5e1; }
+.databackup-btn:focus-visible {
+  outline: none;
+  border-color: #1a73e8;
+  box-shadow: 0 0 0 3px rgba(26, 115, 232, 0.12);
+}
+.databackup-btn-danger {
+  border-color: #fecaca;
+  background: #fef2f2;
+  color: #dc2626;
+}
+.databackup-btn-danger:hover { background: #fee2e2; border-color: #fca5a5; }
+
+.databackup-modes {
+  display: flex;
+  gap: 12px;
+  margin-bottom: 8px;
+}
+.databackup-mode {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  font-size: 12px;
+  color: #475569;
+  cursor: pointer;
+  min-height: 32px;
+}
+.databackup-mode input { accent-color: #1a73e8; }
+
+.databackup-confirm {
+  background: #fef2f2;
+  border: 1px solid #fecaca;
+  border-radius: 9px;
+  padding: 10px;
+  margin-bottom: 8px;
+}
+.databackup-confirm[hidden] { display: none; }
+.databackup-confirm-text {
+  margin: 0 0 8px;
+  font-size: 12px;
+  color: #991b1b;
+  line-height: 1.4;
+}
+.databackup-confirm-actions {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 8px;
+}
+
+.databackup-note {
+  margin: 0 0 8px;
+  font-size: 11px;
+  line-height: 1.45;
+  color: #94a3b8;
+}
+.databackup-status {
+  font-size: 12px;
+  line-height: 1.4;
+  color: #475569;
+  min-height: 1px;
+  overflow-wrap: anywhere;
+}
+.databackup-status[data-kind='ok'] { color: #15803d; }
+.databackup-status[data-kind='error'] { color: #dc2626; }
+
+/* ══════════════════════════════════════
    Price watch — sidebar list
    ══════════════════════════════════════ */
 .watch-section {
