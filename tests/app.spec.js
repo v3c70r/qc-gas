@@ -1529,22 +1529,33 @@ test.describe('Region filter decoupled from radius (Issue #60)', () => {
 
   test('zero-result region + radius shows an actionable empty state that restores results', async ({ page }) => {
     await page.addInitScript(() => localStorage.clear());
+    // We are near Montréal, then a far region is selected: this is the issue's
+    // "pick a region, then locate me" path, where the radius hides every
+    // station and the viewport is left around us, not around the region.
+    await page.context().grantPermissions(['geolocation']);
+    await page.context().setGeolocation({ latitude: MONTREAL.lat, longitude: MONTREAL.lng });
     await page.goto(BASE_URL);
     await page.waitForLoadState('networkidle', { timeout: 15000 }).catch(() => {});
     await page.waitForFunction(() => window.__qcGasMap && window.__qcGasMap.getStationFeatureCount() > 0, null, { timeout: 15000 });
 
     const expected = regionVisibleCount(GASPESIE);
+    const b = regionBounds(GASPESIE);
+    const eps = 1e-6;
 
-    // Pick the region first (province mode), then enter radius mode around the
-    // default Montréal reference: a far region now has zero results.
+    // Pick the region first (province mode): its stations show up.
     await page.locator('#filter-toggle').click();
     await page.locator('#region-filter').selectOption(GASPESIE);
     await expect.poll(
       () => page.evaluate(() => window.__qcGasMap.getStationFeatureCount())
     ).toBe(expected);
 
-    await page.locator('.radius-btn[data-radius="25"]').click();
+    // Close the filter panel so the in-list locate button is clickable.
+    await page.locator('#filter-toggle').click();
+
+    // Then locate ourselves: radius mode on, zero results for the far region.
+    await page.locator('#locate-around-btn').click();
     await page.waitForFunction(() => window.__qcGasMap.getStationFeatureCount() === 0, null, { timeout: 10000 });
+    expect(await page.evaluate(() => window.__qcGasMap.isRadiusMode())).toBe(true);
 
     const empty = page.locator('#station-list > div[no-stations]');
     await expect(empty).toBeVisible();
@@ -1554,6 +1565,12 @@ test.describe('Region filter decoupled from radius (Issue #60)', () => {
     await expect(action).toBeVisible();
     await expect(action).toContainText(String(expected));
     await expect(action).toHaveAttribute('aria-label', /\d+/);
+
+    // Sanity: before the escape hatch the viewport is around us (Montréal),
+    // so it cannot already cover the region we are about to reveal.
+    await page.waitForFunction(() => (window.__qcGasMap.getView()?.zoom || 0) > 11, null, { timeout: 10000 });
+    const boundsBefore = await page.evaluate(() => window.__qcGasMap.getBounds());
+    expect(boundsBefore[1][0]).toBeLessThan(b.minLng);
 
     // 44px touch target, keyboard reachable, Enter activates it.
     const box = await action.boundingBox();
@@ -1569,6 +1586,15 @@ test.describe('Region filter decoupled from radius (Issue #60)', () => {
     await expect(page.locator('.radius-btn.active')).toHaveCount(0);
     await expect(page.locator('#station-list div[no-stations]')).toHaveCount(0);
     await expect(page.locator('#sidebar-station-count')).toHaveAttribute('data-count', String(expected));
+
+    // The map is refit to the revealed region, exactly like selecting it
+    // directly: current bounds cover its whole bbox (1e-6 tolerance).
+    const bounds = await page.evaluate(() => window.__qcGasMap.getBounds());
+    expect(bounds).not.toBeNull();
+    expect(bounds[0][0]).toBeLessThanOrEqual(b.minLng + eps);
+    expect(bounds[0][1]).toBeLessThanOrEqual(b.minLat + eps);
+    expect(bounds[1][0]).toBeGreaterThanOrEqual(b.maxLng - eps);
+    expect(bounds[1][1]).toBeGreaterThanOrEqual(b.maxLat - eps);
   });
 
   test('other zero-result scenarios keep the plain message with no region action', async ({ page }) => {

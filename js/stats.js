@@ -1,4 +1,4 @@
-import { map, currentStations, isRadiusMode, getReferencePoint, getEffectiveReferencePoint, rangeRadius, setRadiusMode } from './map.js';
+import { map, currentStations, isRadiusMode, getReferencePoint, getEffectiveReferencePoint, rangeRadius, setRadiusMode, fitRegionBounds } from './map.js';
 import { tf, t, getLanguage, onLanguageChange } from './i18n.js';
 import { brandColor, brandAbbr } from './constants.js';
 import { isFavorite, toggleFavorite, getFavoriteCount, subscribe, STAR_ICON } from './favorites.js';
@@ -462,7 +462,6 @@ function renderEmptyState() {
   wrap.setAttribute('role', 'status');
   wrap.setAttribute('aria-live', 'polite');
   wrap.dataset.emptyKind = actionable ? 'regionRadius' : 'plain';
-  wrap.dataset.region = region || '';
   wrap.dataset.count = String(regionCount);
 
   const text = document.createElement('div');
@@ -478,7 +477,10 @@ function renderEmptyState() {
     action.textContent = tf('viewWholeRegion', { n: regionCount });
     action.setAttribute('aria-label', tf('viewWholeRegionAria', { n: regionCount }));
     action.addEventListener('click', () => {
+      // Same escape as selecting the region directly: drop the radius and refit
+      // the map to the region, otherwise the revealed stations stay off-screen.
       setRadiusMode(false);
+      fitRegionBounds(region);
       updateStats();
     });
     wrap.appendChild(action);
