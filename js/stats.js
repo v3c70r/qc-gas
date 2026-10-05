@@ -1,4 +1,4 @@
-import { map, currentStations, isRadiusMode, getReferencePoint, getEffectiveReferencePoint, rangeRadius } from './map.js';
+import { map, currentStations, isRadiusMode, getReferencePoint, getEffectiveReferencePoint, rangeRadius, setRadiusMode } from './map.js';
 import { tf, t, getLanguage, onLanguageChange } from './i18n.js';
 import { brandColor, brandAbbr } from './constants.js';
 import { isFavorite, toggleFavorite, getFavoriteCount, subscribe, STAR_ICON } from './favorites.js';
@@ -427,6 +427,66 @@ function appendStationPage() {
   updateShowMoreButton();
 }
 
+// Stations of a region that survive every filter except the radius: this is the
+// count the "see the whole region" escape hatch reveals.
+function countRegionStationsWithoutRadius(region) {
+  if (!currentStations || !Array.isArray(currentStations.features)) return 0;
+  const criteria = { ...getFilterCriteria(), radiusMode: false, selectedRegion: region };
+  const selectedBrands = new Set();
+  document.querySelectorAll('.brand-filter:checked').forEach(cb => selectedBrands.add(cb.value));
+
+  return currentStations.features.filter(feat => {
+    if (!matchesNonBrandFilters(feat, criteria)) return false;
+    if (selectedBrands.size === 0 || !selectedBrands.has(feat.properties.brand)) return false;
+    if (favoritesOnly && !isFavorite(feat)) return false;
+    return true;
+  }).length;
+}
+
+// Zero results normally mean "nothing matches your filters". But region (a
+// scope) and radius ("around me") are orthogonal: selecting a far region and
+// then locating yourself intersects to nothing. That is not a dead end, so we
+// offer a one-tap escape that keeps the region and the other filters (#60).
+function renderEmptyState() {
+  const list = document.getElementById('station-list');
+  const criteria = getFilterCriteria();
+  const region = criteria.selectedRegion;
+  const regionCount = region && criteria.radiusMode && !isSearchActive()
+    ? countRegionStationsWithoutRadius(region)
+    : 0;
+  const actionable = regionCount > 0;
+
+  const wrap = document.createElement('div');
+  wrap.className = 'no-stations';
+  wrap.setAttribute('no-stations', '');
+  wrap.setAttribute('role', 'status');
+  wrap.setAttribute('aria-live', 'polite');
+  wrap.dataset.emptyKind = actionable ? 'regionRadius' : 'plain';
+  wrap.dataset.region = region || '';
+  wrap.dataset.count = String(regionCount);
+
+  const text = document.createElement('div');
+  text.className = 'no-stations-text';
+  text.setAttribute('data-no-stations-text', '');
+  text.textContent = actionable ? t('noStationsRadiusRegion') : t('noStations');
+  wrap.appendChild(text);
+
+  if (actionable) {
+    const action = document.createElement('button');
+    action.type = 'button';
+    action.className = 'no-stations-action';
+    action.textContent = tf('viewWholeRegion', { n: regionCount });
+    action.setAttribute('aria-label', tf('viewWholeRegionAria', { n: regionCount }));
+    action.addEventListener('click', () => {
+      setRadiusMode(false);
+      updateStats();
+    });
+    wrap.appendChild(action);
+  }
+
+  list.appendChild(wrap);
+}
+
 function updateStationList(filteredStations = null) {
   if (filteredStations === null) filteredStations = getVisibleStations();
   const list = document.getElementById('station-list');
@@ -436,7 +496,7 @@ function updateStationList(filteredStations = null) {
   cheapestVisiblePrice = Infinity;
 
   if (filteredStations.length === 0) {
-    list.innerHTML = `<div style="padding:20px;text-align:center;color:#94a3b8;font-size:13px;" no-stations>${tf('noStations')}</div>`;
+    renderEmptyState();
     updateListCount(0, 0);
     updateShowMoreButton();
     renderSortControls();

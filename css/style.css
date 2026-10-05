@@ -649,6 +649,38 @@ body {
 
 #station-list { padding: 8px; }
 
+/* Actionable empty state (issue #60): explains why nothing is shown and, when
+   a radius is hiding a whole region, offers a one-tap way out. */
+.no-stations {
+  padding: 20px 16px;
+  text-align: center;
+  color: #94a3b8;
+  font-size: 13px;
+}
+
+.no-stations-text { line-height: 1.4; }
+
+.no-stations-action {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-height: 44px;
+  margin-top: 12px;
+  padding: 10px 16px;
+  border: 1px solid #93c5fd;
+  background: #eff6ff;
+  border-radius: 8px;
+  font-family: inherit;
+  font-size: 13px;
+  font-weight: 600;
+  color: #1a73e8;
+  cursor: pointer;
+  transition: all 0.15s;
+}
+
+.no-stations-action:hover { background: #dbeafe; border-color: #60a5fa; }
+.no-stations-action:focus-visible { outline: 2px solid #1a73e8; outline-offset: 2px; }
+
 .list-item {
   display: flex;
   align-items: center;

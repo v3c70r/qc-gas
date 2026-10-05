@@ -23,6 +23,9 @@ export const translations = {
     shownCount: '已显示 {shown} / 共 {total} 条',
     distanceSortNeedsLocation: '请启用定位或选择半径后，才能按距离排序',
     noStations: '未找到加油站',
+    noStationsRadiusRegion: '该区域在您的半径范围内没有加油站。',
+    viewWholeRegion: '查看整个区域（{n} 个加油站）',
+    viewWholeRegionAria: '查看所选区域的全部加油站（{n} 个）',
     favoritesOnly: '只看收藏',
     favoritesCount: '{n} 个收藏',
     favorite: '收藏',
@@ -183,6 +186,9 @@ export const translations = {
     shownCount: 'Showing {shown} of {total}',
     distanceSortNeedsLocation: 'Enable location or pick a radius to sort by distance',
     noStations: 'No stations found',
+    noStationsRadiusRegion: 'No stations in your radius for this region.',
+    viewWholeRegion: 'View the whole region ({n} stations)',
+    viewWholeRegionAria: 'View all stations in the selected region ({n} stations)',
     favoritesOnly: 'Favorites only',
     favoritesCount: '{n} favorites',
     favorite: 'Favorite',
@@ -343,6 +349,9 @@ export const translations = {
     shownCount: 'Affichées {shown} / {total}',
     distanceSortNeedsLocation: 'Activez la localisation ou choisissez un rayon pour trier par distance',
     noStations: 'Aucune station trouvée',
+    noStationsRadiusRegion: 'Aucune station dans votre rayon pour cette région.',
+    viewWholeRegion: 'Voir toute la région ({n} stations)',
+    viewWholeRegionAria: 'Voir toutes les stations de la région sélectionnée ({n} stations)',
     favoritesOnly: 'Favoris seulement',
     favoritesCount: '{n} favoris',
     favorite: 'Favori',
@@ -579,7 +588,22 @@ export function applyTranslations(code) {
   }
 
   const noStationsEl = document.querySelector('#station-list > div[no-stations]');
-  if (noStationsEl) noStationsEl.textContent = dict.noStations;
+  if (noStationsEl) {
+    // The empty state may hold a text node plus an actionable button (#60);
+    // update in place so the button and its handler survive a language switch.
+    const noStationsTextEl = noStationsEl.querySelector('[data-no-stations-text]') || noStationsEl;
+    if (noStationsEl.dataset.emptyKind === 'regionRadius') {
+      noStationsTextEl.textContent = dict.noStationsRadiusRegion;
+    } else {
+      noStationsTextEl.textContent = dict.noStations;
+    }
+    const noStationsActionEl = noStationsEl.querySelector('.no-stations-action');
+    if (noStationsActionEl) {
+      const n = noStationsEl.dataset.count || '0';
+      noStationsActionEl.textContent = tf('viewWholeRegion', { n });
+      noStationsActionEl.setAttribute('aria-label', tf('viewWholeRegionAria', { n }));
+    }
+  }
 }
 
 export function createLanguageSelector() {
