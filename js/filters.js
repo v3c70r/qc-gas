@@ -1,5 +1,5 @@
 import { updateStats, updateStationList } from './stats.js';
-import { setRadiusKm, setReferencePoint, updateFuelPriceLayer } from './map.js';
+import { setRadiusKm, setReferencePoint, setRadiusMode, fitRegionBounds, isRadiusMode, updateFuelPriceLayer } from './map.js';
 import { t } from './i18n.js';
 
 // ── Debounce helper ──
@@ -64,7 +64,16 @@ function initFilters() {
     }
   }
 
-  document.getElementById('region-filter').addEventListener('change', () => {
+  document.getElementById('region-filter').addEventListener('change', (e) => {
+    const region = e.target.value;
+    // Region = scope ("show me this region"), radius = around me ("within
+    // 25 km"). They are orthogonal: picking a concrete region deliberately
+    // leaves radius mode so far-away regions are never an empty intersection
+    // (issue #60). "Toutes" leaves the radius untouched.
+    if (region && isRadiusMode()) {
+      setRadiusMode(false);
+      fitRegionBounds(region);
+    }
     updateStats();
   });
 

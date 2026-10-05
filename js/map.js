@@ -679,6 +679,34 @@ export function updateFuelPriceLayer() {
   }
 }
 
+// Fit the map to the stations of a single region, so selecting a region is a
+// usable "scope" action (issue #60) independent of the radius. Falls back to
+// the province bbox when the region has no valid coordinates.
+export function fitRegionBounds(region) {
+  if (!map || !map.fitBounds) return;
+
+  let bounds = QUEBEC_BOUNDS;
+  const features = currentStations && Array.isArray(currentStations.features) ? currentStations.features : [];
+  let minLng = Infinity;
+  let minLat = Infinity;
+  let maxLng = -Infinity;
+  let maxLat = -Infinity;
+  features.forEach((f) => {
+    if (region && f.properties?.region !== region) return;
+    const [lng, lat] = f.geometry?.coordinates || [];
+    if (!isValidQuebecCoordinate(lng, lat)) return;
+    if (lng < minLng) minLng = lng;
+    if (lat < minLat) minLat = lat;
+    if (lng > maxLng) maxLng = lng;
+    if (lat > maxLat) maxLat = lat;
+  });
+  if (Number.isFinite(minLng) && Number.isFinite(minLat) && Number.isFinite(maxLng) && Number.isFinite(maxLat)) {
+    bounds = [[minLng, minLat], [maxLng, maxLat]];
+  }
+
+  map.fitBounds(bounds, { padding: { top: 80, bottom: 80, left: 80, right: 80 }, duration: 0 });
+}
+
 // Fit the map to valid station bounds (or the Québec bbox as a fallback).
 function fitQuebecBounds() {
   if (!map || !map.fitBounds) return;
@@ -707,14 +735,17 @@ function fitQuebecBounds() {
 
 // Add / remove the range circle. The circle only exists in radius mode.
 function addRangeCircle() {
-  if (map.getSource('range-circle')) {
-    map.removeSource('range-circle');
-  }
+  // Remove the layers before the source: Mapbox silently refuses (no throw) to
+  // drop a source that is still referenced by a layer, which used to leave the
+  // circle on the map after exiting radius mode (issue #60).
   if (map.getLayer('range-circle')) {
     map.removeLayer('range-circle');
   }
   if (map.getLayer('range-circle-border')) {
     map.removeLayer('range-circle-border');
+  }
+  if (map.getSource('range-circle')) {
+    map.removeSource('range-circle');
   }
 
   if (!radiusMode) return;
@@ -820,6 +851,12 @@ window.__qcGasMap = {
   isRadiusMode,
   getReferencePoint,
   getEffectiveReferencePoint,
+  fitRegionBounds,
+  getBounds: () => {
+    if (!map || !map.getBounds) return null;
+    const b = map.getBounds();
+    return [[b.getWest(), b.getSouth()], [b.getEast(), b.getNorth()]];
+  },
   getView: () => (map && map.getCenter ? { center: map.getCenter(), zoom: map.getZoom() } : null)
 };
 

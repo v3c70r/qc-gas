@@ -1429,6 +1429,213 @@ test.describe('Province-first view & location memory (Issue #39)', () => {
   });
 });
 
+test.describe('Region filter decoupled from radius (Issue #60)', () => {
+  const GASPESIE = 'Gaspésie-Îles-de-la-Madeleine';
+  const MONTREAL = { lng: -73.7, lat: 45.45 };
+
+  const isValidCoord = (f) => {
+    const [lng, lat] = f.geometry.coordinates;
+    return Number.isFinite(lng) && Number.isFinite(lat) &&
+      lng >= -79.5 && lng <= -57.1 && lat >= 44.9 && lat <= 62.4;
+  };
+
+  // Mirrors the default UI filters: every known brand checked, full price range.
+  const knownBrands = new Set(
+    stationsFixture.features.map((f) => f.properties.brand).filter(Boolean)
+  );
+  const isDefaultPrice = (p) => p != null && p >= 150 && p <= 240;
+
+  const regionFeatures = (region) => stationsFixture.features.filter(
+    (f) => isValidCoord(f) && f.properties.region === region
+  );
+
+  // Stations of a region that survive the *other* (non-radius) default filters.
+  const regionVisibleCount = (region) => stationsFixture.features.filter((f) =>
+    isValidCoord(f) &&
+    f.properties.region === region &&
+    knownBrands.has(f.properties.brand) &&
+    isDefaultPrice(f.properties.regular_price)
+  ).length;
+
+  const regionBounds = (region) => {
+    let minLng = Infinity, minLat = Infinity, maxLng = -Infinity, maxLat = -Infinity;
+    regionFeatures(region).forEach((f) => {
+      const [lng, lat] = f.geometry.coordinates;
+      if (lng < minLng) minLng = lng;
+      if (lat < minLat) minLat = lat;
+      if (lng > maxLng) maxLng = lng;
+      if (lat > maxLat) maxLat = lat;
+    });
+    return { minLng, minLat, maxLng, maxLat };
+  };
+
+  async function seedRadiusView(page) {
+    await page.addInitScript((view) => {
+      localStorage.clear();
+      localStorage.setItem('qc-gas-view', JSON.stringify(view));
+    }, { mode: 'radius', lng: MONTREAL.lng, lat: MONTREAL.lat, radiusKm: 25, zoom: 12 });
+    await page.goto(BASE_URL);
+    await page.waitForLoadState('networkidle', { timeout: 15000 }).catch(() => {});
+    await page.waitForFunction(() => window.__qcGasMap && window.__qcGasMap.getStationFeatureCount() > 0, null, { timeout: 15000 });
+  }
+
+  test('selecting a far region in radius mode shows its stations, exits radius and fits the map', async ({ page }) => {
+    await seedRadiusView(page);
+
+    // Sanity: we really did start in radius mode.
+    await expect(page.locator('.radius-btn.active')).toHaveCount(1);
+    expect(await page.evaluate(() => window.__qcGasMap.hasRangeCircle())).toBe(true);
+
+    await page.locator('#filter-toggle').click();
+    await page.locator('#region-filter').selectOption(GASPESIE);
+
+    const expected = regionVisibleCount(GASPESIE);
+    expect(expected).toBeGreaterThan(0);
+    await expect.poll(
+      () => page.evaluate(() => window.__qcGasMap.getStationFeatureCount()),
+      { timeout: 10000 }
+    ).toBe(expected);
+
+    // Radius mode must be released and its circle removed.
+    await expect(page.locator('.radius-btn.active')).toHaveCount(0);
+    expect(await page.evaluate(() => window.__qcGasMap.hasRangeCircle())).toBe(false);
+    expect(await page.evaluate(() => window.__qcGasMap.isRadiusMode())).toBe(false);
+    await expect(page.locator('#station-list div[no-stations]')).toHaveCount(0);
+
+    // The map is fitted to the region: current bounds cover its whole bbox
+    // (1e-6 tolerance: fitBounds reproduces the bbox edges exactly).
+    const bounds = await page.evaluate(() => window.__qcGasMap.getBounds());
+    const b = regionBounds(GASPESIE);
+    const eps = 1e-6;
+    expect(bounds).not.toBeNull();
+    expect(bounds[0][0]).toBeLessThanOrEqual(b.minLng + eps);
+    expect(bounds[0][1]).toBeLessThanOrEqual(b.minLat + eps);
+    expect(bounds[1][0]).toBeGreaterThanOrEqual(b.maxLng - eps);
+    expect(bounds[1][1]).toBeGreaterThanOrEqual(b.maxLat - eps);
+  });
+
+  test('selecting "Toutes" does not change radius mode', async ({ page }) => {
+    await seedRadiusView(page);
+    await expect(page.locator('.radius-btn.active')).toHaveCount(1);
+
+    await page.locator('#filter-toggle').click();
+    await page.locator('#region-filter').selectOption('');
+    await page.waitForTimeout(300);
+
+    await expect(page.locator('.radius-btn.active')).toHaveCount(1);
+    expect(await page.evaluate(() => window.__qcGasMap.isRadiusMode())).toBe(true);
+    expect(await page.evaluate(() => window.__qcGasMap.hasRangeCircle())).toBe(true);
+  });
+
+  test('zero-result region + radius shows an actionable empty state that restores results', async ({ page }) => {
+    await page.addInitScript(() => localStorage.clear());
+    // We are near Montréal, then a far region is selected: this is the issue's
+    // "pick a region, then locate me" path, where the radius hides every
+    // station and the viewport is left around us, not around the region.
+    await page.context().grantPermissions(['geolocation']);
+    await page.context().setGeolocation({ latitude: MONTREAL.lat, longitude: MONTREAL.lng });
+    await page.goto(BASE_URL);
+    await page.waitForLoadState('networkidle', { timeout: 15000 }).catch(() => {});
+    await page.waitForFunction(() => window.__qcGasMap && window.__qcGasMap.getStationFeatureCount() > 0, null, { timeout: 15000 });
+
+    const expected = regionVisibleCount(GASPESIE);
+    const b = regionBounds(GASPESIE);
+    const eps = 1e-6;
+
+    // Pick the region first (province mode): its stations show up.
+    await page.locator('#filter-toggle').click();
+    await page.locator('#region-filter').selectOption(GASPESIE);
+    await expect.poll(
+      () => page.evaluate(() => window.__qcGasMap.getStationFeatureCount())
+    ).toBe(expected);
+
+    // Close the filter panel so the in-list locate button is clickable.
+    await page.locator('#filter-toggle').click();
+
+    // Then locate ourselves: radius mode on, zero results for the far region.
+    await page.locator('#locate-around-btn').click();
+    await page.waitForFunction(() => window.__qcGasMap.getStationFeatureCount() === 0, null, { timeout: 10000 });
+    expect(await page.evaluate(() => window.__qcGasMap.isRadiusMode())).toBe(true);
+
+    const empty = page.locator('#station-list > div[no-stations]');
+    await expect(empty).toBeVisible();
+    await expect(empty).toHaveAttribute('aria-live', 'polite');
+
+    const action = empty.locator('.no-stations-action');
+    await expect(action).toBeVisible();
+    await expect(action).toContainText(String(expected));
+    await expect(action).toHaveAttribute('aria-label', /\d+/);
+
+    // Sanity: before the escape hatch the viewport is around us (Montréal),
+    // so it cannot already cover the region we are about to reveal.
+    await page.waitForFunction(() => (window.__qcGasMap.getView()?.zoom || 0) > 11, null, { timeout: 10000 });
+    const boundsBefore = await page.evaluate(() => window.__qcGasMap.getBounds());
+    expect(boundsBefore[1][0]).toBeLessThan(b.minLng);
+
+    // 44px touch target, keyboard reachable, Enter activates it.
+    const box = await action.boundingBox();
+    expect(box.height).toBeGreaterThanOrEqual(44);
+    await action.focus();
+    await expect(action).toBeFocused();
+    await page.keyboard.press('Enter');
+
+    await expect.poll(
+      () => page.evaluate(() => window.__qcGasMap.getStationFeatureCount()),
+      { timeout: 10000 }
+    ).toBe(expected);
+    await expect(page.locator('.radius-btn.active')).toHaveCount(0);
+    await expect(page.locator('#station-list div[no-stations]')).toHaveCount(0);
+    await expect(page.locator('#sidebar-station-count')).toHaveAttribute('data-count', String(expected));
+
+    // The map is refit to the revealed region, exactly like selecting it
+    // directly: current bounds cover its whole bbox (1e-6 tolerance).
+    const bounds = await page.evaluate(() => window.__qcGasMap.getBounds());
+    expect(bounds).not.toBeNull();
+    expect(bounds[0][0]).toBeLessThanOrEqual(b.minLng + eps);
+    expect(bounds[0][1]).toBeLessThanOrEqual(b.minLat + eps);
+    expect(bounds[1][0]).toBeGreaterThanOrEqual(b.maxLng - eps);
+    expect(bounds[1][1]).toBeGreaterThanOrEqual(b.maxLat - eps);
+  });
+
+  test('other zero-result scenarios keep the plain message with no region action', async ({ page }) => {
+    await page.addInitScript(() => localStorage.clear());
+    await page.goto(BASE_URL);
+    await page.waitForLoadState('networkidle', { timeout: 15000 }).catch(() => {});
+    await page.waitForFunction(() => window.__qcGasMap && window.__qcGasMap.getStationFeatureCount() > 0, null, { timeout: 15000 });
+
+    await page.locator('#filter-toggle').click();
+    // Deselect every brand: zero results, but no region / radius combination.
+    await page.locator('#brand-select-all').click();
+    await page.waitForFunction(() => window.__qcGasMap.getStationFeatureCount() === 0, null, { timeout: 10000 });
+
+    const empty = page.locator('#station-list > div[no-stations]');
+    await expect(empty).toBeVisible();
+    await expect(empty.locator('.no-stations-action')).toHaveCount(0);
+  });
+
+  test('the actionable empty state is re-translated on a language switch', async ({ page }) => {
+    await page.addInitScript(() => {
+      localStorage.clear();
+      localStorage.setItem('language', 'fr-CA');
+    });
+    await page.goto(BASE_URL);
+    await page.waitForLoadState('networkidle', { timeout: 15000 }).catch(() => {});
+    await page.waitForFunction(() => window.__qcGasMap && window.__qcGasMap.getStationFeatureCount() > 0, null, { timeout: 15000 });
+
+    await page.locator('#filter-toggle').click();
+    await page.locator('#region-filter').selectOption(GASPESIE);
+    await page.locator('.radius-btn[data-radius="25"]').click();
+    await page.waitForFunction(() => window.__qcGasMap.getStationFeatureCount() === 0, null, { timeout: 10000 });
+
+    const action = page.locator('#station-list > div[no-stations] .no-stations-action');
+    await expect(action).toContainText(/Voir toute la région/);
+
+    await page.locator('#lang-selector button[data-lang="en-CA"]').click();
+    await expect(action).toContainText(/View the whole region/);
+    await expect(page.locator('#station-list > div[no-stations]')).toContainText(/No stations in your radius/i);
+  });
+});
+
 test.describe('PWA update strategy (Issue #45)', () => {
   const SW_PATH = path.join(path.dirname(fileURLToPath(import.meta.url)), '../public/sw.js');
   const SW_SCRIPT_URL = 'https://example.test/qc-gas/sw.js';
