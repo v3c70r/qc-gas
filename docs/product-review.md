@@ -130,3 +130,5 @@ _Last updated: 2026-10-07（第 16 次运行）。**#59（引用坐标主键）�
 ## 已评估但不建议（由筛选 agent 维护，避免重复提案）
 
 - 2026-10-08 **#63 首屏列表改为「每区最优价」摘要（现在 13/18 个区域一个站都看不到）** → 筛选判定 SPLIT：方向真。实测 `data/stations.json`（2026-10-05，2455 有效站）默认"regular 价升序前 30"= **Outaouais 24 / Laurentides 5 / Lanaudière 1**——只有 3/18 区可见，比提案说的还差；`getReferencePoint()===null` 时 `js/stats.js:createStationRow` 距离列全 `—`，区域摘要确实能补上唯一可执行信息。但提案数字不可复现（提案说 Montérégie 16 / Outaouais 5、价格区间 174.2–180.9；实测 Outaouais 24、区间 170.9–174.6）→ 证据方向对、明细不可信，测试必须从 fixture 现算而非抄表。且验收"现有 Playwright 全绿"是错的：默认视图翻转会打掉 ~20 个既有 test（F
+
+- 2026-10-08 **#59 个人引用不再静默失联：收藏/关注改以坐标为主键（含一次性迁移与「找不到」提示）** → 筛选判定 SPLIT：证据真实且可核对 —— `js/favorites.js:39-43` 确认 `stationId()` 主键是文本 `name|address|postal_code`（`coord:` 仅兜底），`js/watch.js:242` 确认 `if (!feature) continue; // station disappeared → auto-clean` 后只持久化 `kept`（静默清理），产品文档 §7 实测量化（30 天文本键流失 1.09%、44% 坐标仍在）。方向与"数据诚实"定位一致，且 watch 条目已存 `lng`/`lat`（`normalizeEntry`），坐标匹配成本低。但提案把一个 PR 塞了 4 件互相独立的事：watch 静默清理修复、favorites 坐标键 + 一次性迁移、跨模块 helper 统一、备份导入迁移 —— 涉及 `favorite
