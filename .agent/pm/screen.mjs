@@ -4,8 +4,8 @@
 //
 //  通过（IMPLEMENT）→ 追加 REFINED_TASK 到 issue 正文 + 打 agent-approved
 //                    （受 screenAutoCapWeekly 每周自动实现上限约束）
-//  需拆分（SPLIT）  → 评论拆分方案 + 关闭 + 记入 docs/product-review.md
-//  拒绝（REJECT）   → 评论理由 + 关闭 + 记入 docs/product-review.md
+//  需拆分（SPLIT）  → 评论拆分方案 + 关闭 + 记入 docs/proposal-audit.md（含拆分方案）
+//  拒绝（REJECT）   → 评论理由 + 关闭 + 记入 docs/proposal-audit.md
 //
 //  用法:
 //    node .agent/pm/screen.mjs --check              # 待筛数量 / 自动实现余额
@@ -38,6 +38,15 @@ const args = process.argv.slice(2);
 const CHECK = args.includes('--check');
 const FORCE = args.includes('--force');
 const ISSUE = (() => { const i = args.indexOf('--issue'); return i >= 0 ? args[i + 1] : null; })();
+
+
+/** 确保用到的标签存在（缺失会导致 gh issue edit 整体失败并丢标签） */
+const LABELS_NEEDED = [LABEL_SCREENED, LABEL_REJECTED, LABEL_APPROVED, LABEL_AUTO, LABEL_PROPOSAL];
+function ensureLabels() {
+  for (const l of LABELS_NEEDED) {
+    try { sh(['gh', 'label', 'create', l, '--force']); } catch { /* already exists */ }
+  }
+}
 
 function loadEnv() {
   const p = path.join(ROOT, '.env');
@@ -111,30 +120,52 @@ function section(out, name) {
   return m ? m[1].trim() : '';
 }
 
-function recordRejection(verdict, issue, why) {
+function recordRejection(verdict, issue, why, splitPlan) {
   try {
     rmSync(WT, { recursive: true, force: true });
     sh(['git', 'fetch', 'origin', BASE, '--quiet']);
     sh(['git', 'worktree', 'add', '--detach', WT, `origin/${BASE}`]);
-    const f = path.join(WT, 'docs', 'product-review.md');
-    if (!existsSync(f)) { log('no docs/product-review.md — skip memory write'); return; }
+    const f = path.join(WT, 'docs', 'proposal-audit.md');
+    mkdirSync(path.dirname(f), { recursive: true });
     const date = new Date().toISOString().slice(0, 10);
-    const block = `\n- ${date} **#${issue.number} ${issue.title}** → 筛选判定 ${verdict}：${why.replace(/\s+/g, ' ').slice(0, 400)}\n`;
-    let md = readFileSync(f, 'utf8');
-    if (!/##\s*已评估但不建议/.test(md)) md += `\n\n## 已评估但不建议（由筛选 agent 维护，避免重复提案）\n`;
-    md += block;
+    const one = (t) => String(t || '').replace(/\s+/g, ' ').replace(/\|/g, '/').trim().slice(0, 300);
+    const line = verdict === 'SPLIT'
+      ? `- ${date} | #${issue.number} | ${one(issue.title)} | 拆分建议: ${one(splitPlan) || '(见关闭评论)'}\n`
+      : `- ${date} | #${issue.number} | ${one(issue.title)} | ${one(why)}\n`;
+
+    const HEADER = `# Proposal audit（筛选器维护 / append-only）\n\n` +
+      `<!-- 由 .agent/pm/screen.mjs 自动写入，请勿手工编辑。\n` +
+      `     REJECT = 不要重复提案；SPLIT = 可按更小范围重提（必须遵循给出的拆分方案）。 -->\n`;
+    let md = existsSync(f) ? readFileSync(f, 'utf8') : `${HEADER}\n## REJECT — 不要重复提案\n\n## SPLIT — 可按更小范围重提\n`;
+    if (!md.startsWith('# Proposal audit')) md = HEADER + '\n' + md;
+
+    // 插到对应小节末尾（保持时间顺序）
+    const sec = verdict === 'SPLIT' ? '## SPLIT' : '## REJECT';
+    const i = md.indexOf(sec);
+    if (i === -1) md += `\n${sec} — ${verdict === 'SPLIT' ? '可按更小范围重提' : '不要重复提案'}\n${line}`;
+    else {
+      const after = md.indexOf('\n## ', i + 1);
+      const end = after === -1 ? md.length : after;
+      md = md.slice(0, end).replace(/\s*$/, '\n') + line + md.slice(end);
+    }
+    // 裁剪：每个小节最多保留最近 40 条
+    md = md.replace(/(## [A-Z]+[^\n]*\n)([\s\S]*?)(?=\n## |\s*$)/g, (m0, h, body) => {
+      const lines = body.split('\n').filter(l => l.trim().startsWith('- '));
+      const kept = lines.slice(-40);
+      return h + (kept.length ? kept.join('\n') + '\n' : '\n');
+    });
     writeFileSync(f, md);
-    sh(['git', 'add', 'docs/product-review.md'], { cwd: WT });
+    sh(['git', 'add', 'docs/proposal-audit.md'], { cwd: WT });
     sh(['git', '-c', 'user.name=pm-screener', '-c', 'user.email=pm-screener@users.noreply.github.com',
-      'commit', '-m', `docs: record screened-out proposal #${issue.number} (${verdict}) [pm-screener]`], { cwd: WT });
-    try { sh(['git', 'push', 'origin', `HEAD:${BASE}`], { cwd: WT }); log('memory updated (pushed)'); }
+      'commit', '-m', `docs: audit screened proposal #${issue.number} (${verdict}) [pm-screener]`], { cwd: WT });
+    try { sh(['git', 'push', 'origin', `HEAD:${BASE}`], { cwd: WT }); log('audit updated (pushed)'); }
     catch {
       sh(['git', 'fetch', 'origin', BASE, '--quiet'], { cwd: WT });
       sh(['git', 'rebase', `origin/${BASE}`], { cwd: WT });
       sh(['git', 'push', 'origin', `HEAD:${BASE}`], { cwd: WT });
-      log('memory updated (pushed after rebase)');
+      log('audit updated (pushed after rebase)');
     }
-  } catch (e) { log('memory write failed: ' + String(e.message).slice(0, 160)); }
+  } catch (e) { log('audit write failed: ' + String(e.message).slice(0, 160)); }
   finally { try { sh(['git', 'worktree', 'remove', WT, '--force']); } catch {} try { sh(['git', 'worktree', 'prune']); } catch {} rmSync(WT, { recursive: true, force: true }); }
 }
 
@@ -181,13 +212,15 @@ function screenOne(issue, budgetLeft) {
   const body = head + (splitPlan ? `\n### 拆分建议\n${splitPlan}\n` : '') +
     `\n❌ ${verdict === 'SPLIT' ? '方向有价值但 scope 过大/缺前置条件 —— 已按策略关闭，拆分建议见上；如认可可重开更小的 issue。' : '判定不值得实现 —— 已关闭并记入 PM 记忆，避免重复提案。'}`;
   gh(['issue', 'comment', String(issue.number), '--body', body]);
-  try { gh(['issue', 'edit', String(issue.number), '--add-label', LABEL_SCREENED, '--add-label', LABEL_REJECTED]); } catch {}
+  try { gh(['issue', 'edit', String(issue.number), '--add-label', LABEL_SCREENED, '--add-label', LABEL_REJECTED]); }
+  catch (e) { log(`⚠️ 标签写入失败（会丢失 pm-screened/agent-rejected 标记）: ${String(e.message).slice(0, 160)}`); }
   try { gh(['issue', 'close', String(issue.number), '--reason', 'not planned']); } catch {}
-  recordRejection(verdict, issue, why);
+  recordRejection(verdict, issue, why, splitPlan);
   return verdict;
 }
 
 function main() {
+  ensureLabels();
   const used = autoApprovedThisWeek();
   const budgetLeft = Math.max(0, CAP - used);
 
