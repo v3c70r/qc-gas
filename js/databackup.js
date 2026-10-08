@@ -5,9 +5,10 @@
 // file is generated in the browser and saved by the user — no server, no
 // account, no new network request.
 //
-// Covered keys: favorites, fill-ups, price watch, trip preferences and list
-// preferences. Device-specific view state (`qc-gas-view`) is deliberately
-// excluded: restoring a radius/view on another device would be surprising.
+// Covered keys: favorites, fill-ups (+ the fill-up period preference added by
+// #62), price watch, trip preferences and list preferences. Device-specific
+// view state (`qc-gas-view`) is deliberately excluded: restoring a radius/view
+// on another device would be surprising.
 //
 // Design constraints:
 //   • A malformed or unknown file must NEVER touch existing data.
@@ -22,6 +23,7 @@ export const BACKUP_APP = 'essence-quebec';
 
 const FAVORITES_KEY = 'qc-gas-favorites';
 const FILLUPS_KEY = 'qc-gas-fillups';
+const FILLUP_PREFS_KEY = 'qc-gas-fillups-prefs';
 const WATCH_KEY = 'qc-gas-watch';
 const TRIP_KEY = 'qc-gas-trip';
 const LIST_KEY = 'qc-gas-list';
@@ -29,6 +31,7 @@ const LIST_KEY = 'qc-gas-list';
 export const STORAGE_KEYS = {
   favorites: FAVORITES_KEY,
   fillups: FILLUPS_KEY,
+  fillupPrefs: FILLUP_PREFS_KEY,
   watch: WATCH_KEY,
   tripPrefs: TRIP_KEY,
   listPrefs: LIST_KEY
@@ -36,6 +39,8 @@ export const STORAGE_KEYS = {
 
 const DEFAULT_TRIP_PREFS = { consumption: 8, roundTrip: false };
 const DEFAULT_LIST_PREFS = { sort: 'price' };
+const FILLUP_RANGES = ['month', 'year', 'all'];
+const DEFAULT_FILLUP_PREFS = { range: 'month' };
 
 // ── Validation helpers (pure) ──
 
@@ -68,6 +73,10 @@ function sanitizeListPrefs(raw) {
   return { sort: raw?.sort === 'distance' ? 'distance' : 'price' };
 }
 
+function sanitizeFillupPrefs(raw) {
+  return { range: FILLUP_RANGES.includes(raw?.range) ? raw.range : DEFAULT_FILLUP_PREFS.range };
+}
+
 function readJSON(key, fallback) {
   try {
     const raw = localStorage.getItem(key);
@@ -89,6 +98,7 @@ export function readLocalData() {
   return {
     favorites: Array.isArray(favoritesRaw) ? favoritesRaw.filter(isValidFavoriteId) : [],
     fillups: Array.isArray(fillupsRaw) ? fillupsRaw.filter(isFillupRecord) : [],
+    fillupPrefs: sanitizeFillupPrefs(readJSON(FILLUP_PREFS_KEY, null)),
     watch: Array.isArray(watchRaw) ? watchRaw.filter(isWatchRecord) : [],
     tripPrefs: sanitizeTripPrefs(readJSON(TRIP_KEY, null)),
     listPrefs: sanitizeListPrefs(readJSON(LIST_KEY, null))
@@ -152,7 +162,7 @@ export function validateBackup(input) {
 
   const data = parsed.data;
   if (!data || typeof data !== 'object' || Array.isArray(data)) return failValidate('dataErrShape');
-  const known = ['favorites', 'fillups', 'watch', 'tripPrefs', 'listPrefs'];
+  const known = ['favorites', 'fillups', 'fillupPrefs', 'watch', 'tripPrefs', 'listPrefs'];
   if (!known.some(key => key in data)) return failValidate('dataErrShape');
 
   const favorites = validateDataset(data.favorites, isValidFavoriteId);
@@ -180,6 +190,16 @@ export function validateBackup(input) {
     }
   }
 
+  // Added by issue #62; an older v1 backup simply has no such key.
+  let fillupPrefs = { ...DEFAULT_FILLUP_PREFS };
+  if ('fillupPrefs' in data) {
+    if (data.fillupPrefs && typeof data.fillupPrefs === 'object' && !Array.isArray(data.fillupPrefs)) {
+      fillupPrefs = sanitizeFillupPrefs(data.fillupPrefs);
+    } else {
+      invalid += 1;
+    }
+  }
+
   return {
     ok: true,
     errors: [],
@@ -192,6 +212,7 @@ export function validateBackup(input) {
     data: {
       favorites: favorites.valid,
       fillups: fillups.valid,
+      fillupPrefs,
       watch: watch.valid,
       tripPrefs,
       listPrefs
@@ -255,10 +276,11 @@ export function applyImport(incoming, mode, current) {
   const watch = Array.isArray(inc.watch) ? inc.watch.filter(isWatchRecord) : [];
   const tripPrefs = inc.tripPrefs ? sanitizeTripPrefs(inc.tripPrefs) : (cur.tripPrefs || { ...DEFAULT_TRIP_PREFS });
   const listPrefs = inc.listPrefs ? sanitizeListPrefs(inc.listPrefs) : (cur.listPrefs || { ...DEFAULT_LIST_PREFS });
+  const fillupPrefs = inc.fillupPrefs ? sanitizeFillupPrefs(inc.fillupPrefs) : (cur.fillupPrefs || { ...DEFAULT_FILLUP_PREFS });
 
   if (mode === 'replace') {
     return {
-      data: { favorites, fillups, watch, tripPrefs, listPrefs },
+      data: { favorites, fillups, fillupPrefs, watch, tripPrefs, listPrefs },
       imported: favorites.length + fillups.length + watch.length,
       skipped: 0
     };
@@ -299,6 +321,7 @@ export function applyImport(incoming, mode, current) {
     data: {
       favorites: mergedFavorites,
       fillups: [...fillupMap.values()],
+      fillupPrefs,
       watch: [...watchMap.values()],
       tripPrefs,
       listPrefs
@@ -315,6 +338,7 @@ export function writeLocalData(data) {
   try {
     localStorage.setItem(FAVORITES_KEY, JSON.stringify(data?.favorites || []));
     localStorage.setItem(FILLUPS_KEY, JSON.stringify(data?.fillups || []));
+    localStorage.setItem(FILLUP_PREFS_KEY, JSON.stringify(data?.fillupPrefs || DEFAULT_FILLUP_PREFS));
     localStorage.setItem(WATCH_KEY, JSON.stringify(data?.watch || []));
     localStorage.setItem(TRIP_KEY, JSON.stringify(data?.tripPrefs || DEFAULT_TRIP_PREFS));
     localStorage.setItem(LIST_KEY, JSON.stringify(data?.listPrefs || DEFAULT_LIST_PREFS));
@@ -332,6 +356,7 @@ function rehydrateStores() {
   const tasks = [
     import('./favorites.js').then(m => m.reloadFavorites()),
     import('./fillups.js').then(m => m.reloadFillups()),
+    import('./fillups.js').then(m => m.reloadFillupPrefs()),
     import('./watch.js').then(m => m.reloadWatch()),
     import('./stats.js').then(m => m.reloadListPreferences())
   ];

@@ -3,15 +3,66 @@
 // no account, no new network requests. The summary compares each logged fill-up
 // against the REAL region-level average for that day (data/history.json), and
 // degrades gracefully to simple totals when history is unavailable.
+// Issue #62: the summary is scoped to a user-chosen period (month/year/all,
+// persisted), and the current period can be exported as a UTF-8 CSV.
 
-import { t, onLanguageChange, translations, getLanguage } from './i18n.js';
+import { t, tf, onLanguageChange, translations, getLanguage } from './i18n.js';
 import { loadHistoryData } from './history.js';
 
 export const STORAGE_KEY = 'qc-gas-fillups';
+// Period preference for the summary/export (issue #62). Travels with the JSON
+// backup (js/databackup.js) so a restore keeps the user's chosen period.
+export const PREFS_KEY = 'qc-gas-fillups-prefs';
+export const RANGES = ['month', 'year', 'all'];
+const RANGE_LABEL_KEYS = { month: 'fillupRangeMonth', year: 'fillupRangeYear', all: 'fillupRangeAll' };
 const FUEL_KEYS = ['regular', 'super', 'diesel'];
 
 let fillups = loadFillups();
+let range = loadRangePrefs().range;
 const listeners = new Set();
+
+function loadRangePrefs() {
+  try {
+    const parsed = JSON.parse(localStorage.getItem(PREFS_KEY) || 'null');
+    if (parsed && RANGES.includes(parsed.range)) return { range: parsed.range };
+  } catch {
+    // Storage may be unavailable (private browsing); keep the default.
+  }
+  return { range: 'month' };
+}
+
+function persistRangePrefs() {
+  try {
+    localStorage.setItem(PREFS_KEY, JSON.stringify({ range }));
+  } catch {
+    // Storage may be unavailable (private browsing); the choice still applies in-session.
+  }
+}
+
+/** Currently selected period ('month' | 'year' | 'all'). */
+export function getRange() {
+  return range;
+}
+
+/** Switch the period, persist it and re-render. Returns the effective range. */
+export function setRange(next) {
+  if (!RANGES.includes(next)) return range;
+  if (range !== next) {
+    range = next;
+    persistRangePrefs();
+  }
+  renderRangeControls();
+  renderFillupsPanel();
+  return range;
+}
+
+// Re-read the period preference from localStorage (JSON restore, issue #57).
+export function reloadFillupPrefs() {
+  range = loadRangePrefs().range;
+  renderRangeControls();
+  renderFillupsPanel();
+  return range;
+}
 
 function genId() {
   if (typeof crypto !== 'undefined' && crypto.randomUUID) return crypto.randomUUID();
@@ -159,16 +210,17 @@ export function regionAverageForDate(historyData, region, fuel, dateStr) {
 }
 
 /**
- * Current-month summary for the fill-up log.
- * Returns { count, liters, spendDollars, avgPriceCents, savingsDollars,
+ * Current-period summary for the fill-up log.
+ * Returns { range, count, liters, spendDollars, avgPriceCents, savingsDollars,
  *           savingsKnown }.
  * `avgPriceCents` is litres-weighted; `savingsDollars` sums
  * (region average − paid price) × litres for each matched fill-up and is null
  * when no fill-up could be matched to real history.
  */
-export function computeMonthStats(fillupsList, historyData, now = new Date()) {
-  const monthKey = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}`;
-  const month = (fillupsList || []).filter(f => String(f.date || '').slice(0, 7) === monthKey);
+export function computeStats(fillupsList, historyData, options = {}) {
+  const selectedRange = RANGES.includes(options?.range) ? options.range : 'month';
+  const now = options?.now instanceof Date ? options.now : new Date(options?.now ?? Date.now());
+  const inPeriod = (fillupsList || []).filter(f => inRange(f.date, selectedRange, now));
 
   let liters = 0;
   let spend = 0;
@@ -179,7 +231,7 @@ export function computeMonthStats(fillupsList, historyData, now = new Date()) {
   let savings = 0;
   let savingsKnown = false;
 
-  for (const f of month) {
+  for (const f of inPeriod) {
     const price = Number(f.priceCents);
     const lit = (f.liters != null && Number.isFinite(Number(f.liters))) ? Number(f.liters) : null;
 
@@ -210,13 +262,105 @@ export function computeMonthStats(fillupsList, historyData, now = new Date()) {
     : (simplePriceCount > 0 ? simplePriceSum / simplePriceCount : null);
 
   return {
-    count: month.length,
+    range: selectedRange,
+    count: inPeriod.length,
     liters,
     spendDollars: spend,
     avgPriceCents,
     savingsDollars: savings,
     savingsKnown
   };
+}
+
+/**
+ * Backwards-compatible month wrapper (issue #29 call sites and tests).
+ */
+export function computeMonthStats(fillupsList, historyData, now = new Date()) {
+  return computeStats(fillupsList, historyData, { range: 'month', now });
+}
+
+/** True when `dateStr` (YYYY-MM-DD) falls inside the selected period. */
+function inRange(dateStr, selectedRange, now) {
+  if (selectedRange === 'all') return true;
+  const d = String(dateStr || '');
+  if (!/^\d{4}-\d{2}-\d{2}/.test(d)) return false;
+  const ref = now instanceof Date && !Number.isNaN(now.getTime()) ? now : new Date();
+  if (selectedRange === 'year') return d.slice(0, 4) === String(ref.getFullYear());
+  return d.slice(0, 7) === `${ref.getFullYear()}-${String(ref.getMonth() + 1).padStart(2, '0')}`;
+}
+
+// ── CSV export (RFC 4180, UTF-8 BOM for Excel) ──
+
+function csvCell(value) {
+  const s = value == null ? '' : String(value);
+  return /[",;\r\n]/.test(s) ? `"${s.replace(/"/g, '""')}"` : s;
+}
+
+function csvNumber(value, digits) {
+  const n = Number(value);
+  return Number.isFinite(n) ? n.toFixed(digits) : '';
+}
+
+/**
+ * CSV for every fill-up of the selected period, oldest first. Columns:
+ * date, station, brand, region, fuel, price, litres, total, region average
+ * that day (when known), savings. Quoted per RFC 4180 and prefixed with a
+ * UTF-8 BOM so Excel shows accented station names correctly.
+ */
+export function buildCsv(fillupsList, historyData, selectedRange = 'month', now = new Date()) {
+  const rows = (fillupsList || [])
+    .filter(f => inRange(f.date, RANGES.includes(selectedRange) ? selectedRange : 'month', now))
+    .slice()
+    .sort((a, b) => String(a.date || '').localeCompare(String(b.date || '')));
+
+  const header = ['fillupCsvDate', 'fillupCsvStation', 'fillupCsvBrand', 'fillupCsvRegion', 'fillupCsvFuel',
+    'fillupCsvPrice', 'fillupCsvLiters', 'fillupCsvTotal', 'fillupCsvRegionAvg', 'fillupCsvSavings']
+    .map(key => csvCell(t(key)));
+
+  const lines = [header.join(',')];
+  for (const f of rows) {
+    const price = Number(f.priceCents);
+    const lit = (f.liters != null && Number.isFinite(Number(f.liters))) ? Number(f.liters) : null;
+    const total = (f.totalPrice != null && Number(f.totalPrice) > 0)
+      ? Number(f.totalPrice)
+      : (lit != null && lit > 0 ? price * lit / 100 : null);
+    const regionAvg = regionAverageForDate(historyData, f.region, f.fuel, f.date);
+    const savings = (regionAvg != null && lit != null && lit > 0) ? (regionAvg - price) * lit / 100 : null;
+
+    lines.push([
+      f.date,
+      f.stationName,
+      f.brand,
+      f.region,
+      fuelLabel(f.fuel),
+      csvNumber(price, 1),
+      lit != null ? csvNumber(lit, 2) : '',
+      csvNumber(total, 2),
+      regionAvg != null ? csvNumber(regionAvg, 1) : '',
+      savings != null ? csvNumber(savings, 2) : ''
+    ].map(csvCell).join(','));
+  }
+
+  return '\uFEFF' + lines.join('\r\n') + '\r\n';
+}
+
+/** Trigger a CSV download for the current period. Offline-safe, no network. */
+export async function exportFillupsCsv(now = new Date()) {
+  const historyData = await loadHistoryData().catch(() => null);
+  const csv = buildCsv(getFillups(), historyData, range, now);
+  const filename = `mes-pleins-${localDateKey(now)}.csv`;
+
+  const blob = new Blob([csv], { type: 'text/csv;charset=utf-8' });
+  const url = URL.createObjectURL(blob);
+  const anchor = document.createElement('a');
+  anchor.href = url;
+  anchor.download = filename;
+  anchor.rel = 'noopener';
+  document.body.appendChild(anchor);
+  anchor.click();
+  anchor.remove();
+  setTimeout(() => URL.revokeObjectURL(url), 0);
+  return { filename, csv };
 }
 
 // ── Sidebar summary rendering ──
@@ -251,20 +395,48 @@ function fillupItemHTML(f) {
     </div>`;
 }
 
+function rangeSpendLabel(selectedRange) {
+  return tf('fillupSpendLabel', { range: t(RANGE_LABEL_KEYS[selectedRange] || 'fillupRangeMonth') });
+}
+
+function renderRangeControls() {
+  const group = document.getElementById('fillups-range');
+  if (!group) return;
+  group.setAttribute('aria-label', t('fillupRange'));
+  group.querySelectorAll('[data-fillup-range]').forEach(btn => {
+    const active = btn.dataset.fillupRange === range;
+    btn.setAttribute('aria-checked', active ? 'true' : 'false');
+    btn.classList.toggle('active', active);
+    btn.tabIndex = 0;
+  });
+}
+
 async function renderFillupsPanel() {
   const summaryEl = document.getElementById('fillups-summary');
   const listEl = document.getElementById('fillups-list');
   if (!summaryEl || !listEl) return;
 
+  renderRangeControls();
+
   const historyData = await loadHistoryData().catch(() => null);
-  const stats = computeMonthStats(getFillups(), historyData);
+  const items = getFillups();
+  const stats = computeStats(items, historyData, { range });
 
   if (stats.count === 0) {
-    summaryEl.innerHTML = `<div class="fillups-empty">${t('fillupNoRecords')}</div>`;
+    if (items.length > 0 && range !== 'all') {
+      // The log is not empty, the *period* is: offer the way out instead of the
+      // contradictory "no fill-ups recorded".
+      summaryEl.innerHTML = `
+        <div class="fillups-empty">${t('fillupRangeEmpty')}</div>
+        <button type="button" class="fillups-viewall" id="fillups-viewall">${escapeHtml(tf('fillupViewAll', { count: items.length }))}</button>`;
+      summaryEl.querySelector('#fillups-viewall')?.addEventListener('click', () => setRange('all'));
+    } else {
+      summaryEl.innerHTML = `<div class="fillups-empty">${t('fillupNoRecords')}</div>`;
+    }
   } else {
     summaryEl.innerHTML = `
       <div class="fillups-stat">
-        <span class="fillups-stat-label">${t('fillupMonthSpend')}</span>
+        <span class="fillups-stat-label">${rangeSpendLabel(range)}</span>
         <b class="fillups-stat-value">${formatDollars(stats.spendDollars)}</b>
       </div>
       <div class="fillups-stat">
@@ -274,10 +446,10 @@ async function renderFillupsPanel() {
       <div class="fillups-stat ${stats.savingsKnown && stats.savingsDollars < 0 ? 'neg' : ''}">
         <span class="fillups-stat-label">${t('fillupSavings')}</span>
         <b class="fillups-stat-value">${stats.savingsKnown ? formatDollars(stats.savingsDollars) : '—'}</b>
-      </div>`;
+      </div>
+      <div class="fillups-subline">${escapeHtml(tf('fillupCountLiters', { count: stats.count, liters: stats.liters.toFixed(1) }))}</div>`;
   }
 
-  const items = getFillups();
   listEl.innerHTML = items.map(fillupItemHTML).join('');
   listEl.querySelectorAll('[data-fillup-delete]').forEach(btn => {
     btn.addEventListener('click', () => deleteFillup(btn.dataset.fillupDelete));
@@ -294,6 +466,29 @@ export function initFillups() {
     });
   }
 
+  const group = document.getElementById('fillups-range');
+  if (group) {
+    group.addEventListener('click', (event) => {
+      const btn = event.target.closest('[data-fillup-range]');
+      if (btn) setRange(btn.dataset.fillupRange);
+    });
+    // Arrow keys move/select within the radiogroup; Enter/Space work natively.
+    group.addEventListener('keydown', (event) => {
+      const step = { ArrowRight: 1, ArrowDown: 1, ArrowLeft: -1, ArrowUp: -1 }[event.key];
+      if (!step) return;
+      event.preventDefault();
+      const idx = RANGES.indexOf(range);
+      const next = RANGES[(idx + step + RANGES.length) % RANGES.length];
+      setRange(next);
+      group.querySelector(`[data-fillup-range="${next}"]`)?.focus();
+    });
+  }
+
+  document.getElementById('fillups-export-csv')?.addEventListener('click', () => {
+    exportFillupsCsv();
+  });
+
+  renderRangeControls();
   renderFillupsPanel();
   subscribe(() => renderFillupsPanel());
   onLanguageChange(() => renderFillupsPanel());
@@ -303,10 +498,17 @@ export function initFillups() {
 if (typeof window !== 'undefined') {
   window.__qcGasFillups = {
     STORAGE_KEY,
+    PREFS_KEY,
+    RANGES,
     getFillups,
     addFillup,
     deleteFillup,
+    getRange,
+    setRange,
+    computeStats,
     computeMonthStats,
+    buildCsv,
+    exportFillupsCsv,
     regionAverageForDate,
     localDateKey,
     dayKey
