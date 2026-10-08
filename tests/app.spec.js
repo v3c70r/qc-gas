@@ -3236,13 +3236,16 @@ test.describe('Régie weekly retail margin', () => {
   });
 
   test('station card and detail panel show the regional margin line', async ({ page }) => {
+    // Every region carries the same value. The sidebar list is price-sorted and
+    // data/stations.json is refreshed daily, so which region the first station
+    // belongs to is not stable; the per-region lookup itself is covered by the
+    // pure 'region-name matching' test above.
     const regions = {};
     for (const feature of stationsFixture.features) {
       const region = feature.properties.region;
       if (!region) continue;
-      regions[region] = entry(region === 'Laurentides' ? 5.0 : 3.0);
+      regions[region] = entry(5.0);
     }
-    delete regions['Municipalités hors MRC \\ CMM'];
     const fixture = JSON.parse(JSON.stringify(regieFixture));
     fixture.fuels.regular.regions = regions;
     await page.route('**/data/regie-margin.json', route => route.fulfill({ json: fixture }));
