@@ -968,6 +968,235 @@ test.describe('Fill-ups (localStorage fuel log)', () => {
   });
 });
 
+test.describe('Fill-ups period ranges + CSV export (Issue #62)', () => {
+  // One entry in the current month, one earlier this year, one from a previous
+  // year: enough to tell the three ranges apart on any run date.
+  const seedFillups = (page, { includeCurrent = true } = {}) => page.evaluate((withCurrent) => {
+    const now = new Date();
+    const pad = (n) => String(n).padStart(2, '0');
+    const key = (d) => `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}`;
+    const monthDate = key(new Date(now.getFullYear(), now.getMonth(), 2));
+    const yearDate = key(new Date(now.getFullYear(), 0, 3));
+    const records = [];
+    if (withCurrent) {
+      records.push(
+        { id: 'm1', stationId: 'A', stationName: 'Station "A", centre', brand: 'X', region: 'Montréal', fuel: 'regular', date: monthDate, priceCents: 190, liters: 50, totalPrice: null, createdAt: '2020-01-01T00:00:00.000Z' },
+        { id: 'y1', stationId: 'B', stationName: 'Station B; nord', brand: 'Y', region: 'Montréal', fuel: 'regular', date: yearDate, priceCents: 195, liters: 40, totalPrice: null, createdAt: '2020-01-01T00:00:00.000Z' }
+      );
+    }
+    records.push(
+      { id: 'o1', stationId: 'C', stationName: 'Station C', brand: 'Z', region: 'Montréal', fuel: 'regular', date: '2020-01-05', priceCents: 180, liters: 30, totalPrice: null, createdAt: '2020-01-01T00:00:00.000Z' },
+      { id: 'o2', stationId: 'D', stationName: 'Station D', brand: 'W', region: 'Montréal', fuel: 'regular', date: '2020-02-06', priceCents: 175, liters: 20, totalPrice: null, createdAt: '2020-01-01T00:00:00.000Z' }
+    );
+    localStorage.setItem('qc-gas-fillups', JSON.stringify(records));
+    return { monthDate, yearDate };
+  }, includeCurrent);
+
+  test('computeStats narrows to the selected range', async ({ page }) => {
+    await page.goto(BASE_URL);
+    await page.waitForLoadState('networkidle', { timeout: 15000 }).catch(() => {});
+    await page.waitForFunction(() => window.__qcGasFillups, null, { timeout: 15000 });
+
+    const result = await page.evaluate(() => {
+      const m = window.__qcGasFillups;
+      const fillups = [
+        { id: '1', stationName: 'S1', region: 'Montréal', fuel: 'regular', date: '2026-03-15', priceCents: 190, liters: 50, totalPrice: null },
+        { id: '2', stationName: 'S2', region: 'Montréal', fuel: 'regular', date: '2026-09-16', priceCents: 195, liters: 40, totalPrice: null },
+        { id: '3', stationName: 'S3', region: 'Montréal', fuel: 'regular', date: '2025-09-16', priceCents: 200, liters: 20, totalPrice: 42 }
+      ];
+      const history = {
+        regions: {
+          'Montréal': {
+            points: [
+              { date: '2026-03-15T12:00:00Z', regular: { avg: 200 } },
+              { date: '2026-09-16T12:00:00Z', regular: { avg: 200 } },
+              { date: '2025-09-16T12:00:00Z', regular: { avg: 210 } }
+            ]
+          }
+        }
+      };
+      const now = new Date(2026, 8, 20);
+      return {
+        month: m.computeStats(fillups, history, { range: 'month', now }),
+        year: m.computeStats(fillups, history, { range: 'year', now }),
+        all: m.computeStats(fillups, history, { range: 'all', now }),
+        legacy: m.computeMonthStats(fillups, history, now)
+      };
+    });
+
+    expect(result.month.count).toBe(1);
+    expect(result.month.liters).toBe(40);
+    expect(result.month.spendDollars).toBeCloseTo(78, 2);
+    expect(result.month.avgPriceCents).toBeCloseTo(195, 1);
+    expect(result.month.savingsDollars).toBeCloseTo(2, 2);
+
+    expect(result.year.count).toBe(2);
+    expect(result.year.liters).toBe(90);
+    expect(result.year.spendDollars).toBeCloseTo(95 + 78, 2);
+    expect(result.year.avgPriceCents).toBeCloseTo((190 * 50 + 195 * 40) / 90, 1);
+    expect(result.year.savingsDollars).toBeCloseTo((200 - 190) * 50 / 100 + 2, 2);
+
+    expect(result.all.count).toBe(3);
+    expect(result.all.liters).toBe(110);
+    expect(result.all.spendDollars).toBeCloseTo(95 + 78 + 42, 2);
+    expect(result.all.savingsKnown).toBe(true);
+
+    // Legacy wrapper keeps the month behaviour.
+    expect(result.legacy.range).toBe('month');
+    expect(result.legacy.count).toBe(1);
+    expect(result.legacy.spendDollars).toBeCloseTo(78, 2);
+  });
+
+  test('buildCsv escapes RFC 4180 fields, starts with a BOM and exports the selected range', async ({ page }) => {
+    await page.goto(BASE_URL);
+    await page.waitForLoadState('networkidle', { timeout: 15000 }).catch(() => {});
+    await page.waitForFunction(() => window.__qcGasFillups, null, { timeout: 15000 });
+
+    const csv = await page.evaluate(() => {
+      const m = window.__qcGasFillups;
+      const fillups = [
+        { id: '1', stationName: 'He said "hi", ok;', brand: 'X', region: 'Montréal', fuel: 'regular', date: '2026-03-15', priceCents: 190, liters: 50, totalPrice: null },
+        { id: '2', stationName: 'Plain', brand: 'Y', region: 'Montréal', fuel: 'regular', date: '2026-09-16', priceCents: 195, liters: 40, totalPrice: null }
+      ];
+      const history = { regions: { 'Montréal': { points: [{ date: '2026-03-15T12:00:00Z', regular: { avg: 200 } }] } } };
+      return {
+        month: m.buildCsv(fillups, history, 'month', new Date(2026, 8, 20)),
+        all: m.buildCsv(fillups, history, 'all', new Date(2026, 8, 20))
+      };
+    });
+
+    expect(csv.all.charCodeAt(0)).toBe(0xFEFF);
+    const lines = csv.all.replace('\uFEFF', '').trim().split('\r\n');
+    expect(lines).toHaveLength(3); // header + 2 records
+    expect(lines[0].split(',').length).toBe(10);
+    expect(lines[0]).toMatch(/Date|日期/);
+    expect(csv.all).toContain('"He said ""hi"", ok;"');
+    // Region average and savings are present for the matched March entry.
+    expect(csv.all).toContain('200.0');
+    expect(csv.all).toContain('5.00');
+
+    // The month range keeps only the September record.
+    const monthLines = csv.month.replace('\uFEFF', '').trim().split('\r\n');
+    expect(monthLines).toHaveLength(2);
+    expect(csv.month).not.toContain('He said');
+  });
+
+  test('range switcher updates the summary and the empty period offers “view all”', async ({ page }) => {
+    await page.goto(BASE_URL);
+    await seedFillups(page, { includeCurrent: false });
+    await page.reload();
+    await page.waitForLoadState('networkidle', { timeout: 15000 }).catch(() => {});
+    await expect(page.locator('#fillups-list .fillup-item')).toHaveCount(2);
+
+    const group = page.locator('#fillups-range');
+    await expect(group).toHaveAttribute('role', 'radiogroup');
+
+    // Records from 2020 are outside the current month: the summary must say so
+    // instead of the contradictory "no fill-ups recorded".
+    const monthBtn = page.locator('[data-fillup-range="month"]');
+    await expect(monthBtn).toHaveAttribute('aria-checked', 'true');
+    await expect(page.locator('#fillups-summary')).not.toContainText(/No fill-ups recorded|Aucun plein enregistré|暂无加油记录/);
+    await expect(page.locator('#fillups-summary')).toContainText(/Voir tout|View all|查看全部/);
+
+    const viewAll = page.locator('#fillups-viewall');
+    await expect(viewAll).toBeVisible();
+    await expect(viewAll).toContainText('2');
+    await viewAll.click();
+    await expect(page.locator('[data-fillup-range="all"]')).toHaveAttribute('aria-checked', 'true');
+    await expect(page.locator('#fillups-summary')).toContainText(/2 fill-ups|2 pleins|2 次/);
+    await expect(page.locator('#fillups-summary')).toContainText('$');
+
+    // Switching to a period that is still empty comes back to the guidance.
+    await page.locator('[data-fillup-range="year"]').click();
+    await expect(page.locator('[data-fillup-range="year"]')).toHaveAttribute('aria-checked', 'true');
+    await expect(page.locator('[data-fillup-range="month"]')).toHaveAttribute('aria-checked', 'false');
+    await expect(page.locator('#fillups-viewall')).toBeVisible();
+  });
+
+  test('the range preference persists across a reload and rides along the JSON backup', async ({ page }) => {
+    await page.goto(BASE_URL);
+    await seedFillups(page);
+    await page.reload();
+    await page.waitForLoadState('networkidle', { timeout: 15000 }).catch(() => {});
+    await page.waitForTimeout(1500);
+
+    await page.locator('[data-fillup-range="all"]').click();
+    const stored = await page.evaluate(() => localStorage.getItem('qc-gas-fillups-prefs'));
+    expect(JSON.parse(stored)).toEqual({ range: 'all' });
+
+    await page.reload();
+    await page.waitForLoadState('networkidle', { timeout: 15000 }).catch(() => {});
+    await page.waitForTimeout(1500);
+    await expect(page.locator('[data-fillup-range="all"]')).toHaveAttribute('aria-checked', 'true');
+
+    const backup = await page.evaluate(() => window.__qcGasBackup.buildBackup(new Date('2026-10-06T12:00:00Z')));
+    expect(backup.data.fillupPrefs).toEqual({ range: 'all' });
+
+    // An old v1 backup without the preference still imports and falls back to month.
+    const legacy = await page.evaluate(() => {
+      const b = window.__qcGasBackup;
+      const res = b.validateBackup(JSON.stringify({
+        v: 1,
+        app: 'essence-quebec',
+        exported_at: '2026-10-01T00:00:00.000Z',
+        data: { favorites: [], fillups: [], watch: [], tripPrefs: { consumption: 8, roundTrip: false }, listPrefs: { sort: 'price' } }
+      }));
+      return { ok: res.ok, fillupPrefs: res.data && res.data.fillupPrefs };
+    });
+    expect(legacy.ok).toBe(true);
+    expect(legacy.fillupPrefs).toEqual({ range: 'month' });
+  });
+
+  test('export button downloads the current period as a dated UTF-8 CSV named mes-pleins-*.csv', async ({ page }) => {
+    await page.goto(BASE_URL);
+    await seedFillups(page);
+    await page.reload();
+    await page.waitForLoadState('networkidle', { timeout: 15000 }).catch(() => {});
+    await page.waitForTimeout(1500);
+
+    await page.locator('[data-fillup-range="all"]').click();
+    const [download] = await Promise.all([
+      page.waitForEvent('download'),
+      page.locator('#fillups-export-csv').click()
+    ]);
+
+    expect(download.suggestedFilename()).toMatch(/^mes-pleins-\d{4}-\d{2}-\d{2}\.csv$/);
+    const text = readFileSync(await download.path(), 'utf8');
+    expect(text.charCodeAt(0)).toBe(0xFEFF);
+    expect(text).toContain('2020-01-05');
+    expect(text).toContain('180.0');
+    expect(text).toContain('30.00');
+    expect(text).toContain('"Station B; nord"');
+    // The current (non-empty) period exports its own records only.
+    await page.locator('[data-fillup-range="month"]').click();
+    const [monthDownload] = await Promise.all([
+      page.waitForEvent('download'),
+      page.locator('#fillups-export-csv').click()
+    ]);
+    const monthText = readFileSync(await monthDownload.path(), 'utf8');
+    expect(monthText).toContain('190.0');
+    expect(monthText).not.toContain('2020-01-05');
+  });
+
+  test('range buttons are 44px and keyboard reachable', async ({ page }) => {
+    await page.goto(BASE_URL);
+    await page.waitForTimeout(1500);
+
+    for (const range of ['month', 'year', 'all']) {
+      const box = await page.locator(`[data-fillup-range="${range}"]`).boundingBox();
+      expect(box.height).toBeGreaterThanOrEqual(44);
+    }
+    const exportBox = await page.locator('#fillups-export-csv').boundingBox();
+    expect(exportBox.height).toBeGreaterThanOrEqual(44);
+
+    await page.locator('[data-fillup-range="month"]').focus();
+    await page.keyboard.press('ArrowRight');
+    await expect(page.locator('[data-fillup-range="year"]')).toHaveAttribute('aria-checked', 'true');
+    await page.keyboard.press('Enter');
+    await expect(page.locator('[data-fillup-range="year"]')).toHaveAttribute('aria-checked', 'true');
+  });
+});
+
 test.describe('Price Watch (localStorage)', () => {
   test.beforeEach(async ({ page }) => {
     await page.goto(BASE_URL);
@@ -3007,13 +3236,16 @@ test.describe('Régie weekly retail margin', () => {
   });
 
   test('station card and detail panel show the regional margin line', async ({ page }) => {
+    // Every region carries the same value. The sidebar list is price-sorted and
+    // data/stations.json is refreshed daily, so which region the first station
+    // belongs to is not stable; the per-region lookup itself is covered by the
+    // pure 'region-name matching' test above.
     const regions = {};
     for (const feature of stationsFixture.features) {
       const region = feature.properties.region;
       if (!region) continue;
-      regions[region] = entry(region === 'Laurentides' ? 5.0 : 3.0);
+      regions[region] = entry(5.0);
     }
-    delete regions['Municipalités hors MRC \\ CMM'];
     const fixture = JSON.parse(JSON.stringify(regieFixture));
     fixture.fuels.regular.regions = regions;
     await page.route('**/data/regie-margin.json', route => route.fulfill({ json: fixture }));
@@ -3113,7 +3345,7 @@ test.describe('Mes données backup / restore (Issue #57)', () => {
     expect(backup.v).toBe(1);
     expect(backup.app).toBe('essence-quebec');
     expect(backup.exported_at).toBe('2026-10-03T12:00:00.000Z');
-    expect(Object.keys(backup.data).sort()).toEqual(['favorites', 'fillups', 'listPrefs', 'tripPrefs', 'watch']);
+    expect(Object.keys(backup.data).sort()).toEqual(['favorites', 'fillupPrefs', 'fillups', 'listPrefs', 'tripPrefs', 'watch']);
     expect(backup.data.favorites).toHaveLength(2);
     expect(backup.data.fillups).toHaveLength(2);
     expect(backup.data.fillups.map(f => f.priceCents).sort((a, b) => a - b)).toEqual([184.5, 189.9]);

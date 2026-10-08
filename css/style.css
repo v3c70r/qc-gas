@@ -2104,6 +2104,64 @@ select:focus-visible {
 }
 .fillups-section.open .fillups-panel { display: block; }
 
+.fillups-toolbar {
+  display: flex;
+  align-items: stretch;
+  gap: 6px;
+  margin-bottom: 8px;
+}
+.fillups-range {
+  display: flex;
+  flex: 1 1 auto;
+  min-width: 0;
+  background: #f1f5f9;
+  border: 1px solid #e2e8f0;
+  border-radius: 8px;
+  overflow: hidden;
+}
+.fillups-range-btn {
+  flex: 1 1 0;
+  min-width: 0;
+  min-height: 44px;
+  padding: 6px 4px;
+  border: none;
+  background: transparent;
+  color: #475569;
+  font-size: 11px;
+  font-weight: 600;
+  cursor: pointer;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.fillups-range-btn:hover { background: #e2e8f0; }
+.fillups-range-btn.active {
+  background: #fff;
+  color: #1a73e8;
+  font-weight: 700;
+  box-shadow: 0 1px 3px rgba(15, 23, 42, 0.08);
+}
+.fillups-range-btn:focus-visible,
+.fillups-export:focus-visible,
+.fillups-viewall:focus-visible {
+  outline: 2px solid #1a73e8;
+  outline-offset: -2px;
+}
+.fillups-export {
+  flex: 0 0 auto;
+  min-height: 44px;
+  padding: 6px 10px;
+  border: 1px solid #e2e8f0;
+  border-radius: 8px;
+  background: #fff;
+  color: #475569;
+  font-size: 11px;
+  font-weight: 600;
+  cursor: pointer;
+  white-space: nowrap;
+}
+.fillups-export:hover { border-color: #1a73e8; color: #1a73e8; background: #f0f7ff; }
+
 .fillups-summary {
   display: grid;
   grid-template-columns: repeat(3, 1fr);
@@ -2136,11 +2194,35 @@ select:focus-visible {
   font-variant-numeric: tabular-nums;
 }
 .fillups-stat.neg .fillups-stat-value { color: #dc2626; }
+.fillups-subline {
+  grid-column: 1 / -1;
+  font-size: 10px;
+  color: #94a3b8;
+  text-align: center;
+  font-variant-numeric: tabular-nums;
+}
 .fillups-empty {
   font-size: 12px;
   color: #94a3b8;
   text-align: center;
   padding: 6px 0;
+}
+.fillups-viewall {
+  display: block;
+  width: 100%;
+  min-height: 44px;
+  margin-top: 4px;
+  border: 1px solid #e2e8f0;
+  border-radius: 8px;
+  background: #fff;
+  color: #1a73e8;
+  font-size: 12px;
+  font-weight: 600;
+  cursor: pointer;
+}
+.fillups-viewall:hover { background: #f0f7ff; border-color: #1a73e8; }
+.fillups-empty {
+  grid-column: 1 / -1;
 }
 
 .fillups-list {

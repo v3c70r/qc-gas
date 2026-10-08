@@ -72,6 +72,14 @@
             </svg>
           </button>
           <div class="fillups-panel" id="fillups-panel">
+            <div class="fillups-toolbar">
+              <div class="fillups-range" id="fillups-range" role="radiogroup">
+                <button type="button" class="fillups-range-btn" role="radio" data-fillup-range="month" aria-checked="true" data-i18n="fillupRangeMonth">Ce mois</button>
+                <button type="button" class="fillups-range-btn" role="radio" data-fillup-range="year" aria-checked="false" data-i18n="fillupRangeYear">Cette année</button>
+                <button type="button" class="fillups-range-btn" role="radio" data-fillup-range="all" aria-checked="false" data-i18n="fillupRangeAll">Tout</button>
+              </div>
+              <button type="button" id="fillups-export-csv" class="fillups-export" data-i18n="fillupExportCsv">Exporter CSV</button>
+            </div>
             <div class="fillups-summary" id="fillups-summary"></div>
             <div class="fillups-list" id="fillups-list"></div>
           </div>
