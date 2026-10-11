@@ -1343,6 +1343,224 @@ test.describe('Price Watch (localStorage)', () => {
   });
 });
 
+// ── Watch resilience: coordinate fallback + no silent cleanup (Issue #65) ──
+// A watch entry keeps `lng`/`lat` (written by setWatch), so a station renamed
+// or re-addressed in the official snapshot (coordinates unchanged) still
+// matches. A station that truly disappears is KEPT and labelled, never
+// silently deleted.
+test.describe('Price watch survives renames (Issue #65)', () => {
+  const isoAgo = (ms) => new Date(Date.now() - ms).toISOString();
+
+  const station = stationsFixture.features.find(
+    (f) => f.properties.regular_price != null && Array.isArray(f.geometry?.coordinates)
+  );
+  const stationIdOf = (f) => [f.properties.name, f.properties.address, f.properties.postal_code]
+    .map((v) => (v ?? '').trim()).join('|');
+  const STATION_ID = stationIdOf(station);
+  const [LNG, LAT] = station.geometry.coordinates;
+  const MISSING_RE = /Station introuvable|Station not found|找不到该站/;
+
+  // Snapshot with every regular price forced to `regular`, plus optional
+  // rename of the watched station (coordinates untouched), removal by name,
+  // or an unrelated station moved 1e-4 off the watched coordinate.
+  function snapshotBody({ generatedAt, regular = 175.9, rename = null, dropName = null, shiftOther = false } = {}) {
+    const clone = JSON.parse(JSON.stringify(stationsFixture));
+    clone.metadata = { ...clone.metadata, generated_at: generatedAt };
+    clone.features.forEach((f) => {
+      if (typeof f.properties.regular_price === 'number') f.properties.regular_price = regular;
+    });
+    if (rename) {
+      const f = clone.features.find((x) => x.properties.name === rename.from);
+      if (f) {
+        f.properties.name = rename.to;
+        if (rename.address) f.properties.address = rename.address;
+      }
+    }
+    if (dropName) clone.features = clone.features.filter((f) => f.properties.name !== dropName);
+    if (shiftOther) {
+      const other = clone.features.find((f) => f.geometry && f.geometry.coordinates[0] !== LNG);
+      if (other) other.geometry.coordinates = [LNG + 0.0001, LAT];
+    }
+    return JSON.stringify(clone);
+  }
+
+  function serveSnapshot(page, getBody) {
+    return page.route('**/data/stations.json', (route) =>
+      route.fulfill({ status: 200, contentType: 'application/json', body: getBody() }));
+  }
+
+  async function waitForStations(page) {
+    await page.waitForFunction(
+      () => window.__qcGasMap && window.__qcGasMap.getStationFeatureCount() > 0,
+      null,
+      { timeout: 15000 }
+    );
+  }
+
+  const baseEntry = (overrides = {}) => ({
+    id: STATION_ID,
+    name: station.properties.name,
+    brand: station.properties.brand,
+    address: station.properties.address,
+    region: station.properties.region,
+    fuel: 'regular',
+    thresholdCents: 170,
+    lastSeenPriceCents: 180,
+    lastSeenAt: '2026-09-01T10:00:00.000Z',
+    lng: LNG,
+    lat: LAT,
+    ...overrides
+  });
+
+  async function seedWatch(page, entry) {
+    await page.goto(BASE_URL);
+    await page.evaluate((e) => {
+      localStorage.setItem('qc-gas-watch', JSON.stringify([e]));
+      localStorage.setItem('language', 'en-CA');
+    }, entry);
+    await page.reload();
+    await page.waitForLoadState('networkidle', { timeout: 15000 }).catch(() => {});
+  }
+
+  test('a renamed station is relocated by coordinates and keeps its watch', async ({ page }) => {
+    const NEW_NAME = 'Station Renommee';
+    const NEW_ADDRESS = '999 rue Neuve, Testville';
+    const body = snapshotBody({
+      generatedAt: isoAgo(20 * 60 * 1000),
+      regular: 175.9,
+      rename: { from: station.properties.name, to: NEW_NAME, address: NEW_ADDRESS }
+    });
+    await serveSnapshot(page, () => body);
+    await seedWatch(page, baseEntry());
+    await waitForStations(page);
+
+    const row = page.locator('#watch-list .watch-item');
+    await expect(row).toHaveCount(1);
+    await expect(row.first()).toBeVisible();
+    // Real observed price is displayed for the renamed station …
+    await expect(row.first()).toContainText('175.9¢');
+    // … and the true change since the stored baseline (180 → 175.9) is reported.
+    await expect(row.first()).toContainText(/[-−]4\.1¢/);
+
+    const entry = await page.evaluate(() => window.__qcGasWatch.getWatchEntries()[0]);
+    expect(entry.id).toContain(NEW_NAME);
+    expect(entry.thresholdCents).toBe(170);
+    // The stored label is refreshed to the official new name.
+    expect(entry.name).toBe(NEW_NAME);
+    // #31: the baseline advances to the newly observed snapshot price.
+    expect(entry.lastSeenPriceCents).toBe(175.9);
+    expect(entry.lastSeenAt).toBeTruthy();
+
+    // The detail panel queries by stationId(feature), i.e. the NEW text key.
+    // After a rename the entry must answer to it too, or the panel would show
+    // "not watching" and re-adding would create a duplicate row.
+    const panel = await page.evaluate((newName) => {
+      const f = window.__qcGasMap.getStationFeatures().find((x) => x.properties.name === newName);
+      const found = window.__qcGasWatch.getWatchEntry(f);
+      return {
+        found: !!found,
+        isWatching: window.__qcGasWatch.isWatching(f),
+        newId: [f.properties.name, f.properties.address, f.properties.postal_code]
+          .map((v) => (v ?? '').trim()).join('|'),
+        entryId: found ? found.id : null,
+        count: window.__qcGasWatch.getWatchEntries().length
+      };
+    }, NEW_NAME);
+    expect(panel.found).toBe(true);
+    expect(panel.isWatching).toBe(true);
+    expect(panel.entryId).toBe(panel.newId);
+    expect(entry.id).toBe(panel.newId);
+    expect(panel.count).toBe(1);
+
+    // Public behavior unchanged: the text-key lookup still resolves live ids.
+    const byTextKey = await page.evaluate(() => {
+      const f = window.__qcGasMap.getStationFeatures()[0];
+      const id = [f.properties.name, f.properties.address, f.properties.postal_code]
+        .map((v) => (v ?? '').trim()).join('|');
+      return !!window.__qcGasWatch.findFeature(id, { type: 'FeatureCollection', features: window.__qcGasMap.getStationFeatures() });
+    });
+    expect(byTextKey).toBe(true);
+  });
+
+  test('a station gone from the snapshot is kept, labelled missing and removable', async ({ page }) => {
+    const body = snapshotBody({
+      generatedAt: isoAgo(20 * 60 * 1000),
+      regular: 175.9,
+      dropName: station.properties.name
+    });
+    await serveSnapshot(page, () => body);
+    await seedWatch(page, baseEntry());
+    await waitForStations(page);
+
+    const row = page.locator('#watch-list .watch-item');
+    await expect(row).toHaveCount(1);
+    await expect(row.first()).toContainText(MISSING_RE);
+    // A missing row is never counted as triggered and never hides the section.
+    await expect(page.locator('#watch-count')).toHaveText('0');
+    await expect(page.locator('#watch-section')).toBeVisible();
+
+    // Regression: the entry is persisted instead of being silently auto-cleaned.
+    await page.reload();
+    await page.waitForLoadState('networkidle', { timeout: 15000 }).catch(() => {});
+    await waitForStations(page);
+    const stored = await page.evaluate(() => JSON.parse(localStorage.getItem('qc-gas-watch') || '[]'));
+    expect(stored).toHaveLength(1);
+    expect(stored[0].id).toBe(STATION_ID);
+    expect(stored[0].thresholdCents).toBe(170);
+    await expect(page.locator('#watch-list .watch-item')).toHaveCount(1);
+
+    // The user can still remove it explicitly.
+    await page.locator('#watch-list .watch-remove').first().click();
+    await expect(page.locator('#watch-list .watch-item')).toHaveCount(0);
+    await expect(page.locator('#watch-section')).toBeHidden();
+    const after = await page.evaluate(() => JSON.parse(localStorage.getItem('qc-gas-watch') || '[]'));
+    expect(after).toHaveLength(0);
+  });
+
+  test('a temporarily missing station auto-recovers on the next snapshot', async ({ page }) => {
+    let body = snapshotBody({
+      generatedAt: isoAgo(30 * 60 * 1000),
+      regular: 175.9,
+      dropName: station.properties.name
+    });
+    await serveSnapshot(page, () => body);
+    await seedWatch(page, baseEntry());
+    await waitForStations(page);
+    await expect(page.locator('#watch-list .watch-item').first()).toContainText(MISSING_RE);
+
+    // The station is back at the same coordinates, even under a new name.
+    body = snapshotBody({
+      generatedAt: isoAgo(10 * 60 * 1000),
+      regular: 165.9,
+      rename: { from: station.properties.name, to: 'Station Retrouvee' }
+    });
+    expect(await page.evaluate(() => window.__qcGasFreshness.refreshNow())).toBe(true);
+
+    const row = page.locator('#watch-list .watch-item').first();
+    await expect(row).toContainText('165.9¢');
+    await expect(row).not.toContainText(MISSING_RE);
+    // Baseline was 180; the real observed change is −14.1¢ (no fabricated number).
+    await expect(row).toContainText(/[-−]14\.1¢/);
+  });
+
+  test('coordinate fallback never adopts a nearby but different station', async ({ page }) => {
+    const body = snapshotBody({
+      generatedAt: isoAgo(20 * 60 * 1000),
+      regular: 175.9,
+      dropName: station.properties.name,
+      shiftOther: true
+    });
+    await serveSnapshot(page, () => body);
+    await seedWatch(page, baseEntry());
+    await waitForStations(page);
+
+    // No station shares the exact 5-decimal coordinate key → still missing.
+    await expect(page.locator('#watch-list .watch-item').first()).toContainText(MISSING_RE);
+    const entry = await page.evaluate(() => window.__qcGasWatch.getWatchEntries()[0]);
+    expect(entry.lastSeenPriceCents).toBe(180);
+  });
+});
+
 test.describe('Same-day regional benchmark', () => {
   test('computes median, gap, percentile and 50 L saving deterministically', async ({ page }) => {
     await page.goto(BASE_URL);

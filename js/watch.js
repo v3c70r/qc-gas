@@ -8,8 +8,9 @@
 //   • Only real observed prices are used (the current stations snapshot).
 //   • The sidebar is explicitly labelled "since last viewed <date>" — it never
 //     implies real-time monitoring.
-//   • Stations that disappear from the snapshot are auto-cleaned; missing fuel
-//     prices degrade to "price unavailable" instead of a fabricated number.
+//   • Stations that disappear from the snapshot are kept and labelled
+//     "missing" (never silently deleted); missing fuel prices degrade to
+//     "price unavailable" instead of a fabricated number.
 
 import { stationId } from './favorites.js';
 import { t, tf, translations, getLanguage, onLanguageChange } from './i18n.js';
@@ -109,6 +110,37 @@ export function computeDelta(entry, currentPriceCents) {
 export function findFeature(id, stations = currentStations) {
   if (!id || !stations || !Array.isArray(stations.features)) return null;
   return stations.features.find(f => stationId(f) === id) || null;
+}
+
+// 5-decimal coordinate key, matching the convention already used by
+// js/history.js (`${lng.toFixed(5)},${lat.toFixed(5)}`). Module-private on
+// purpose: unifying this helper across modules is out of scope for #65.
+function coordKey(lng, lat) {
+  const x = Number(lng);
+  const y = Number(lat);
+  if (!Number.isFinite(x) || !Number.isFinite(y)) return null;
+  return `${x.toFixed(5)},${y.toFixed(5)}`;
+}
+
+function featureCoordKey(feature) {
+  const c = feature?.geometry?.coordinates;
+  if (!c || c.length < 2) return null;
+  return coordKey(c[0], c[1]);
+}
+
+/**
+ * Resolve the live Feature for a watch entry: first by the stored text id
+ * (backward compatible with ids written before coordinates were kept), then by
+ * the entry's own `lng`/`lat` (already persisted by setWatch, so no migration).
+ * Returns null when the station is truly absent from the snapshot.
+ */
+function resolveWatchFeature(entry, stations = currentStations) {
+  if (!entry || !stations || !Array.isArray(stations.features)) return null;
+  const byId = findFeature(entry.id, stations);
+  if (byId) return byId;
+  const key = coordKey(entry.lng, entry.lat);
+  if (!key) return null;
+  return stations.features.find(f => featureCoordKey(f) === key) || null;
 }
 
 function currentPrice(feature, fuel) {
@@ -227,13 +259,23 @@ function refreshEntryFromFeature(entry, feature) {
   entry.region = props.region || entry.region;
   entry.lng = feature?.geometry?.coordinates?.[0] ?? entry.lng;
   entry.lat = feature?.geometry?.coordinates?.[1] ?? entry.lat;
+  // The station may have been renamed/re-addressed since the watch was saved
+  // (the fallback matched it by coordinates). Adopt the new text key so the
+  // detail panel's stationId-based lookups keep hitting the same entry instead
+  // of reporting "not watching" and spawning a duplicate on re-add. Existing
+  // localized names here are already the official ones, so nothing is invented.
+  const nextId = stationId(feature);
+  if (nextId && nextId !== entry.id) entry.id = nextId;
 }
 
 /**
  * Evaluate every watch entry against the real current snapshot once after
- * stations load. Missing stations are auto-cleaned. For available prices this
- * records the new `lastSeen*` baseline AFTER computing the delta/status from
- * the previous visit so the sidebar shows the true "since last viewed" change.
+ * stations load. A station that is not found under either its text id or its
+ * coordinates is KEPT and reported as 'missing' (never silently deleted), so a
+ * temporary upstream gap cannot destroy a user's watch. For available prices
+ * this records the new `lastSeen*` baseline AFTER computing the delta/status
+ * from the previous visit so the sidebar shows the true "since last viewed"
+ * change.
  */
 export function evaluateWatch(stations = currentStations) {
   if (!stations || !Array.isArray(stations.features)) return [];
@@ -243,8 +285,22 @@ export function evaluateWatch(stations = currentStations) {
   const kept = [];
 
   for (const entry of watchEntries) {
-    const feature = findFeature(entry.id, stations);
-    if (!feature) continue; // station disappeared → auto-clean
+    const feature = resolveWatchFeature(entry, stations);
+    if (!feature) {
+      // Station truly gone from the official snapshot: keep the entry (and its
+      // threshold/baseline) and surface it instead of auto-cleaning it.
+      results.push({
+        entry,
+        feature: null,
+        price: null,
+        status: 'missing',
+        delta: null,
+        lastSeenAt: entry.lastSeenAt,
+        lastSeenPriceCents: entry.lastSeenPriceCents
+      });
+      kept.push(entry);
+      continue;
+    }
 
     const price = currentPrice(feature, entry.fuel);
     const status = computeWatchStatus(entry, price);
@@ -265,6 +321,11 @@ export function evaluateWatch(stations = currentStations) {
       entry.lastSeenAt = snapshotAt;
     }
     refreshEntryFromFeature(entry, feature);
+    // A rename can move this entry onto the id of an already-kept entry (e.g.
+    // two snapshots of the same physical station); keep exactly one watch per
+    // station so the sidebar never shows duplicate rows.
+    const dup = kept.findIndex(e => e.id === entry.id);
+    if (dup >= 0) kept.splice(dup, 1);
     kept.push(entry);
   }
 
@@ -293,20 +354,29 @@ function watchItemHTML(result) {
   const { entry, price, status, delta, lastSeenAt } = result;
   const dict = translations[getLanguage()] || {};
   const fuelText = dict[entry.fuel] || entry.fuel;
-  const priceText = price != null ? `${price.toFixed(1)}¢` : t('watchPriceUnavailable');
-  const thresholdText = entry.thresholdCents != null ? `≤ ${entry.thresholdCents.toFixed(1)}¢` : t('watchTrackOnly');
-  const lastSeenText = formatWatchDate(lastSeenAt);
-  const sinceText = lastSeenText ? tf('watchSinceLastSeen', { date: lastSeenText }) : '';
+  const missing = status === 'missing';
   const triggered = status === 'triggered';
   const name = entry.name || entry.brand || entry.id;
+  const lastSeenText = formatWatchDate(lastSeenAt);
+  const sinceText = lastSeenText ? tf('watchSinceLastSeen', { date: lastSeenText }) : '';
+
+  const metaText = missing
+    ? t('watchStationMissing')
+    : `${escapeHtml(fuelText)} · ${price != null ? price.toFixed(1) + '¢' : escapeHtml(t('watchPriceUnavailable'))}` +
+      (entry.thresholdCents != null ? ' · ' + escapeHtml(`≤ ${entry.thresholdCents.toFixed(1)}¢`) : '');
+
+  // A missing station has no live feature to locate, so the row is a plain
+  // (non-interactive) element; the remove button stays the only control.
+  const openInner = `
+        <span class="watch-item-name">${escapeHtml(name)}</span>
+        <span class="watch-item-meta">${metaText}</span>
+        ${sinceText ? `<span class="watch-item-delta">${escapeHtml(sinceText)}${missing ? '' : ` <b>${deltaText(delta)}</b>`}</span>` : ''}`;
 
   return `
-    <div class="watch-item">
-      <button class="watch-item-main" data-watch-open="${escapeHtml(entry.id)}" aria-label="${escapeHtml(tf('watchLocate', { name }))}">
-        <span class="watch-item-name">${escapeHtml(name)}</span>
-        <span class="watch-item-meta">${escapeHtml(fuelText)} · ${priceText}${entry.thresholdCents != null ? ' · ' + escapeHtml(thresholdText) : ''}</span>
-        ${sinceText ? `<span class="watch-item-delta">${escapeHtml(sinceText)} <b>${deltaText(delta)}</b></span>` : ''}
-      </button>
+    <div class="watch-item${missing ? ' watch-item-missing' : ''}">
+      ${missing
+        ? `<div class="watch-item-main">${openInner}</div>`
+        : `<button class="watch-item-main" data-watch-open="${escapeHtml(entry.id)}" aria-label="${escapeHtml(tf('watchLocate', { name }))}">${openInner}</button>`}
       <div class="watch-item-side">
         ${triggered ? `<span class="watch-trigger-badge">${t('watchTriggered')}</span>` : ''}
         <button class="watch-remove" data-watch-remove="${escapeHtml(entry.id)}" aria-label="${escapeHtml(tf('watchRemoveAria', { name }))}" aria-pressed="true" title="${escapeHtml(tf('watchRemoveAria', { name }))}">🔔</button>
@@ -318,15 +388,14 @@ function buildResults(stations = currentStations) {
   if (!stations || !Array.isArray(stations.features)) return [];
   const results = [];
   for (const entry of watchEntries) {
-    const feature = findFeature(entry.id, stations);
-    if (!feature) continue;
-    const price = currentPrice(feature, entry.fuel);
+    const feature = resolveWatchFeature(entry, stations);
+    const price = feature ? currentPrice(feature, entry.fuel) : null;
     results.push({
       entry,
-      feature,
+      feature: feature || null,
       price,
-      status: computeWatchStatus(entry, price),
-      delta: computeDelta(entry, price),
+      status: feature ? computeWatchStatus(entry, price) : 'missing',
+      delta: feature ? computeDelta(entry, price) : null,
       lastSeenAt: entry.lastSeenAt,
       lastSeenPriceCents: entry.lastSeenPriceCents
     });
@@ -367,7 +436,12 @@ function wireSidebarEvents() {
   listEl.addEventListener('click', (e) => {
     const openBtn = e.target.closest('[data-watch-open]');
     if (openBtn) {
-      const feature = findFeature(openBtn.dataset.watchOpen, currentStations);
+      const id = openBtn.dataset.watchOpen;
+      const entry = watchEntries.find(x => x.id === id);
+      // Same resolution as evaluation: a renamed station is still locatable.
+      const feature = entry
+        ? resolveWatchFeature(entry, currentStations)
+        : findFeature(id, currentStations);
       if (feature) openWatchStation(feature);
       return;
     }
@@ -410,6 +484,7 @@ if (typeof window !== 'undefined') {
     computeDelta,
     normalizeThreshold,
     findFeature,
+    resolveWatchFeature,
     setWatch,
     removeWatch,
     removeWatchById,

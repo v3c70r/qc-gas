@@ -2622,6 +2622,18 @@ select:focus-visible {
   max-width: 100%;
 }
 .watch-item-delta b { font-variant-numeric: tabular-nums; }
+/* A station absent from the official snapshot: kept, but visually flagged. */
+.watch-item-missing {
+  background: #fffbeb;
+  border-color: #fde68a;
+}
+.watch-item-missing .watch-item-main,
+.watch-item-missing .watch-item-main:hover {
+  background: #fffbeb;
+  cursor: default;
+}
+.watch-item-missing .watch-item-name { color: #92400e; }
+.watch-item-missing .watch-item-meta { color: #b45309; }
 .watch-item-side {
   display: flex;
   flex-direction: column;
