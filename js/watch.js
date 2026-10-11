@@ -259,6 +259,13 @@ function refreshEntryFromFeature(entry, feature) {
   entry.region = props.region || entry.region;
   entry.lng = feature?.geometry?.coordinates?.[0] ?? entry.lng;
   entry.lat = feature?.geometry?.coordinates?.[1] ?? entry.lat;
+  // The station may have been renamed/re-addressed since the watch was saved
+  // (the fallback matched it by coordinates). Adopt the new text key so the
+  // detail panel's stationId-based lookups keep hitting the same entry instead
+  // of reporting "not watching" and spawning a duplicate on re-add. Existing
+  // localized names here are already the official ones, so nothing is invented.
+  const nextId = stationId(feature);
+  if (nextId && nextId !== entry.id) entry.id = nextId;
 }
 
 /**
@@ -314,6 +321,11 @@ export function evaluateWatch(stations = currentStations) {
       entry.lastSeenAt = snapshotAt;
     }
     refreshEntryFromFeature(entry, feature);
+    // A rename can move this entry onto the id of an already-kept entry (e.g.
+    // two snapshots of the same physical station); keep exactly one watch per
+    // station so the sidebar never shows duplicate rows.
+    const dup = kept.findIndex(e => e.id === entry.id);
+    if (dup >= 0) kept.splice(dup, 1);
     kept.push(entry);
   }
 

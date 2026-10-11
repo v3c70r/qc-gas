@@ -1443,13 +1443,34 @@ test.describe('Price watch survives renames (Issue #65)', () => {
     await expect(row.first()).toContainText(/[-−]4\.1¢/);
 
     const entry = await page.evaluate(() => window.__qcGasWatch.getWatchEntries()[0]);
-    expect(entry.id).toBe(STATION_ID);
+    expect(entry.id).toContain(NEW_NAME);
     expect(entry.thresholdCents).toBe(170);
     // The stored label is refreshed to the official new name.
     expect(entry.name).toBe(NEW_NAME);
     // #31: the baseline advances to the newly observed snapshot price.
     expect(entry.lastSeenPriceCents).toBe(175.9);
     expect(entry.lastSeenAt).toBeTruthy();
+
+    // The detail panel queries by stationId(feature), i.e. the NEW text key.
+    // After a rename the entry must answer to it too, or the panel would show
+    // "not watching" and re-adding would create a duplicate row.
+    const panel = await page.evaluate((newName) => {
+      const f = window.__qcGasMap.getStationFeatures().find((x) => x.properties.name === newName);
+      const found = window.__qcGasWatch.getWatchEntry(f);
+      return {
+        found: !!found,
+        isWatching: window.__qcGasWatch.isWatching(f),
+        newId: [f.properties.name, f.properties.address, f.properties.postal_code]
+          .map((v) => (v ?? '').trim()).join('|'),
+        entryId: found ? found.id : null,
+        count: window.__qcGasWatch.getWatchEntries().length
+      };
+    }, NEW_NAME);
+    expect(panel.found).toBe(true);
+    expect(panel.isWatching).toBe(true);
+    expect(panel.entryId).toBe(panel.newId);
+    expect(entry.id).toBe(panel.newId);
+    expect(panel.count).toBe(1);
 
     // Public behavior unchanged: the text-key lookup still resolves live ids.
     const byTextKey = await page.evaluate(() => {
