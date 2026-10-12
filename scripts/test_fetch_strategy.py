@@ -15,11 +15,16 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 from fetch_strategy import (  # noqa: E402
+    BUDGET_ENV_VAR,
+    DEFAULT_DAILY_BUDGET,
+    DEFAULT_MAX_AGE_MINUTES,
+    MAX_AGE_ENV_VAR,
     SLOTS_PER_DAY,
     SLOTS_PER_HOUR,
     diff_regions,
     diff_stations,
     due_decision,
+    env_int,
     hour_weights,
     observed_from_stations,
     plan_slots,
@@ -182,18 +187,29 @@ class PlanSlotsTest(unittest.TestCase):
         self.assertTrue(set(in_five).issubset({0, 1, 2, 3}))
         self.assertIn(0, in_five)  # the coarse mark always comes first
 
-    def test_default_budget_keeps_the_hourly_floor_and_still_concentrates(self):
-        from fetch_strategy import DEFAULT_DAILY_BUDGET
+    def test_default_budget_covers_every_quarter_hour_slot(self):
+        """At the default budget (96) the plan uses every wake-up (issue #67)."""
         weights = [1 / 24] * 24
-        weights[4], weights[5], weights[11] = 0.5, 0.3, 0.2  # clear learned peak
+        weights[4], weights[5], weights[11] = 0.5, 0.3, 0.2  # a clear learned peak
         total = sum(weights)
         weights = [w / total for w in weights]
         slots = plan_slots(weights, budget=DEFAULT_DAILY_BUDGET, min_per_hour=1,
                            max_per_hour=4)
+        self.assertEqual(len(slots), DEFAULT_DAILY_BUDGET)
+        # Budget == capacity, so the learned weights no longer prune anything:
+        # every quarter-hour slot of the day is polled.
+        self.assertEqual(slots, list(range(SLOTS_PER_DAY)))
+
+    def test_below_the_default_budget_the_learned_weights_still_prune(self):
+        weights = [1 / 24] * 24
+        weights[4], weights[5], weights[11] = 0.5, 0.3, 0.2  # clear learned peak
+        total = sum(weights)
+        weights = [w / total for w in weights]
+        slots = plan_slots(weights, budget=48, min_per_hour=1, max_per_hour=4)
         counts = [0] * 24
         for s in slots:
             counts[s // SLOTS_PER_HOUR] += 1
-        self.assertEqual(len(slots), DEFAULT_DAILY_BUDGET)
+        self.assertEqual(len(slots), 48)
         # Hourly freshness floor: no hour is ever starved.
         self.assertTrue(all(c >= 1 for c in counts))
         # ... and the extra budget lands on the learned peak hours.
@@ -203,6 +219,45 @@ class PlanSlotsTest(unittest.TestCase):
     def test_budget_above_capacity_is_clamped(self):
         slots = plan_slots([1 / 24] * 24, budget=10_000, min_per_hour=1, max_per_hour=4)
         self.assertEqual(len(slots), SLOTS_PER_DAY)
+
+
+class FetchDefaultsTest(unittest.TestCase):
+    """Issue #67: the fetch rhythm follows the upstream snapshot cadence."""
+
+    def test_default_budget_is_one_poll_per_quarter_hour_slot(self):
+        # Upstream regenerates its snapshot every 5 minutes on the quarter-hour
+        # grid and the workflow wakes every 15 minutes, so the whole day is 96
+        # slots and the default budget spends exactly one request per slot.
+        self.assertEqual(SLOTS_PER_DAY, 96)
+        self.assertEqual(DEFAULT_DAILY_BUDGET, SLOTS_PER_DAY)
+
+    def test_default_freshness_net_is_90_minutes(self):
+        self.assertEqual(DEFAULT_MAX_AGE_MINUTES, 90)
+        # Two hours without a fetch is stale *by default* now (it was not at 3h).
+        due, reason = due_decision(at(3, 7), ['00:00'], at(1, 0))
+        self.assertTrue(due)
+        self.assertIn('stale', reason)
+
+    def test_freshness_threshold_is_used_verbatim(self):
+        due, _ = due_decision(at(3, 7), ['00:00'], at(1, 0), max_age_minutes=180)
+        self.assertFalse(due)
+
+
+class EnvIntTest(unittest.TestCase):
+    """One env override helper shared by both CLIs (issue #67)."""
+
+    def test_env_var_names_are_stable(self):
+        self.assertEqual(BUDGET_ENV_VAR, 'FETCH_DAILY_BUDGET')
+        self.assertEqual(MAX_AGE_ENV_VAR, 'FETCH_MAX_AGE_MINUTES')
+
+    def test_reads_a_positive_integer_override(self):
+        self.assertEqual(env_int('X', 96, environ={'X': '12'}), 12)
+
+    def test_falls_back_on_missing_or_invalid_values(self):
+        self.assertEqual(env_int('X', 96, environ={}), 96)
+        self.assertEqual(env_int('X', 96, environ={'X': 'nonsense'}), 96)
+        self.assertEqual(env_int('X', 96, environ={'X': '0'}), 96)
+        self.assertEqual(env_int('X', 96, environ={'X': '-4'}), 96)
 
 
 class ObservedSnapshotTest(unittest.TestCase):

@@ -19,7 +19,6 @@ the system falls back to the research-seeded prior until they are rebuilt.
 
 import argparse
 import json
-import os
 import sys
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
@@ -27,9 +26,11 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 from fetch_strategy import (  # noqa: E402
+    BUDGET_ENV_VAR,
     DEFAULT_DAILY_BUDGET,
     SLOTS_PER_HOUR,
     diff_stations,
+    env_int,
     hour_weights,
     observed_from_stations,
     parse_iso,
@@ -45,7 +46,6 @@ from fetch_strategy import (  # noqa: E402
 
 ROOT = Path(__file__).resolve().parent.parent
 DEFAULT_DATA_DIR = ROOT / 'data'
-DEFAULT_BUDGET = int(os.environ.get('FETCH_DAILY_BUDGET', DEFAULT_DAILY_BUDGET))
 DEFAULT_MIN_PER_HOUR = 1
 DEFAULT_MAX_PER_HOUR = SLOTS_PER_HOUR
 PRIOR_ID = 'research-2026-09'
@@ -157,8 +157,10 @@ def main(argv=None):
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--data-dir', default=str(DEFAULT_DATA_DIR))
     parser.add_argument('--now', help='UTC ISO timestamp override (tests/logs)')
-    parser.add_argument('--budget', type=int, default=DEFAULT_BUDGET,
-                        help='maximum upstream downloads per day')
+    parser.add_argument('--budget', type=int,
+                        default=env_int(BUDGET_ENV_VAR, DEFAULT_DAILY_BUDGET),
+                        help='maximum upstream downloads per day '
+                             f'(env {BUDGET_ENV_VAR})')
     parser.add_argument('--min-per-hour', type=int, default=DEFAULT_MIN_PER_HOUR)
     parser.add_argument('--max-per-hour', type=int, default=DEFAULT_MAX_PER_HOUR)
     args = parser.parse_args(argv)
