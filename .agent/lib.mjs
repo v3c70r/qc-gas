@@ -4,7 +4,7 @@
 // Keeping `detectBase()` and `resolvePi()` in ONE place avoids the two drifting
 // apart (lessons #1 PATH pollution, #14 missing origin/HEAD).
 import { execFileSync } from 'node:child_process';
-import { existsSync } from 'node:fs';
+import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 
@@ -99,6 +99,68 @@ export function prepareImplementerBranch({ branch, base, cwd } = {}) {
 // so state.json could not remember that any fix round happened (lesson #18).
 export function mergeIssueState(prev, patch) {
   return { ...(prev || {}), ...patch };
+}
+
+// ── dependency unblock semantics (issue #75) ────────────────────────
+// A blocked issue whose dependencies just closed has NO PR yet. The old code
+// wrote `status: 'pr_open'` at unblock time — a lie that only worked because
+// the next tick happened to hit the `status === 'pr_open' && !pr` special
+// case. Deleting the entry says the honest thing: "never started, ready to
+// implement". Pure so it can be asserted without gh/network.
+export function clearBlockedState(state = {}, issueNumber) {
+  if (state[issueNumber]?.status !== 'blocked') return { changed: false, state };
+  const next = { ...state };
+  delete next[issueNumber];
+  return { changed: true, state: next };
+}
+
+// ── single-instance lock (issue #75) ────────────────────────────────
+// Two `pipeline.mjs watch` processes share ONE working tree: concurrent
+// checkout/reset/commit corrupt each other's implement branch. A PID file turns
+// that race into an immediate refusal. A stale file left by SIGKILL must NOT
+// lock the user out forever — a dead PID is taken over silently.
+export function isPidAlive(pid, kill = process.kill) {
+  const n = Number(pid);
+  if (!Number.isInteger(n) || n <= 0) return false;
+  try {
+    kill(n, 0);
+    return true;
+  } catch (e) {
+    // EPERM = process exists but belongs to another user → still alive.
+    return e?.code === 'EPERM';
+  }
+}
+
+export function readLockPid(file) {
+  try {
+    const n = parseInt(readFileSync(file, 'utf8').trim(), 10);
+    return Number.isInteger(n) && n > 0 ? n : null;
+  } catch {
+    return null;
+  }
+}
+
+// Try to become THE watcher. Returns { acquired, pid, tookOver }.
+// `pid`/`kill` are injectable so the alive/stale branches are unit-testable.
+export function acquireWatchLock(file, { pid = process.pid, kill = process.kill } = {}) {
+  const existing = readLockPid(file);
+  if (existing && isPidAlive(existing, kill)) {
+    return { acquired: false, pid: existing, tookOver: false };
+  }
+  mkdirSync(path.dirname(file), { recursive: true });
+  writeFileSync(file, `${pid}\n`);
+  return { acquired: true, pid, tookOver: Boolean(existing) };
+}
+
+// Remove the lock ONLY if we still own it (never delete another instance's).
+export function releaseWatchLock(file, { pid = process.pid } = {}) {
+  try {
+    if (readLockPid(file) !== pid) return false;
+    rmSync(file, { force: true });
+    return true;
+  } catch {
+    return false;
+  }
 }
 
 // default branch auto-detected (main/master); override with AGENT_BASE.
