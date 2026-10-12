@@ -49,6 +49,96 @@ One upstream request per admitted run is unchanged (`download_data.py` does not
 retry-storm; the `User-Agent` is untouched), and the budget can never exceed the
 wake-up cadence.
 
+## 本机高频探针（临时/学习用）
+
+Actions 的 `schedule` 被 GitHub 严重节流（实测 37 次间隔：中位数 293 分、最大
+538 分），所以**闸门预算再高也可能几小时不抓取**。为了给「必要间隔」的评估
+（#76）提供 ground truth，仓库里有一个**临时/学习用**的本机探针：
+
+- `scripts/local_fetch_loop.sh`（tmux 常驻）：每 ~15 分钟跑一遍与
+  `update-data.yml` 相同的数据链路 —— `download_data.py` →
+  `process_data.py` → `update_profile.py` → `append_history.py` →
+  `metrics.py` —— 再跑一次**只报不堵**的 `check_data_size.py`，然后复用工作流
+  **同一组** brotli 文件（`stations` / `stats` / `history` / `regie-margin` /
+  `metrics` + `data/history/*.json`，不用通配，以免为 `fetch-log` /
+  `fetch-state` / `fetch-schedule` / `update-profile` 生成永不使用的 `.br`），
+  最后以 `Update gas prices data (local probe) [skip ci]` 提交并推送。
+- **与 Actions 的差异**：不调用 `fetch_bulletin.py`（每周 PDF 周报，与高频探测
+  无关）与 `should_fetch.py`；`check_data_size.py` 只记录警告，不会阻断探针
+  （工作流里它是阻断提交的）。除这些之外二者共用同一批脚本，没有第二套抓取实现。
+- **周期节奏**：计时从周期开始算，`sleep` 只补足 `PROBE_INTERVAL_SECONDS`
+  的**剩余**时间（`work=…s sleep=…s`）；固定 `sleep 900` 会把观测间隔拉成
+  `900 s + 链路耗时`，从而歪偏 #76 的评估。
+- 它**故意绕过** `scripts/should_fetch.py`（本机这一轮要的是无条件的高频采样，
+  不是闸门决策），也**不复制任何抓取逻辑**：所有上游请求仍然只由
+  `download_data.py` 发出；`should_fetch.py` 的判定逻辑与 Actions 侧行为**不变**。
+- 每次完成的周期会把时间戳追加到 `data/fetch-log.json`（时间戳数组，保留最近
+  2000 条 ≈ 15 天），并记录按天的 `ok` / `failed` / `retries` 计数与
+  `summary_sent`（当日是否已发健康汇报）。这些文件随 `data/` 一起提交，所以
+  间隔分布是**真实记录**，可被 #76 直接计算（p50/p90），不需要人工估算。
+- 探针每天（本地日期）最多发一条健康摘要到跟踪 issue #78
+  （`gh issue comment`，字段见下）；发送失败只写日志，不影响抓取循环。
+- 运行日志写在 `.agent/probe.log`（`.gitignore` 已忽略 `.agent/**/*.log`）。
+
+### 启停方式（固定会话名 `probe`）
+
+```bash
+# 启动（在 master 工作副本上；<repo> 换成仓库绝对路径）
+tmux new -d -s probe -c <repo> && tmux send-keys -t probe 'bash scripts/local_fetch_loop.sh' Enter
+
+# 查看进度
+tmux attach -t probe          # Ctrl-b d 脱离；cat .agent/probe.log 也可
+tmux kill-session -t probe    # 停止
+```
+
+机器休眠/重启后循环自然停止，重新执行上面的启动命令即可恢复；探针**不会**自动
+拉起，也不会修改任何 workflow。
+
+### 可用环境变量
+
+| 变量 | 默认 | 说明 |
+| --- | --- | --- |
+| `PROBE_INTERVAL_SECONDS` | `900` | 周期间隔（15 分钟） |
+| `PROBE_MAX_PUSH_RETRIES` | `3` | 推送被拒后 `pull --rebase` 重试次数（退避 15 s） |
+| `PROBE_MAX_CYCLES` | `0` | `0` = 常驻；`1` 可用于冒烟测试 |
+| `PROBE_SKIP_PUSH` | 未设 | 非空则只本地提交、不推送 |
+| `PROBE_SKIP_SUMMARY` | 未设 | 非空则不评论健康摘要 |
+| `PROBE_TRACKING_ISSUE` | `78` | 健康摘要发到哪个 issue |
+| `PROBE_LOG_FILE` | `.agent/probe.log` | 日志文件 |
+| `PROBE_PYTHON` | `python3` | 解释器 |
+
+### 与 Actions 的并发关系
+
+Actions 侧的数据提交仍在继续，所以本机推送必须让远端优先：
+
+- 每个周期开始前先 `git pull --rebase`，遇冲突则 `rebase --abort` 并
+  `reset --hard @{u}`（**远端数据永远不被本机覆盖**）；
+- 推送被拒时 `pull --rebase` + 重试，最多 `PROBE_MAX_PUSH_RETRIES`（默认 3）次；
+  仍失败则保留本地提交、记一次失败，循环继续；
+- 任何一步失败都**不会**终止循环（脚本没有 `set -e`，每个 stage 都是
+  `continue-on-error` 语义），失败与重试计数进入当天的 `days` 记录。
+
+### `data/fetch-log.json`
+
+```json
+{
+  "v": 1,
+  "fetches": ["2026-10-12T08:00:12Z", "2026-10-12T08:15:09Z"],
+  "days": {"2026-10-12": {"ok": 90, "failed": 1, "retries": 2}},
+  "summary_sent": "2026-10-12"
+}
+```
+
+- `fetches` — 每次**完整跑完链路**的抓取时刻（UTC ISO），供 #76 计算实际间隔；
+  只保留最近 `MAX_ENTRIES = 2000` 条。
+- `days` — 每次抓取的 **UTC 日期** 的 `ok` / `failed` / `retries` 计数，保留 30 天；
+  推送重试在**下一个周期**记入（本周期的时间戳必须早于它所在的提交）。
+- `summary_sent` — 最后一条健康摘要的**本地日期**，用于「每天最多一条」去重。
+
+读写逻辑在 `scripts/fetch_log.py`（纯函数 + CLI：`append` / `summary` /
+`needs-summary` / `mark-summary`），单测见 `scripts/test_fetch_log.py`，
+探针脚本自身的契约测试见 `scripts/test_local_fetch_loop.py`。
+
 ## Exploration vs exploitation (ε-greedy)
 
 A purely learned schedule can get stuck: `data/update-profile.json` showed
@@ -107,6 +197,7 @@ weighted average (`count` weighted), plus the bucket's `min`/`max` extremes.
 | station daily | `data/history/station-history.json` | 1 day (12:00 UTC) | last **180 days** | station card real history |
 | station changes | `data/history/station-changes.json` | last change / last observation | last **180 days seen** | station freshness (`last_changed_at`) + station card "observed X ago" |
 | metrics | `data/metrics.json` | summary + rolling latency ledger | last **300** latency samples | CI / PM agent freshness evidence |
+| probe ledger | `data/fetch-log.json` | per-cycle timestamp + per-day counters | last **2000** cycles ≈ 15 days | local probe ground truth for the necessary-interval evaluation (#74 / #76) |
 | daily | `data/history/daily.json` | 1 day (12:00 UTC) | **12 months** | 30–365 day region trend views |
 | monthly | `data/history/monthly.json` | 1 month (day 1, 12:00 UTC) | **forever** | long-term trend view |
 | merged | `data/history.json` | mixed (raw+daily+monthly) | mirror of above | frontend single-file read |
