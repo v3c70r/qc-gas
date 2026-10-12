@@ -3,9 +3,10 @@
 The price history is **real region-level data** recorded automatically by the
 GitHub Actions data workflow (`.github/workflows/update-data.yml`). Which runs
 may download is decided by the learned, budget-bounded schedule described in
-[`fetch-strategy.md`](./fetch-strategy.md): the workflow wakes every 15 minutes
-but only polls upstream on the planned slots; the upstream snapshot itself is
-regenerated every 5 minutes (see "Fetch rhythm vs upstream regeneration"). There is no external database:
+[`fetch-strategy.md`](./fetch-strategy.md); the workflow is woken by the
+**external trigger** on the 30-minute target cadence, with an hourly cron as a
+best-effort fallback (see [Fetch rhythm](#fetch-rhythm-final-issue-77)). The
+upstream snapshot itself is regenerated every 5 minutes. There is no external database:
 everything is committed back into this repository.
 
 ## How a snapshot is produced
@@ -25,35 +26,164 @@ everything is committed back into this repository.
    below.
 7. The workflow commits the new files and pushes them back to the repo.
 
-## Fetch rhythm vs upstream regeneration
+## Fetch rhythm (final, issue #77)
 
-The upstream Régie Essence snapshot is **regenerated every 5 minutes** on the
-quarter-hour grid (measured 2026-10-11: `metadata.generated_at` went
-`04:45:01 → 04:50:01 → 04:55:01`), and `static.yml` wakes the data workflow
-every 15 minutes. The rhythm is therefore **one fetch per wake-up**
-(`FETCH_DAILY_BUDGET = 96`, i.e. one request per quarter-hour slot) with a
-**90-minute** freshness safety net (`FETCH_MAX_AGE_MINUTES`), so a station that
-re-prices is normally observed within ~15 minutes. This matters because
-**~24.5 % of stations re-price on any given day**, and the previous 36/day gate
-left gaps of ~40 minutes.
+### The shipped rhythm
 
-Both env vars are the single source of truth: they are set once in the `env:`
-block of the `update-data` job in `.github/workflows/update-data.yml`, read by
-`scripts/should_fetch.py` (gate) and `scripts/update_profile.py` (plan writer),
-and fall back to the constants in `scripts/fetch_strategy.py` when unset.
-`data/fetch-schedule.json` picks a new budget up on the next successful fetch;
-to rebuild it from the committed profile immediately, see
-[`fetch-strategy.md` §Fetch rhythm](./fetch-strategy.md#fetch-rhythm-vs-upstream-regeneration).
+| Knob | Value | Where | Why |
+| --- | --- | --- | --- |
+| Target interval | **30 minutes** | `scripts/trigger_interval_report.py` (`TARGET_INTERVAL_MINUTES`) | Back-derived from #76's criteria: p90 stale lag ≈ 0.9 × T ≤ 30 min ⇒ T ≤ 33 min, rounded to 30 |
+| Primary trigger | **external trigger** — `POST /repos/:owner/:repo/dispatches` with `event_type: fetch-data` | `.github/workflows/static.yml` (`repository_dispatch`) | Actions `schedule` cannot reach the target (measured below); a dispatch is treated by the gate as "fetch unconditionally", so it does not consume the plan budget |
+| Fallback trigger | `cron: '17 * * * *'` (hourly, off the hour) | `.github/workflows/static.yml` (`schedule`) | GitHub throttles scheduled runs; an hourly wake is the cheapest useful safety net and the least throttled shape we measured |
+| Plan budget | `FETCH_DAILY_BUDGET = 24` | `env:` of the `update-data` job | = one request per hourly wake-up, so the plan can never out-run the trigger that executes it |
+| Freshness net | `FETCH_MAX_AGE_MINUTES = 120` | same `env:` block | = 2 × the cron interval: the net only fires after two consecutive wakes were dropped, so it is neither denser than the plan nor sparser than it |
+| Upstream regeneration | every 5 minutes (quarter-hour grid, measured 2026-10-11: `04:45:01 → 04:50:01 → 04:55:01`) | upstream `metadata.generated_at` | A 30-minute target does not hit the upstream ceiling |
+
+`scripts/test_trigger_interval_report.py::ShippedRhythmTest` pins this table: if
+one knob moves without the others, the suite fails (`budget == 1440 / cron
+interval`, `max_age == 2 × cron interval`).
+
+### Evidence: the actions cron is throttled (measured, not inferred)
+
+The **target** itself comes from #76's staleness study
+([`fetch-interval-report.md`](./fetch-interval-report.md), driven by
+`scripts/interval_report.py`); this section is the complementary measurement of
+whether any shipped trigger actually delivers that interval.
+
+`scripts/trigger_interval_report.py` reads **only committed records**
+(`data/stations.json`'s commit history, plus the probe ledger
+`data/fetch-log.json`) and reports the *measured* interval distribution per
+trigger source. A source counts as meeting the target when **p90 interval ≤ 30
+minutes over a window of ≥ 12 hours**:
+
+```bash
+python3 scripts/trigger_interval_report.py           # -> data/trigger-interval.json
+python3 scripts/trigger_interval_report.py --since 2026-09-25T17:00:00Z   # one rhythm era
+```
+
+The report is **not** run by the fetch workflow: it needs the full commit
+history, while the workflow checks out with `fetch-depth: 1` (a full clone here
+is ~170 MB on every wake-up). Refresh the committed evidence by running the
+command after any trigger change and again ≥ 12 h later — the PM agent cites
+`data/trigger-interval.json`, not the plan's intentions.
+
+Measured on 2026-10-12 (this repository):
+
+| Window | Trigger | Fetches | Span | p50 | p90 | max | > 30 min | Verdict |
+| --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| full history | Actions | 1644 | 3976 h | 120 min | 278.8 min | 754.6 min | 98 % | **misses** |
+| since 2026-09-25 (cron `*/15`) | Actions | 90 | 399 h | 257 min | 405.7 min | 537.9 min | 99 % | **misses** |
+| since 2026-10-01 | Actions | 61 | 271 h | 258.4 min | 409.5 min | 537.9 min | 98 % | **misses** |
+| — | local probe | 0 | — | — | — | — | — | insufficient-window |
+
+The first row is the bulk of the repository's history, i.e. the era when the
+cron *was* hourly: even then the real cadence was ~2 h (p50), and switching to
+`*/15` made it worse (p50 257 min) instead of better — GitHub throttles
+high-frequency schedules harder. **Conclusion: no `schedule` shape on this
+repository can reach 30 minutes, so the cadence has to come from an external
+trigger** (the acceptance rule of #77). The local probe has no completed cycle
+yet (its ledger is empty, the loop is started by hand), so the report says
+`insufficient-window` for it instead of inventing a number — that is the
+designed behaviour of the ≥ 12-hour rule.
+
+### External trigger: step-by-step setup
+
+Nothing in the repository stores a secret; the token lives only in the
+external scheduler's environment.
+
+1. **Create a minimal fine-grained PAT** — GitHub → *Settings → Developer
+   settings → Personal access tokens → Fine-grained tokens*. Scope it to **this
+   repository only** and grant **Contents: Read and write** (`contents:write`).
+   That is the only permission `repository_dispatch` needs (it is a write to
+   the repo); do **not** add Actions, Issues, Secrets or `repo` scope. Set the
+   shortest expiry you can live with and rotate it.
+2. **Trigger the workflow once by hand** to prove the wiring:
+
+   ```bash
+   export GH_DISPATCH_TOKEN=github_pat_...        # never committed, never echoed
+   export GH_DISPATCH_REPO=<owner>/<repo>         # optional: defaults to origin
+   scripts/dispatch_fetch.sh                      # -> POST .../dispatches {"event_type":"fetch-data"}
+   ```
+
+   `scripts/dispatch_fetch.sh` exits `2` with the minimal-scope reminder when the
+   token is unset, `3` on unusable input (repo name or event type), and `4` when
+   the dispatch request itself fails — a wrong-scope PAT, a renamed repo or a
+   network blip therefore shows up as a **cron failure** instead of a silent
+   no-op that only the 12-hour evidence report would catch. It never prints the
+   token. `static.yml` accepts the dispatch
+   (`repository_dispatch: types: [fetch-data]`).
+3. **Schedule it** on a free external cron service (e.g. cron-job.org,
+   EasyCron, a Vercel/GH-Actions-in-another-repo cron, or simply your own
+   machine) at the **target interval, every 30 minutes**: *URL*
+   `https://api.github.com/repos/<owner>/<repo>/dispatches`, *method* `POST`,
+   headers `Authorization: Bearer <PAT>`, `Accept: application/vnd.github+json`,
+   `Content-Type: application/json`, body `{"event_type": "fetch-data"}`.
+   Equivalent on your own machine (no service needed):
+
+   ```bash
+   # crontab -e  — every 30 minutes
+   */30 * * * * GH_DISPATCH_TOKEN=github_pat_... /path/to/repo/scripts/dispatch_fetch.sh >> /tmp/qc-gas-dispatch.log 2>&1
+   ```
+
+   The script's exit code mirrors the request (`0` dispatched, `2`/`3`/`4` as
+   above), so any cron service that reports failures will alert on a broken
+   token or a dropped network — and if yours does not, `/tmp/qc-gas-dispatch.log`
+   keeps the reason (it never contains the token itself).
+
+   Nothing to deploy on our side: the dispatch wakes the *existing* workflow
+   (data fetch + Pages deploy) and the gate skips the deploy when it decides no
+   poll is due. One dispatch = at most one upstream request.
+4. **Verify with evidence** (do not trust the cron service's own logs): after
+   ≥ 12 hours run `python3 scripts/trigger_interval_report.py` and check that
+   the `actions` verdict flips to `meets`; commit the refreshed
+   `data/trigger-interval.json`. If it stays `misses`, lower/raise the external
+   cadence and re-measure — the report is the arbiter, not the plan.
+
+### How to tune it
+
+Three places, changed together (the consistency test enforces the coupling):
+
+| What | Where | Rule |
+| --- | --- | --- |
+| External cadence | the external cron job / dispatch script invocation | the interval #76/#77 asks for (currently 30 min) |
+| `FETCH_DAILY_BUDGET` | `.github/workflows/update-data.yml` `env:` | `= 1440 / cron_interval_minutes` (24 at the hourly fallback) |
+| `FETCH_MAX_AGE_MINUTES` | same `env:` block | `= 2 × cron_interval_minutes` (120 at the hourly fallback) |
+
+Both env vars are the single source of truth for the gate and the plan writer
+(`scripts/should_fetch.py` / `scripts/update_profile.py`); the constants in
+`scripts/fetch_strategy.py` are only the local fallback for tests and manual
+runs, and are kept in sync with the workflow. If the cron shape changes
+(`M * * * *` → `M */N * * *`), update the cron and both env vars together, then
+run `python3 -m unittest scripts.test_trigger_interval_report`.
+
+`data/fetch-schedule.json` is derived state and only picks a new budget up on
+the next successful fetch (`update_profile.py`); until then the gate keeps
+evaluating the file's existing `slots`, so nothing has to be edited by hand. To
+rebuild it immediately from the committed profile, see
+[`fetch-strategy.md` §How to tune it](./fetch-strategy.md#how-to-tune-it).
 
 One upstream request per admitted run is unchanged (`download_data.py` does not
-retry-storm; the `User-Agent` is untouched), and the budget can never exceed the
-wake-up cadence.
+retry-storm; the `User-Agent` is untouched), and the plan budget can never
+exceed the wake-up cadence.
 
-## 本机高频探针（临时/学习用）
+## 本机高频探针（**长期补充**，issue #74 / #77）
 
-Actions 的 `schedule` 被 GitHub 严重节流（实测 37 次间隔：中位数 293 分、最大
-538 分），所以**闸门预算再高也可能几小时不抓取**。为了给「必要间隔」的评估
-（#76）提供 ground truth，仓库里有一个**临时/学习用**的本机探针：
+Actions 的 `schedule` 被 GitHub 严重节流（实测：全历史 p50 120 分钟、`*/15` 时期
+p50 257 分钟，见 [Fetch rhythm](#fetch-rhythm-final-issue-77)），而外部触发器
+（`repository_dispatch`）需要 owner 自己配一个外部 cron + PAT。在两个条件都落地
+之前，**本机探针是唯一能达到 15 分钟新鲜度的机制**，因此它的角色从
+「临时/学习用」定为「**长期补充**」（#77 的决定）：
+
+- 它保证**数据新鲜度**（15 分钟），并在上游/闸门出问题时提供可对照的第二条链路；
+- 它继续为 #76 的「必要间隔」评估和本脚本的实测间隔提供 ground truth
+  （`data/fetch-log.json`）；
+- **退场条件**（写死在这里，避免“临时”变成永久）：外部触发器就绪后，
+  `python3 scripts/trigger_interval_report.py` 连续 ≥ 3 天把 `actions` 判为
+  `meets`（p90 ≤ 30 分钟、窗口 ≥ 12 小时）→ 用
+  `tmux kill-session -t probe` 停掉探针，并新建一条 issue 记录停用时的证据。
+  在探针停用前，Actions 侧的数据提交继续保留（两边都只在有变化时提交）。
+
+探针的具体行为：
 
 - `scripts/local_fetch_loop.sh`（tmux 常驻）：每 ~15 分钟跑一遍与
   `update-data.yml` 相同的数据链路 —— `download_data.py` →
@@ -75,7 +205,8 @@ Actions 的 `schedule` 被 GitHub 严重节流（实测 37 次间隔：中位数
 - 每次完成的周期会把时间戳追加到 `data/fetch-log.json`（时间戳数组，保留最近
   2000 条 ≈ 15 天），并记录按天的 `ok` / `failed` / `retries` 计数与
   `summary_sent`（当日是否已发健康汇报）。这些文件随 `data/` 一起提交，所以
-  间隔分布是**真实记录**，可被 #76 直接计算（p50/p90），不需要人工估算。
+  间隔分布是**真实记录**，可被 #76（必要间隔）与 #77
+  （`scripts/trigger_interval_report.py`，实测触发间隔）直接计算，不需要人工估算。
 - 探针每天（本地日期）最多发一条健康摘要到跟踪 issue #78
   （`gh issue comment`，字段见下）；发送失败只写日志，不影响抓取循环。
 - 运行日志写在 `.agent/probe.log`（`.gitignore` 已忽略 `.agent/**/*.log`）。
@@ -169,11 +300,15 @@ peaks (**exploit** slots):
 
 The exploration results are folded into `update-profile.json` exactly like any
 other fetch, so an hour's weight gradually stops being pure prior. With the
-shipped `FETCH_DAILY_BUDGET=96` and `FETCH_EXPLORE_FRAC=0.15` the plan reserves
-~14 probes/day; the two never-observed hours pick up roughly 3–4
-observation-hours per day (the per-fetch exposure is capped at 2 h), so they
-leave the `observed_hours == 0` bucket within days, and the `prior_alpha = 168`
-blend fades over the following weeks as the whole day accumulates exposure.
+shipped `FETCH_DAILY_BUDGET=24` the budget equals the hourly floor
+(`min_per_hour=1`), so there is **no slack left to probe with** and the plan
+carries no `explore_slots` (issue #77): the uniform **external trigger** now
+samples every hour equally, which gives the learner better hour coverage than
+ε-greedy probing ever did — and dispatch runs record their observation through
+the same `update_profile.py` path. Raising `FETCH_DAILY_BUDGET` above 24 brings
+in-plan exploration back, but only pays off if the extra wake-ups exist
+(`FETCH_EXPLORE_FRAC=0.15` stays a no-op until then, which is why it is kept
+explicitly in the workflow env).
 
 **Turning it off:** set `FETCH_EXPLORE_FRAC=0` (or `--explore-frac 0`); the
 plan is then byte-for-byte the pre-#69 plan. Set it in the `env:` block of the
@@ -197,6 +332,7 @@ weighted average (`count` weighted), plus the bucket's `min`/`max` extremes.
 | station daily | `data/history/station-history.json` | 1 day (12:00 UTC) | last **180 days** | station card real history |
 | station changes | `data/history/station-changes.json` | last change / last observation | last **180 days seen** | station freshness (`last_changed_at`) + station card "observed X ago" |
 | metrics | `data/metrics.json` | summary + rolling latency ledger | last **300** latency samples | CI / PM agent freshness evidence |
+| trigger intervals | `data/trigger-interval.json` | measured interval distribution per trigger | overwritten on every run | evidence that the shipped rhythm reaches the #76 target (#77) |
 | probe ledger | `data/fetch-log.json` | per-cycle timestamp + per-day counters | last **2000** cycles ≈ 15 days | local probe ground truth for the necessary-interval evaluation (#74 / #76) |
 | daily | `data/history/daily.json` | 1 day (12:00 UTC) | **12 months** | 30–365 day region trend views |
 | monthly | `data/history/monthly.json` | 1 month (day 1, 12:00 UTC) | **forever** | long-term trend view |

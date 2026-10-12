@@ -378,12 +378,12 @@ class ShouldFetchCliTest(TempDataDirTest):
         self.assertEqual(rc, 0)
         self.assertIn('12 slots/day', buf.getvalue())
 
-    def test_default_freshness_net_is_90_minutes(self):
+    def test_default_freshness_net_is_two_hourly_wakes(self):
         self.stale_state('2026-09-25T11:00:00Z')
-        self.run_gate('2026-09-25T12:30:00Z')  # exactly 90 min: still fresh
+        self.run_gate('2026-09-25T13:00:00Z')  # exactly 120 min: still fresh
         self.assertIn('due=false', self.github_output().read_text())
         self.github_output().unlink()
-        self.run_gate('2026-09-25T12:35:00Z')  # ... 5 min later it is stale
+        self.run_gate('2026-09-25T13:05:00Z')  # ... 5 min later it is stale
         self.assertIn('due=true', self.github_output().read_text())
 
     def test_env_max_age_override_tightens_the_net(self):

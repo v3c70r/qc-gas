@@ -13,11 +13,24 @@ on:
       - 'package.json'
       - 'package-lock.json'
   workflow_dispatch:
+  # External trigger (issue #77): a free external cron service (or the local
+  # `crontab`, or `scripts/dispatch_fetch.sh`) POSTs to /dispatches with
+  # `event_type: fetch-data` to wake this workflow on the target cadence. The
+  # gate treats non-schedule events as "fetch unconditionally", so a dispatch
+  # is exactly one poll and does not consume the planned budget.
+  repository_dispatch:
+    types: [fetch-data]
   schedule:
-    # Wake often so a poll can land right after stations re-price; the
-    # update-data gate decides which of these wake-ups may hit upstream, so a
-    # non-due run costs a checkout + gate only (no download, no deploy).
-    - cron: '*/15 * * * *'
+    # Long-interval fallback only. Measured on this repository (issue #77,
+    # `data/trigger-interval.json`): GitHub throttles the schedule so hard that
+    # a `*/15` cron actually ran every ~4.3 hours (p50), and even the previous
+    # hourly cron only reached ~2 hours. So the sub-hourly cadence bought
+    # nothing and woke 96 (mostly dropped) runs/day; one hourly wake is the
+    # cheapest useful safety net, and it is deliberately off the top of the
+    # hour to dodge the scheduler's busiest minute.
+    # The gate decides whether a wake-up may hit upstream, so a non-due run
+    # costs a checkout + gate only (no download, no deploy).
+    - cron: '17 * * * *'
 
 permissions:
   contents: write

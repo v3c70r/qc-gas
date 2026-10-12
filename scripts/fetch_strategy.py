@@ -41,19 +41,22 @@ SLOT_MINUTES = 15
 SLOTS_PER_HOUR = 60 // SLOT_MINUTES          # 4 quarter-hour marks
 SLOTS_PER_DAY = 24 * SLOTS_PER_HOUR          # 96 slots
 
-# Max upstream downloads per day. The upstream Régie Essence snapshot is
-# regenerated every 5 minutes on the quarter-hour grid (measured on
-# 2026-10-11: metadata.generated_at went 04:45:01 -> 04:50:01 -> 04:55:01), and
-# ``static.yml`` wakes this workflow every 15 minutes, so the whole day is 96
-# wake-ups and one request per wake-up costs no extra upstream load per unit of
-# freshness: the budget now matches the wake-up cadence (issue #67). It was 36
-# (24 hourly floor + 12 learned-window extras), which left ~40-minute gaps and
-# was the dominant cause of stale station prices (~24.5% of stations re-price
-# every day).
-DEFAULT_DAILY_BUDGET = 96
-# Freshness safety net: force a poll when the last one is older than this, so a
-# broken/empty schedule can never leave the data more than one poll cycle stale.
-DEFAULT_MAX_AGE_MINUTES = 90
+# Max upstream downloads per day *from the scheduled plan*. The upstream Régie
+# Essence snapshot is regenerated every 5 minutes on the quarter-hour grid
+# (measured on 2026-10-11: metadata.generated_at went 04:45:01 -> 04:50:01 ->
+# 04:55:01), but GitHub throttles our `schedule` so hard that sub-hourly crons
+# buy nothing: measured over 15 days (issue #77) the `*/15` cron actually ran
+# every ~4.3 h (p50) and even the old hourly cron only every ~2 h. The fallback
+# cron is therefore hourly and this budget equals its wake-up count (24), so the
+# plan can never out-run the trigger that executes it (`static.yml`,
+# `update-data.yml`). The sub-hourly cadence comes from the external
+# `repository_dispatch` trigger, which the gate treats as "fetch
+# unconditionally" and which does not consume this budget.
+DEFAULT_DAILY_BUDGET = 24
+# Freshness safety net: force a poll when the last one is older than this. Two
+# hourly wake-ups = the net only fires after two consecutive wakes were dropped,
+# so it can neither be denser than the plan nor sparser than it (issue #77).
+DEFAULT_MAX_AGE_MINUTES = 120
 DEFAULT_MAX_GAP_HOURS = 2.0                  # exposure cap for one observation
 DEFAULT_PRIOR_HOURS = 168.0                  # one week of observed hours
 

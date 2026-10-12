@@ -18,18 +18,26 @@ jobs:
     # editing this env block only; the constants in `scripts/fetch_strategy.py`
     # are just the local fallback.
     env:
-      # Upstream regenerates its snapshot every 5 minutes (metadata.generated_at
-      # moved 04:45:01 -> 04:50:01 -> 04:55:01), and the static.yml cron wakes
-      # every 15 minutes, so 96 = one request per wake-up and no faster polling
-      # than the schedule itself. Was 36, which left ~40 min gaps.
-      FETCH_DAILY_BUDGET: '96'
-      # Freshness safety net: force a poll when the last one is older than 90
-      # minutes (was 180), i.e. at most one missed poll cycle of drift.
-      FETCH_MAX_AGE_MINUTES: '90'
+      # `static.yml` wakes this workflow hourly (`cron: '17 * * * *'`) as a
+      # fallback, so 24 = one request per wake-up: the budget can never exceed
+      # the wake-up cadence (issue #77). Sub-hourly crons are throttled too hard
+      # to be worth planning for; the sub-hourly cadence comes from the external
+      # `repository_dispatch` trigger, which bypasses the plan entirely.
+      FETCH_DAILY_BUDGET: '24'
+      # Freshness safety net: force a poll when the last one is older than 120
+      # minutes = two hourly wake-ups, i.e. the net only fires after two
+      # consecutive wakes were dropped. Kept at exactly 2 x the cron interval so
+      # the fallback can never be denser than the plan nor sparser than it
+      # (issue #77 acceptance: triggers and gate knobs move together).
+      FETCH_MAX_AGE_MINUTES: '120'
       # Epsilon-greedy exploration (issue #69): share of the daily budget spent
       # probing the hours with the least observation time, so a slot that has
       # never been sampled (03:00 / 08:00 had observed_hours == 0) can still
       # accumulate evidence. 0 disables it; the plan writer reads this.
+      # At the shipped budget of 24 (= the hourly floor, `min_per_hour=1`) there
+      # is no slack left to probe with, so exploration is effectively off in the
+      # *plan*; hour coverage now comes from the uniform external trigger
+      # instead, which samples every hour equally (issue #77).
       FETCH_EXPLORE_FRAC: '0.15'
     steps:
       # Check out the latest branch tip so the data commit is based on current
@@ -43,9 +51,10 @@ jobs:
         with:
           python-version: '3.11'
 
-      # The schedule wakes this workflow often so a poll can land right after
-      # stations re-price; this gate keeps upstream load bounded by only
-      # downloading inside the learned change windows (plus the
+      # The trigger (external `repository_dispatch` on the #76 target cadence,
+      # or the hourly fallback cron) wakes this workflow often so a poll can land
+      # right after stations re-price; this gate keeps upstream load bounded by
+      # only downloading inside the learned change windows (plus the
       # FETCH_MAX_AGE_MINUTES freshness safety net). The budget/freshness env
       # above is the single knob; non-scheduled runs (push / dispatch) always
       # fetch. One upstream request per admitted run, no retries.
