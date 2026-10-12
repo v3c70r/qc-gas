@@ -17,16 +17,21 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 from fetch_strategy import (  # noqa: E402
     BUDGET_ENV_VAR,
     DEFAULT_DAILY_BUDGET,
+    DEFAULT_EXPLORE_FRAC,
     DEFAULT_MAX_AGE_MINUTES,
+    EXPLORE_FRAC_ENV_VAR,
     MAX_AGE_ENV_VAR,
     SLOTS_PER_DAY,
     SLOTS_PER_HOUR,
     diff_regions,
     diff_stations,
     due_decision,
+    env_float,
     env_int,
     hour_weights,
     observed_from_stations,
+    observed_hour_totals,
+    plan_schedule,
     plan_slots,
     prices_from_row,
     prices_to_row,
@@ -219,6 +224,144 @@ class PlanSlotsTest(unittest.TestCase):
     def test_budget_above_capacity_is_clamped(self):
         slots = plan_slots([1 / 24] * 24, budget=10_000, min_per_hour=1, max_per_hour=4)
         self.assertEqual(len(slots), SLOTS_PER_DAY)
+
+
+class ExplorePlanningTest(unittest.TestCase):
+    """Issue #69: reserve epsilon of the budget to probe under-sampled hours.
+
+    The learner could only ever exploit the hours it had already seen: the
+    gate kept landing on the busiest windows (§``data/update-profile.json``
+    had ``observed_hours == 0`` for 03:00 and 08:00) so their weights were
+    frozen at the research prior. Exploration spends a fixed fraction of the
+    budget on the hours with the least observation time.
+    """
+
+    def weighted(self):
+        # 12:00 is clearly the hot hour, 3 & 8 never observed at all.
+        weights = [1 / 24] * 24
+        weights[12] = 0.5
+        total = sum(weights)
+        return [w / total for w in weights]
+
+    def observed(self, least=(3, 8)):
+        return [0.0 if h in least else 12.0 for h in range(24)]
+
+    def test_defaults_are_documented_and_env_overridable(self):
+        self.assertEqual(DEFAULT_EXPLORE_FRAC, 0.15)
+        self.assertEqual(EXPLORE_FRAC_ENV_VAR, 'FETCH_EXPLORE_FRAC')
+
+    def test_zero_explore_fraction_is_exactly_the_legacy_plan(self):
+        weights = self.weighted()
+        observed = self.observed()
+        slots, explore = plan_schedule(weights, budget=48, min_per_hour=1,
+                                       max_per_hour=4, observed_hours=observed,
+                                       explore_frac=0)
+        self.assertEqual(explore, [])
+        self.assertEqual(slots, plan_slots(weights, budget=48, min_per_hour=1,
+                                           max_per_hour=4))
+
+    def test_missing_observed_hours_disables_exploration(self):
+        # The research-prior fallback has nothing to explore from.
+        slots, explore = plan_schedule([1 / 24] * 24, budget=48, min_per_hour=1,
+                                       max_per_hour=4, observed_hours=None)
+        self.assertEqual(explore, [])
+        self.assertEqual(slots, plan_slots([1 / 24] * 24, budget=48, min_per_hour=1,
+                                           max_per_hour=4))
+
+    def test_explore_slots_land_on_the_least_observed_hours(self):
+        slots, explore = plan_schedule(self.weighted(), budget=48, min_per_hour=1,
+                                       max_per_hour=4, observed_hours=self.observed(),
+                                       explore_frac=0.08)
+        self.assertEqual(len(slots), 48)
+        self.assertTrue(explore)
+        # Every explore slot probes an hour with zero observation time.
+        self.assertTrue(all(s // SLOTS_PER_HOUR in (3, 8) for s in explore))
+
+    def test_explore_slots_are_identifiable_and_never_duplicated(self):
+        slots, explore = plan_schedule(self.weighted(), budget=48, min_per_hour=1,
+                                       max_per_hour=4, observed_hours=self.observed(),
+                                       explore_frac=DEFAULT_EXPLORE_FRAC)
+        self.assertEqual(len(slots), len(set(slots)))
+        self.assertEqual(len(explore), len(set(explore)))
+        self.assertTrue(set(explore).issubset(set(slots)))
+
+    def test_explore_uses_about_epsilon_of_the_budget(self):
+        budget = 48
+        _, explore = plan_schedule(self.weighted(), budget=budget, min_per_hour=1,
+                                   max_per_hour=4, observed_hours=self.observed(),
+                                   explore_frac=DEFAULT_EXPLORE_FRAC)
+        self.assertLessEqual(len(explore), round(budget * DEFAULT_EXPLORE_FRAC))
+        self.assertGreaterEqual(len(explore), int(budget * DEFAULT_EXPLORE_FRAC) - 1)
+
+    def test_hot_hour_coverage_loss_stays_within_epsilon(self):
+        weights = self.weighted()
+        base = plan_slots(weights, budget=48, min_per_hour=1, max_per_hour=4)
+        explored, _ = plan_schedule(weights, budget=48, min_per_hour=1,
+                                    max_per_hour=4, observed_hours=self.observed(),
+                                    explore_frac=DEFAULT_EXPLORE_FRAC)
+        self.assertEqual(len(base), len(explored))
+        base_counts = [base.count(h * SLOTS_PER_HOUR + m) for h in range(24) for m in (0, 1, 2, 3)]
+        new_counts = [explored.count(h * SLOTS_PER_HOUR + m) for h in range(24) for m in (0, 1, 2, 3)]
+        # 12:00 is the busiest hour; exploration must not gut it.
+        self.assertGreaterEqual(new_counts[12 * SLOTS_PER_HOUR], base_counts[12 * SLOTS_PER_HOUR] - 1)
+        lost_total = sum(max(0, b - n) for b, n in zip(base_counts, new_counts))
+        self.assertLessEqual(lost_total, round(48 * DEFAULT_EXPLORE_FRAC))
+
+    def test_explore_spreads_across_the_least_observed_hours(self):
+        _, explore = plan_schedule([1 / 24] * 24, budget=48, min_per_hour=1,
+                                   max_per_hour=4, observed_hours=self.observed(),
+                                   explore_frac=0.08)
+        probed = {s // SLOTS_PER_HOUR for s in explore}
+        self.assertEqual(probed, {3, 8})
+
+    def test_explore_prefers_unused_quarter_marks(self):
+        # Hour 3 has one exploitation slot at :00; exploration should probe a
+        # different mark so the hour is covered more densely (a run delayed by
+        # more than the grace window still lands on a slot).
+        observed = [12.0] * 24
+        observed[3] = 0.0
+        _, explore = plan_schedule([1 / 24] * 24, budget=48, min_per_hour=1,
+                                   max_per_hour=4, observed_hours=observed,
+                                   explore_frac=0.5)
+        marks = {s % SLOTS_PER_HOUR for s in explore if s // SLOTS_PER_HOUR == 3}
+        self.assertNotIn(0, marks)
+        self.assertTrue(marks)
+
+    def test_explore_fraction_is_clamped(self):
+        observed = self.observed()
+        _, explore = plan_schedule(self.weighted(), budget=48, min_per_hour=1,
+                                   max_per_hour=4, observed_hours=observed,
+                                   explore_frac=5.0)
+        self.assertLessEqual(len(explore), 48)
+
+
+class ObservedHourTotalsTest(unittest.TestCase):
+    def test_reads_the_per_hour_observation_time(self):
+        profile = empty_profile()
+        profile['hours']['3']['observed_hours'] = 2.5
+        totals = observed_hour_totals(profile)
+        self.assertEqual(len(totals), 24)
+        self.assertEqual(totals[3], 2.5)
+        self.assertEqual(totals[8], 0.0)
+
+    def test_missing_profile_is_all_zero(self):
+        self.assertEqual(observed_hour_totals(None), [0.0] * 24)
+
+
+class EnvFloatTest(unittest.TestCase):
+    """One float override helper for the exploration fraction (issue #69)."""
+
+    def test_reads_a_fraction(self):
+        self.assertEqual(env_float('X', 0.15, environ={'X': '0.25'}), 0.25)
+
+    def test_zero_disables_exploration_and_is_honoured(self):
+        self.assertEqual(env_float('X', 0.15, environ={'X': '0'}), 0.0)
+
+    def test_falls_back_on_missing_or_invalid_values(self):
+        self.assertEqual(env_float('X', 0.15, environ={}), 0.15)
+        self.assertEqual(env_float('X', 0.15, environ={'X': 'nonsense'}), 0.15)
+        self.assertEqual(env_float('X', 0.15, environ={'X': '-0.2'}), 0.15)
+        self.assertEqual(env_float('X', 0.15, environ={'X': '1.5'}), 0.15)
 
 
 class FetchDefaultsTest(unittest.TestCase):
@@ -522,6 +665,15 @@ class DueDecisionTest(unittest.TestCase):
     def test_slot_from_the_previous_utc_day_is_still_honoured(self):
         due, _ = due_decision(at(0, 10), ['23:50'], at(23, 40, day=24))
         self.assertTrue(due)
+
+    def test_explore_slot_is_flagged_in_the_reason(self):
+        due, reason = due_decision(at(12, 3), self.SLOTS, at(11, 50))
+        self.assertTrue(due)
+        self.assertNotIn('explore', reason)
+        due, reason = due_decision(at(12, 3), self.SLOTS, at(11, 50),
+                                   explore_slots=['12:00'])
+        self.assertTrue(due)
+        self.assertIn('[explore]', reason)
 
 
 if __name__ == '__main__':

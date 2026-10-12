@@ -49,6 +49,49 @@ One upstream request per admitted run is unchanged (`download_data.py` does not
 retry-storm; the `User-Agent` is untouched), and the budget can never exceed the
 wake-up cadence.
 
+## Exploration vs exploitation (ε-greedy)
+
+A purely learned schedule can get stuck: `data/update-profile.json` showed
+`observed_hours == 0` for **03:00 and 08:00 UTC** even though `plan_slots()`
+scheduled both — the gate's `min_gap`/grace/freshness logic kept landing the
+runs on the busy windows, so the learner never saw those hours and their weight
+stayed frozen at the research prior. That is *exploitation without
+exploration*: the sampler cannot discover whether an unvisited hour matters.
+
+To fix it, `plan_slots()` reserves a fraction **ε** of the daily budget for
+**explore** slots and only allocates the remaining `1 − ε` to the learned
+peaks (**exploit** slots):
+
+- the `round(budget · ε)` explore slots go to the hours with the **least
+  `observed_hours`**, and within an hour to a quarter-hour mark the
+  exploitation plan is *not* already using (`:15` → `:30` → `:45` → `:00`), so
+  a run delayed by the 45-minute grace window still lands on a slot;
+- explore slots are a **subset** of `slots` and can never duplicate an
+  exploitation slot; when the least-observed hours are already full, the
+  probes spill to the next-least-observed hour;
+- `ε` defaults to **0.15** (`15 %`) and is clamped to `[0, 1]`. Every probe
+  found is recorded in `data/fetch-schedule.json` as `explore_slots` (plus
+  `explore_frac` / `explore_count`), and `should_fetch.py --dry-run` tags a due
+  hit with `[explore]`, so a poll can be audited as exploration vs exploitation;
+- the budget is unchanged: `len(slots) ≤ budget_per_day`, so the busiest hours
+  give up at most the ε share that exploration takes (acceptance: hot-hour
+  coverage loss ≤ ε).
+
+The exploration results are folded into `update-profile.json` exactly like any
+other fetch, so an hour's weight gradually stops being pure prior. With the
+shipped `FETCH_DAILY_BUDGET=96` and `FETCH_EXPLORE_FRAC=0.15` the plan reserves
+~14 probes/day; the two never-observed hours pick up roughly 3–4
+observation-hours per day (the per-fetch exposure is capped at 2 h), so they
+leave the `observed_hours == 0` bucket within days, and the `prior_alpha = 168`
+blend fades over the following weeks as the whole day accumulates exposure.
+
+**Turning it off:** set `FETCH_EXPLORE_FRAC=0` (or `--explore-frac 0`); the
+plan is then byte-for-byte the pre-#69 plan. Set it in the `env:` block of the
+`update-data` job like the other knobs. Exploration is skipped automatically
+when there is no learned profile yet (the research-prior fallback) or when the
+budget only covers the hourly `min_per_hour` floor — there is no slack to
+probe with.
+
 ## Granularity & downsampling
 
 The UI's intraday granularity is 4–6 hours. We therefore store **6-hour UTC
