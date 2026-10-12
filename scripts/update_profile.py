@@ -8,9 +8,12 @@ Runs after ``process_data.py`` on every successful fetch (see
    per **station** (`fetch_strategy.diff_stations`, issue #68) to get the exact
    set of re-priced stations and their ``last_changed_at``, and per **region**
    (`fetch_strategy.diff_regions`) to keep the learned schedule compatible — and
-   fold both into ``data/update-profile.json`` (per-UTC-hour change rates) and
+   fold both into ``data/update-profile.json`` (per-UTC-hour change rates,
+   **per-region** hourly rates and per-quarter-hour mark counts, issue #71) and
    ``data/history/station-changes.json`` (per-station freshness).
-2. Turn the learned weights into a bounded daily poll schedule and write
+2. Turn the learned weights into a bounded daily poll schedule — every region's
+   distinctive hours are pinned, the rest is water-filled by the expected number
+   of re-prices, minus the exploration share (issue #69) — and write
    ``data/fetch-schedule.json``, which ``should_fetch.py`` uses as the gate.
 
 Both files are tiny, committed with the rest of ``data/``, and safe to delete:
@@ -20,6 +23,7 @@ the system falls back to the research-seeded prior until they are rebuilt.
 import argparse
 import json
 import sys
+from collections import Counter
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
@@ -31,10 +35,13 @@ from fetch_strategy import (  # noqa: E402
     DEFAULT_EXPLORE_FRAC,
     EXPLORE_FRAC_ENV_VAR,
     SLOTS_PER_HOUR,
+    coverage_hours,
     diff_stations,
     env_float,
     env_int,
+    hour_rates,
     hour_weights,
+    learned_mark_orders,
     observed_from_stations,
     observed_hour_totals,
     parse_iso,
@@ -42,9 +49,12 @@ from fetch_strategy import (  # noqa: E402
     prices_from_row,
     prices_to_row,
     record_observation,
+    region_coverage,
+    region_hour_weights,
     region_station_counts,
     slot_labels,
     station_prices,
+    station_regions,
     to_iso,
 )
 
@@ -74,7 +84,8 @@ def save_json(path, obj):
 
 
 def build_schedule(profile, slots, weights, budget, min_per_hour, max_per_hour, now,
-                   explore_slots=(), explore_frac=DEFAULT_EXPLORE_FRAC):
+                   explore_slots=(), explore_frac=DEFAULT_EXPLORE_FRAC,
+                   coverage=(), regions=None):
     observed_hours = sum(
         float((profile.get('hours', {}).get(str(h)) or {}).get('observed_hours') or 0.0)
         for h in range(24)
@@ -97,6 +108,10 @@ def build_schedule(profile, slots, weights, budget, min_per_hour, max_per_hour, 
         'explore_slots': slot_labels(explore_slots),
         'slots': slot_labels(slots),
         'hour_weights': [round(w, 4) for w in weights],
+        # Issue #71: the hours pinned so a region keeps its own learned peak
+        # (``coverage``, ranked) and, per region, whether the plan honours it.
+        'coverage_hours': [int(h) for h in (coverage or ())],
+        'region_coverage': regions or {},
     }
 
 
@@ -210,6 +225,11 @@ def main(argv=None):
     cutoff_day = (now - timedelta(days=STATION_CHANGES_DAYS)).strftime('%Y-%m-%d')
     station_store = update_station_changes(station_store, prices, changed, now, cutoff_day)
 
+    # ── Region attribution (#71): the same re-prices, counted per region, so
+    # ``hour_weights`` can learn 18 hourly distributions instead of one average.
+    region_of = station_regions(stations)
+    region_changes = Counter(region_of.get(key, 'Inconnue') for key in changed)
+
     profile, summary = record_observation(
         profile,
         observed=observed,
@@ -218,20 +238,29 @@ def main(argv=None):
         src=src,
         station_changes=len(changed),
         stations_observed=len(prices),
+        region_changed_stations=region_changes,
     )
     profile['last_station_diff'] = dict(station_store['last'])
 
     weights = hour_weights(profile)
+    per_region = region_hour_weights(profile)
+    guarded = coverage_hours(per_region, baseline=weights)
     observed_totals = observed_hour_totals(profile)
     explore_frac = max(0.0, min(1.0, float(args.explore_frac)))
     slots, explore_slots = plan_schedule(
         weights, budget=args.budget, min_per_hour=args.min_per_hour,
         max_per_hour=args.max_per_hour, observed_hours=observed_totals,
-        explore_frac=explore_frac)
+        explore_frac=explore_frac, coverage_hours=guarded,
+        mark_orders=learned_mark_orders(profile))
+    coverage = region_coverage(per_region, slots, baseline=weights)
+    for name, rec in coverage.items():
+        entry = (profile.get('regions') or {}).get(name) or {}
+        rec['stations'] = int(entry.get('stations') or 0)
     schedule = build_schedule(profile, slots, weights, args.budget,
                               args.min_per_hour, args.max_per_hour, now,
                               explore_slots=explore_slots,
-                              explore_frac=explore_frac)
+                              explore_frac=explore_frac,
+                              coverage=guarded, regions=coverage)
 
     save_json(profile_path, profile)
     save_json(data_dir / 'fetch-schedule.json', schedule)
@@ -248,6 +277,19 @@ def main(argv=None):
     if changed:
         movers = stations_changed_at(station_store, station_store['last']['at'])
         print('Changed stations: ' + ', '.join(movers))
+        by_region = ', '.join(f'{name}={count}'
+                              for name, count in sorted(region_changes.items()) if count)
+        print(f"Changed stations per region: {by_region}")
+    rates, _ = hour_rates(profile)
+    nonzero = [r for r in rates if r > 0]
+    if len(nonzero) > 1:
+        print(f"Hour contrast: {min(nonzero):.4g}-{max(nonzero):.4g} expected changed "
+              f"stations/hour ({max(nonzero) / min(nonzero):.2f}x)")
+    if coverage:
+        with_peaks = [name for name, rec in coverage.items() if rec['peaks']]
+        covered = sum(1 for name in with_peaks if coverage[name]['covered'])
+        print(f"Region coverage: {covered}/{len(with_peaks)} regions with a distinct peak "
+              f"hour keep it in the plan ({len(guarded)} pinned hours)")
     print(f"Schedule: {len(slots)} downloads/day (budget {args.budget}), "
           f"{len(explore_slots)} explore + {len(slots) - len(explore_slots)} exploit "
           f"(explore_frac {explore_frac:g}), "

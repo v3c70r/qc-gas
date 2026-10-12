@@ -296,6 +296,94 @@ class ExploreScheduleCliTest(TempDataDirTest):
         self.assertGreater(rec['observed_hours'], 0)
 
 
+class RegionLayeredScheduleTest(TempDataDirTest):
+    """Issue #71: regional hourly weights + per-region poll coverage."""
+
+    def run_profile(self, now, extra=()):
+        return update_profile.main(['--data-dir', str(self.data_dir),
+                                    '--now', now, *extra])
+
+    def test_region_hourly_statistics_are_recorded_per_fetch(self):
+        self.stations_file(feature('Montréal', 170.0, coords=(-73.5, 45.5)),
+                           feature('Estrie', 180.0, coords=(-71.9, 45.4)))
+        self.assertEqual(self.run_profile('2026-09-25T18:00:00Z'), 0)
+        self.stations_file(feature('Montréal', 175.0, coords=(-73.5, 45.5)),
+                           feature('Estrie', 180.0, coords=(-71.9, 45.4)))
+        self.assertEqual(self.run_profile('2026-09-25T18:15:00Z'), 0)
+
+        profile = read_json(self.data_dir / 'update-profile.json')
+        regions = profile['regions']
+        self.assertEqual(regions['Montréal']['stations'], 1)
+        self.assertEqual(regions['Estrie']['stations'], 1)
+        hour = regions['Montréal']['hours']['18']
+        self.assertEqual(hour['samples'], 2)
+        self.assertEqual(hour['changed_stations'], 1)  # one station re-priced
+        self.assertEqual(hour['change_events'], 1)     # the region average moved
+        self.assertEqual(regions['Estrie']['hours']['18']['changed_stations'], 0)
+        # 18:15 -> the second quarter-hour mark of hour 18.
+        self.assertEqual(profile['marks']['18']['1']['changed_stations'], 1)
+        self.assertEqual(profile['hours']['18']['exact_samples'], 2)
+
+    def regional_profile(self):
+        """A learned profile whose regions peak at different UTC hours."""
+        def hour(changed, observed, samples=16, events=16):
+            return {'samples': samples, 'observed_hours': observed,
+                    'change_events': events, 'changed_stations': changed}
+
+        return {
+            'v': 1,
+            'hours': {},
+            'regions': {
+                'Montréal': {'stations': 678, 'hours': {
+                    '4': hour(400.0, 4.0), '11': hour(20.0, 4.0, events=4)}},
+                'Gaspésie-Îles-de-la-Madeleine': {'stations': 177, 'hours': {
+                    '22': hour(90.0, 4.0), '11': hour(4.0, 4.0, events=2)}},
+            },
+        }
+
+    def test_the_schedule_covers_every_regions_peak_even_on_a_small_budget(self):
+        write_json(self.data_dir / 'update-profile.json', self.regional_profile())
+        self.stations_file(feature('Montréal', 170.0))
+        self.assertEqual(self.run_profile('2026-09-25T18:00:00Z',
+                                          extra=('--budget', '12')), 0)
+
+        schedule = read_json(self.data_dir / 'fetch-schedule.json')
+        self.assertEqual(schedule['budget_per_day'], 12)
+        self.assertEqual(len(schedule['slots']), 12)
+        coverage = schedule['region_coverage']
+        self.assertEqual(coverage['Montréal']['peaks'][0], 4)
+        self.assertEqual(coverage['Gaspésie-Îles-de-la-Madeleine']['peaks'][-1], 22)
+        covered_hours = {int(s[:2]) for s in schedule['slots']}
+        for region, rec in coverage.items():
+            self.assertTrue(rec['covered'], f'{region} peaks not covered')
+            for h in rec['peaks']:
+                self.assertIn(h, covered_hours)
+        self.assertIn('04:00', schedule['slots'])
+        self.assertIn('22:00', schedule['slots'])
+        self.assertIn(4, schedule['coverage_hours'])
+
+    def test_a_legacy_profile_without_regions_still_plans_a_schedule(self):
+        write_json(self.data_dir / 'update-profile.json', {
+            'v': 1,
+            'hours': {'11': {'samples': 9, 'observed_hours': 9.0,
+                             'change_events': 9, 'changed_stations': 9000.0}},
+            'last_observed': None,
+        })
+        self.stations_file(feature('Montréal', 170.0))
+        self.assertEqual(self.run_profile('2026-09-25T11:30:00Z',
+                                          extra=('--budget', '24')), 0)
+
+        schedule = read_json(self.data_dir / 'fetch-schedule.json')
+        self.assertEqual(schedule['source'], 'learned')
+        self.assertEqual(schedule['budget_per_day'], 24)
+        self.assertEqual(schedule['allocated_per_day'], 24)
+        self.assertEqual(len(schedule['hour_weights']), 24)
+        self.assertIn('region_coverage', schedule)
+        profile = read_json(self.data_dir / 'update-profile.json')
+        self.assertEqual(profile['hours']['11']['samples'], 10)  # legacy fields kept
+        self.assertEqual(sorted(profile['regions']), ['Montréal'])
+
+
 class ShouldFetchCliTest(TempDataDirTest):
     def github_output(self):
         return self.data_dir / 'gh_output'

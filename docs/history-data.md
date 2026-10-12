@@ -279,7 +279,7 @@ runs on the busy windows, so the learner never saw those hours and their weight
 stayed frozen at the research prior. That is *exploitation without
 exploration*: the sampler cannot discover whether an unvisited hour matters.
 
-To fix it, `plan_slots()` reserves a fraction **ε** of the daily budget for
+To fix it, `plan_schedule()` reserves a fraction **ε** of the daily budget for
 **explore** slots and only allocates the remaining `1 − ε` to the learned
 peaks (**exploit** slots):
 
@@ -316,6 +316,71 @@ plan is then byte-for-byte the pre-#69 plan. Set it in the `env:` block of the
 when there is no learned profile yet (the research-prior fallback) or when the
 budget only covers the hourly `min_per_hour` floor — there is no slack to
 probe with.
+
+## Fetch profile (`update-profile.json`)
+
+The fetch profile is the learned "when do stations re-price" state that
+`update_profile.py` maintains and `fetch_strategy.hour_weights()` turns into the
+poll schedule ([`fetch-strategy.md`](./fetch-strategy.md#layered-weights-regions-expected-volume-quarter-hours-issue-71)).
+It is derived state, not history: it has **no retention window** — it is
+cumulative by design, so the schedule reflects the whole observed history
+instead of chasing single days.
+
+```json
+{
+  "v": 1,
+  "hours": {
+    "11": {"samples": 12, "observed_hours": 6.5, "change_events": 3,
+           "changed_stations": 812, "changed_stations_exact": 47,
+           "stations_observed": 2463, "exact_samples": 12}
+  },
+  "regions": {
+    "Montréal": {"stations": 452, "hours": {
+      "11": {"samples": 12, "observed_hours": 6.5,
+             "change_events": 3, "changed_stations": 18}
+    }}
+  },
+  "marks": {
+    "11": {"0": {"samples": 3, "changed_stations": 21},
+           "1": {"samples": 3, "changed_stations": 9}}
+  },
+  "last_observed": {"Montréal": {"regular": 170.5, "super": 188.0}},
+  "last_observed_at": "2026-09-25T11:20:00Z",
+  "last_station_diff": {"at": "2026-09-25T11:20:00Z", "observed": 2463, "changed": 47}
+}
+```
+
+- `hours` — province-wide per-UTC-hour counters (the pre-#71 schema, unchanged;
+  `changed_stations` is the region-average estimate, `changed_stations_exact`
+  the per-station count of issue #68 and `exact_samples` how many fetches fed
+  the later).
+- `regions` — the same accounting per region (issue #71), **sparse**: only hours
+  that were actually observed are written, and `changed_stations` is always the
+  exact per-station count. `stations` is the region's station count at the last
+  fetch.
+- `marks` — per quarter-hour counter (`0` = `:00` … `3` = `:45`) of fetches and
+  exact re-prices; it only starts ordering the marks of an hour once that hour
+  has been sampled enough (`MARK_MIN_SAMPLES = 32`).
+- `last_observed` / `last_station_diff` — the diff baselines of the next fetch.
+
+### Size & growth
+
+All three blocks are bounded by the calendar, not by time:
+
+- `hours`: 24 counters, ~100 B each → **~2.5 KB**;
+- `regions`: 18 regions x 24 hours x ~75 B → **~33 KB** when every hour of the
+  day has been sampled in every region; only observed hours are stored, so a
+  partially covered day (the common case early on) is a few hundred bytes per
+  region;
+- `marks`: 24 hours x 4 marks x ~40 B → **~4 KB** once every mark has samples.
+
+Measured on an offline replay of the real snapshot (two days of 15-minute
+fetches, all 18 regions, 432 region-hour cells — i.e. saturated):
+**43.9 KB** uncompressed for the whole file, ≈ 9 KB as `.br`.
+
+The file does **not grow with time**: the counters are cumulative, so they grow
+in *value*, not in size. The 40 MB `data/` budget of
+`scripts/check_data_size.py` is therefore unaffected.
 
 ## Granularity & downsampling
 
