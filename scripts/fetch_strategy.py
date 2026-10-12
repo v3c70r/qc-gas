@@ -28,17 +28,54 @@ How it works
    right now?" using the schedule plus a freshness safety net.
 
 Everything here is pure and unit-tested (`scripts/test_fetch_strategy.py`).
+The only environment touch is :func:`env_int`, which resolves the shared
+``FETCH_DAILY_BUDGET`` / ``FETCH_MAX_AGE_MINUTES`` overrides (issue #67).
 """
 
+import os
 from datetime import datetime, timedelta, timezone
 
 SLOT_MINUTES = 15
 SLOTS_PER_HOUR = 60 // SLOT_MINUTES          # 4 quarter-hour marks
 SLOTS_PER_DAY = 24 * SLOTS_PER_HOUR          # 96 slots
-DEFAULT_DAILY_BUDGET = 36                    # max upstream downloads per day
-                                             # (24 hourly floor + 12 learned-window extras)
+
+# Max upstream downloads per day. The upstream Régie Essence snapshot is
+# regenerated every 5 minutes on the quarter-hour grid (measured on
+# 2026-10-11: metadata.generated_at went 04:45:01 -> 04:50:01 -> 04:55:01), and
+# ``static.yml`` wakes this workflow every 15 minutes, so the whole day is 96
+# wake-ups and one request per wake-up costs no extra upstream load per unit of
+# freshness: the budget now matches the wake-up cadence (issue #67). It was 36
+# (24 hourly floor + 12 learned-window extras), which left ~40-minute gaps and
+# was the dominant cause of stale station prices (~24.5% of stations re-price
+# every day).
+DEFAULT_DAILY_BUDGET = 96
+# Freshness safety net: force a poll when the last one is older than this, so a
+# broken/empty schedule can never leave the data more than one poll cycle stale.
+DEFAULT_MAX_AGE_MINUTES = 90
 DEFAULT_MAX_GAP_HOURS = 2.0                  # exposure cap for one observation
 DEFAULT_PRIOR_HOURS = 168.0                  # one week of observed hours
+
+# Environment overrides read by *both* CLIs (``update_profile.py`` writes the
+# schedule, ``should_fetch.py`` gates on it) so the workflow has a single
+# source of truth and the two scripts can never disagree.
+BUDGET_ENV_VAR = 'FETCH_DAILY_BUDGET'
+MAX_AGE_ENV_VAR = 'FETCH_MAX_AGE_MINUTES'
+
+
+def env_int(name, default, environ=None):
+    """Positive integer from ``name`` in ``environ``, else ``default``.
+
+    Unset, non-numeric or non-positive values fall back to the default so a
+    typo in the workflow env can never disable fetching entirely.
+    """
+    raw = (os.environ if environ is None else environ).get(name)
+    if raw is None or str(raw).strip() == '':
+        return int(default)
+    try:
+        value = int(str(raw).strip())
+    except ValueError:
+        return int(default)
+    return value if value > 0 else int(default)
 
 # Order in which the quarter-hour marks of an hour are used, coarsest spread
 # first: one slot -> :00, two -> :00/:30, three -> :00/:30/:15, four -> every mark.
@@ -406,7 +443,7 @@ def slot_labels(slots):
 # ── Workflow gate ────────────────────────────────────────────────────────────
 
 def due_decision(now, slots, last_fetch_at, *, min_gap_minutes=10,
-                 max_age_minutes=180, grace_minutes=45):
+                 max_age_minutes=DEFAULT_MAX_AGE_MINUTES, grace_minutes=45):
     """Should this workflow run poll upstream right now?
 
     ``slots`` is a daily list of "HH:MM" UTC labels. The decision:

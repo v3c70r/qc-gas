@@ -4,7 +4,8 @@ The price history is **real region-level data** recorded automatically by the
 GitHub Actions data workflow (`.github/workflows/update-data.yml`). Which runs
 may download is decided by the learned, budget-bounded schedule described in
 [`fetch-strategy.md`](./fetch-strategy.md): the workflow wakes every 15 minutes
-but only polls upstream on the planned slots. There is no external database:
+but only polls upstream on the planned slots; the upstream snapshot itself is
+regenerated every 5 minutes (see "Fetch rhythm vs upstream regeneration"). There is no external database:
 everything is committed back into this repository.
 
 ## How a snapshot is produced
@@ -20,6 +21,30 @@ everything is committed back into this repository.
 5. `scripts/append_history.py` appends one **region-level** 6h bucket and one
    **station-level daily** snapshot to the history store.
 6. The workflow commits the new files and pushes them back to the repo.
+
+## Fetch rhythm vs upstream regeneration
+
+The upstream Régie Essence snapshot is **regenerated every 5 minutes** on the
+quarter-hour grid (measured 2026-10-11: `metadata.generated_at` went
+`04:45:01 → 04:50:01 → 04:55:01`), and `static.yml` wakes the data workflow
+every 15 minutes. The rhythm is therefore **one fetch per wake-up**
+(`FETCH_DAILY_BUDGET = 96`, i.e. one request per quarter-hour slot) with a
+**90-minute** freshness safety net (`FETCH_MAX_AGE_MINUTES`), so a station that
+re-prices is normally observed within ~15 minutes. This matters because
+**~24.5 % of stations re-price on any given day**, and the previous 36/day gate
+left gaps of ~40 minutes.
+
+Both env vars are the single source of truth: they are set once in the `env:`
+block of the `update-data` job in `.github/workflows/update-data.yml`, read by
+`scripts/should_fetch.py` (gate) and `scripts/update_profile.py` (plan writer),
+and fall back to the constants in `scripts/fetch_strategy.py` when unset.
+`data/fetch-schedule.json` picks a new budget up on the next successful fetch;
+to rebuild it from the committed profile immediately, see
+[`fetch-strategy.md` §Fetch rhythm](./fetch-strategy.md#fetch-rhythm-vs-upstream-regeneration).
+
+One upstream request per admitted run is unchanged (`download_data.py` does not
+retry-storm; the `User-Agent` is untouched), and the budget can never exceed the
+wake-up cadence.
 
 ## Granularity & downsampling
 

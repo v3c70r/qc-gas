@@ -22,8 +22,12 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 from fetch_strategy import (  # noqa: E402
+    BUDGET_ENV_VAR,
     DEFAULT_DAILY_BUDGET,
+    DEFAULT_MAX_AGE_MINUTES,
+    MAX_AGE_ENV_VAR,
     due_decision,
+    env_int,
     parse_iso,
     plan_slots,
     research_prior_weights,
@@ -71,9 +75,14 @@ def main(argv=None):
     parser.add_argument('--now', help='UTC ISO timestamp override (tests/logs)')
     parser.add_argument('--event-name', default=os.environ.get('GITHUB_EVENT_NAME') or 'schedule')
     parser.add_argument('--github-output', default=os.environ.get('GITHUB_OUTPUT'))
-    parser.add_argument('--budget', type=int, default=DEFAULT_DAILY_BUDGET)
+    # Both defaults come from the shared env vars (falling back to the
+    # constants in ``fetch_strategy``), which is the same knob
+    # ``update_profile.py`` sizes the written schedule with.
+    parser.add_argument('--budget', type=int,
+                        default=env_int(BUDGET_ENV_VAR, DEFAULT_DAILY_BUDGET))
     parser.add_argument('--min-gap-minutes', type=int, default=10)
-    parser.add_argument('--max-age-minutes', type=int, default=180)
+    parser.add_argument('--max-age-minutes', type=int,
+                        default=env_int(MAX_AGE_ENV_VAR, DEFAULT_MAX_AGE_MINUTES))
     parser.add_argument('--grace-minutes', type=int, default=45)
     parser.add_argument('--dry-run', action='store_true',
                         help='decide but do not record the fetch')

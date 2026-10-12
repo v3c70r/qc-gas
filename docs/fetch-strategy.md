@@ -129,9 +129,16 @@ UTC slots:
 2. the remaining budget is greedily water-filled into the highest-weight hours,
    at most 4 slots per hour (one per quarter-hour mark `:00`, `:15`, `:30`,
    `:45`, spread coarse-first);
-3. `budget` is the hard **maximum upstream downloads per day** (default 36 =
-   24 hourly floor + 12 extras, override with the `FETCH_DAILY_BUDGET` env var
-   or `--budget`).
+3. `budget` is the hard **maximum upstream downloads per day** (default **96**
+   = every quarter-hour slot, i.e. one request per `*/15` wake-up; override
+   with the `FETCH_DAILY_BUDGET` env var or `--budget`). Below 96 the learned
+   weights decide which slots survive; at 96 the budget equals capacity, so the
+   plan is simply every slot.
+
+Since the upstream snapshot is regenerated every 5 minutes (see
+"Fetch rhythm vs upstream regeneration" below) and the workflow wakes every 15
+minutes, polling on every wake-up adds freshness without polling faster than
+the schedule that triggers it.
 
 Example output (`data/fetch-schedule.json`):
 
@@ -141,8 +148,8 @@ Example output (`data/fetch-schedule.json`):
   "generated_at": "2026-09-25T11:20:00Z",
   "source": "learned",
   "prior": "research-2026-09",
-  "budget_per_day": 36,
-  "allocated_per_day": 36,
+  "budget_per_day": 96,
+  "allocated_per_day": 96,
   "min_per_hour": 1,
   "max_per_hour": 4,
   "slots": ["00:00", "00:15", "00:30", "01:00", "..."],
@@ -166,7 +173,8 @@ if the learned peaks drift.
 3. a scheduled slot fell inside `(last_fetch, now]` within a 45-minute grace
    window → fetch (the grace stops a delayed runner from firing on a slot that
    is hours stale);
-4. nothing for more than 3 h → fetch anyway (**freshness safety net**, so a bad
+4. nothing for more than `max_age_minutes` (default **90 min**, env
+   `FETCH_MAX_AGE_MINUTES`) → fetch anyway (**freshness safety net**, so a bad
    or empty schedule can never leave the data stale);
 5. otherwise → skip until the next slot.
 
@@ -175,9 +183,65 @@ A non-scheduled run (`push`, `workflow_dispatch`) always fetches. The gate write
 size-check and commit steps on it, and `static.yml` skips the Pages build/deploy
 when `due=false`. So a not-due wake-up costs a checkout plus the gate — upstream
 is not touched and no identical snapshot is redeployed.
-
 If `should_fetch.py` itself fails, the workflow shell fallback sets `due=true`:
 fail-open, because stale prices are worse than one extra download.
+
+## Fetch rhythm vs upstream regeneration
+
+Measured evidence (2026-10-11/12, issue #67):
+
+- the upstream snapshot is **regenerated every 5 minutes**, on the quarter-hour
+grid — three consecutive samples of `metadata.generated_at` read
+`04:45:01 → 04:50:01 → 04:55:01`;
+- our own rhythm was **~40 minutes per fetch**: `static.yml` woke every 15
+minutes, but `data/fetch-schedule.json` had `budget_per_day: 36`, so the gate
+only admitted 36 of the 96 wake-ups;
+- **24.5 % of stations re-price on any given day** (603 of 2463 comparable
+stations moved between adjacent days in `data/history/station-history.json`).
+
+Since the bottleneck was our own budget — not upstream — the rhythm is now
+**one fetch per 15-minute wake-up** (budget 96) with a **90-minute** freshness
+safety net, so a station that re-prices is normally picked up within ~15 minutes
+instead of up to several hours later. Upstream load is unchanged in kind: the
+same single request per admitted run, the same `User-Agent`, the same retry
+backoff in `download_data.py`; only the admission rate is higher, and it can
+never exceed the wake-up cadence.
+
+### How to tune it
+
+`FETCH_DAILY_BUDGET` and `FETCH_MAX_AGE_MINUTES` are the **single knob** for
+both CLIs: `scripts/should_fetch.py` (the gate) and `scripts/update_profile.py`
+(the plan writer) read the same env vars, falling back to
+`fetch_strategy.DEFAULT_DAILY_BUDGET` / `DEFAULT_MAX_AGE_MINUTES` when unset
+(local runs, tests). In CI they are set once in the `env:` block of the
+`update-data` job in `.github/workflows/update-data.yml` — edit that block, not
+the scripts.
+
+`data/fetch-schedule.json` is derived state: its `budget_per_day` only follows
+the env var after the **next successful fetch** rewrites it
+(`update_profile.py`). Until then it keeps the old budget — if the file and the
+env disagree, the gate still uses the file's `slots`, so no manual edit is
+needed. To rebuild it immediately from the committed profile (no network, no
+new observation recorded), re-run the planner over a copy of the profile with
+the new budget, e.g.:
+
+```bash
+python3 - <<'PY'
+import json, pathlib
+from scripts import update_profile as up
+from scripts.fetch_strategy import hour_weights, plan_slots
+
+d = pathlib.Path('data')
+profile = json.loads((d / 'update-profile.json').read_text())
+weights = hour_weights(profile)
+slots = plan_slots(weights, budget=96, min_per_hour=1, max_per_hour=4)
+schedule = up.build_schedule(profile, slots, weights, 96, 1, 4,
+                             up.parse_iso(profile['updated_at']))
+(d / 'fetch-schedule.json').write_text(json.dumps(schedule, separators=(',', ':')) + '\n')
+PY
+```
+
+Then `allocated_per_day` matches `budget_per_day` (96) again.
 
 ## Scheduled triggers are not precise
 
@@ -191,8 +255,8 @@ exact minute:
   run inside an hour is due and staleness stays around an hour;
 - the 45-minute grace window means a run delayed by 10–40 minutes still serves
   its slot instead of being thrown away;
-- the 3 h freshness net guarantees a download even if every scheduled run is
-  dropped for hours.
+- the 90-minute freshness net guarantees a download even if every scheduled run
+  is dropped for hours.
 
 Extra density in the learned windows pays off when the platform does honour the
 15-minute triggers; the floor keeps the worst case no worse than the old
@@ -203,15 +267,15 @@ hourly poll.
 | Situation | Upstream downloads/day |
 | --- | --- |
 | before this change | 24 (fixed hourly) |
-| default plan | ≤ 36 (24 hourly floor + 12 concentrated in learned windows) |
+| default plan | ≤ 96 (one per 15-minute wake-up) |
 | with `FETCH_DAILY_BUDGET=24` | ≤ 24 while still concentrating on learned windows |
-| empty/corrupt schedule | ≤ 8 from the freshness net (one every 3 h) |
+| empty/corrupt schedule | ≤ 16 from the freshness net (one every 90 min) |
 | code pushes (`push` event) | unbounded by the plan, but only as often as humans push |
 
 The planned part is structurally bounded: the gate only fires on planned slots
 and the plan can never exceed `budget_per_day` quarter-hour slots. The freshness
-net can add at most one extra fetch every `max_age_minutes` (8/day at the 3 h
-default) when the plan is empty or broken.
+net can add at most one extra fetch every `max_age_minutes` (16/day at the
+90-minute default) when the plan is empty or broken.
 
 ## Files are disposable
 
@@ -233,3 +297,5 @@ python3 scripts/should_fetch.py --data-dir /tmp/prof --dry-run
 ```
 
 Both CLIs accept `--now <ISO>` so decisions can be reproduced for any instant.
+Both also honour `FETCH_DAILY_BUDGET` / `FETCH_MAX_AGE_MINUTES` (see "How to tune
+it" above), so a local run reproduces the CI rhythm when those are exported.

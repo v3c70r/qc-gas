@@ -6,12 +6,16 @@ and rewrites the daily poll schedule; `should_fetch.py` is the workflow gate
 that decides whether a given run is allowed to hit upstream.
 """
 
+import contextlib
+import io
 import json
+import os
 import sys
 import tempfile
 import unittest
 from datetime import datetime, timezone
 from pathlib import Path
+from unittest import mock
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
@@ -72,7 +76,7 @@ class UpdateProfileCliTest(TempDataDirTest):
 
         schedule = read_json(self.data_dir / 'fetch-schedule.json')
         self.assertEqual(len(schedule['slots']), schedule['budget_per_day'])
-        self.assertEqual(schedule['budget_per_day'], update_profile.DEFAULT_BUDGET)
+        self.assertEqual(schedule['budget_per_day'], update_profile.DEFAULT_DAILY_BUDGET)
         self.assertEqual(schedule['slots'], sorted(schedule['slots']))
         self.assertEqual(len(schedule['slots']), len(set(schedule['slots'])))
         self.assertEqual(schedule['allocated_per_day'], len(schedule['slots']))
@@ -107,6 +111,16 @@ class UpdateProfileCliTest(TempDataDirTest):
         schedule = read_json(self.data_dir / 'fetch-schedule.json')
         self.assertEqual(schedule['budget_per_day'], 12)
         self.assertEqual(len(schedule['slots']), 12)
+
+    def test_the_schedule_learns_the_budget_from_the_shared_env_var(self):
+        """Issue #67: one env knob, not a constant burried in each script."""
+        self.stations_file(feature('Montréal', 170.0))
+        with mock.patch.dict(os.environ, {update_profile.BUDGET_ENV_VAR: '12'}):
+            update_profile.main(['--data-dir', str(self.data_dir),
+                                 '--now', '2026-09-25T11:00:00Z'])
+        schedule = read_json(self.data_dir / 'fetch-schedule.json')
+        self.assertEqual(schedule['budget_per_day'], 12)
+        self.assertEqual(schedule['allocated_per_day'], 12)
 
     def test_missing_snapshot_skips_writes(self):
         rc = update_profile.main(['--data-dir', str(self.data_dir),
@@ -214,6 +228,12 @@ class ShouldFetchCliTest(TempDataDirTest):
     def github_output(self):
         return self.data_dir / 'gh_output'
 
+    def stale_state(self, last_fetch_at):
+        write_json(self.data_dir / 'fetch-schedule.json',
+                   {'v': 1, 'budget_per_day': 1, 'slots': ['00:00']})
+        write_json(self.data_dir / 'fetch-state.json',
+                   {'v': 1, 'last_fetch_at': last_fetch_at, 'fetches': 1})
+
     def run_gate(self, now, event='schedule', extra=()):
         return should_fetch.main([
             '--data-dir', str(self.data_dir),
@@ -263,6 +283,41 @@ class ShouldFetchCliTest(TempDataDirTest):
     def test_dry_run_does_not_write_state(self):
         self.run_gate('2026-09-25T11:03:00Z', extra=('--dry-run',))
         self.assertFalse((self.data_dir / 'fetch-state.json').exists())
+        self.assertIn('due=true', self.github_output().read_text())
+
+    def test_gate_and_profile_share_one_budget_env_var(self):
+        self.assertEqual(should_fetch.BUDGET_ENV_VAR, update_profile.BUDGET_ENV_VAR)
+        self.assertEqual(should_fetch.BUDGET_ENV_VAR, 'FETCH_DAILY_BUDGET')
+        self.assertEqual(should_fetch.MAX_AGE_ENV_VAR, 'FETCH_MAX_AGE_MINUTES')
+
+    def test_env_budget_drives_the_fallback_plan(self):
+        # No learned schedule on disk -> the research-prior plan is sized by the
+        # same FETCH_DAILY_BUDGET the profile step writes with.
+        with mock.patch.dict(os.environ, {should_fetch.BUDGET_ENV_VAR: '12'}):
+            buf = io.StringIO()
+            with contextlib.redirect_stdout(buf):
+                rc = should_fetch.main([
+                    '--data-dir', str(self.data_dir),
+                    '--now', '2026-09-25T11:03:00Z',
+                    '--event-name', 'schedule',
+                    '--github-output', str(self.github_output()),
+                    '--dry-run',
+                ])
+        self.assertEqual(rc, 0)
+        self.assertIn('12 slots/day', buf.getvalue())
+
+    def test_default_freshness_net_is_90_minutes(self):
+        self.stale_state('2026-09-25T11:00:00Z')
+        self.run_gate('2026-09-25T12:30:00Z')  # exactly 90 min: still fresh
+        self.assertIn('due=false', self.github_output().read_text())
+        self.github_output().unlink()
+        self.run_gate('2026-09-25T12:35:00Z')  # ... 5 min later it is stale
+        self.assertIn('due=true', self.github_output().read_text())
+
+    def test_env_max_age_override_tightens_the_net(self):
+        self.stale_state('2026-09-25T11:00:00Z')
+        with mock.patch.dict(os.environ, {should_fetch.MAX_AGE_ENV_VAR: '45'}):
+            self.run_gate('2026-09-25T12:30:00Z')
         self.assertIn('due=true', self.github_output().read_text())
 
     def test_gate_never_crashes_on_corrupt_state(self):

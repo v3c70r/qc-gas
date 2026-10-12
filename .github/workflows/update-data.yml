@@ -12,6 +12,20 @@ jobs:
     runs-on: ubuntu-latest
     outputs:
       due: ${{ steps.gate.outputs.due }}
+    # Single source of truth for the fetch rhythm (issue #67): both the gate
+    # (`should_fetch.py`) and the schedule writer (`update_profile.py`) read
+    # these, so the plan and the gate can never disagree. Changing the rhythm =
+    # editing this env block only; the constants in `scripts/fetch_strategy.py`
+    # are just the local fallback.
+    env:
+      # Upstream regenerates its snapshot every 5 minutes (metadata.generated_at
+      # moved 04:45:01 -> 04:50:01 -> 04:55:01), and the static.yml cron wakes
+      # every 15 minutes, so 96 = one request per wake-up and no faster polling
+      # than the schedule itself. Was 36, which left ~40 min gaps.
+      FETCH_DAILY_BUDGET: '96'
+      # Freshness safety net: force a poll when the last one is older than 90
+      # minutes (was 180), i.e. at most one missed poll cycle of drift.
+      FETCH_MAX_AGE_MINUTES: '90'
     steps:
       # Check out the latest branch tip so the data commit is based on current
       # master (avoids losing a concurrent code merge when the data push fails).
@@ -26,8 +40,10 @@ jobs:
 
       # The schedule wakes this workflow often so a poll can land right after
       # stations re-price; this gate keeps upstream load bounded by only
-      # downloading inside the learned change windows (plus a 3h freshness
-      # safety net). Non-scheduled runs (push / dispatch) always fetch.
+      # downloading inside the learned change windows (plus the
+      # FETCH_MAX_AGE_MINUTES freshness safety net). The budget/freshness env
+      # above is the single knob; non-scheduled runs (push / dispatch) always
+      # fetch. One upstream request per admitted run, no retries.
       - name: Decide whether to fetch (adaptive schedule)
         id: gate
         run: |
