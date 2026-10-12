@@ -31,7 +31,7 @@ import { execFileSync } from 'node:child_process';
 import { mkdirSync, readFileSync, writeFileSync, existsSync, copyFileSync, symlinkSync, rmSync } from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { detectBase, isRejectedIssue, mergeIssueState, prepareImplementerBranch, resolvePi, resolveTesterCommands, selectPendingIssues, sh } from './lib.mjs';
+import { acquireWatchLock, clearBlockedState, detectBase, isRejectedIssue, mergeIssueState, prepareImplementerBranch, releaseWatchLock, resolvePi, resolveTesterCommands, selectPendingIssues, sh } from './lib.mjs';
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const AGENT = path.join(ROOT, '.agent');
@@ -367,7 +367,9 @@ async function processIssueInner(issue, force = false) {
     log(issue.number, '状态: rejected（issue 带 agent-rejected 标签，硬性跳过实现与合并）');
     return { skipped: 'rejected' };
   }
-  const cur = s[issue.number];
+  // `let` because the dependency gate below may DELETE this entry when a blocked
+  // issue becomes unblocked — the in-memory handle must follow (issue #75).
+  let cur = s[issue.number];
   const terminal = ['merged', 'rejected', 'failed'];
   if (cur && terminal.includes(cur.status) && !force) return { skipped: cur.status };
 
@@ -400,15 +402,21 @@ async function processIssueInner(issue, force = false) {
     }
   }
 
-  // dependencies satisfied → clear the blocked marker
-  if (state.load()[issue.number]?.status === 'blocked') {
+  // dependencies satisfied → FORGET the blocked entry (fresh "to implement").
+  // Writing `pr_open` here claimed a PR that does not exist yet; correctness
+  // depended on the next tick hitting the `status === 'pr_open' && !pr` special
+  // case below. Deleting is the honest semantic and does not rely on coincidence
+  // (issue #75).
+  {
     const sc = state.load();
-    sc[issue.number].status = 'pr_open';
-    delete sc[issue.number].blockedBy;
-    delete sc[issue.number].blockedNotified;
-    delete sc[issue.number].blockedCheckedAt;
-    state.save(sc);
-    try { commentOnIssue(issue.number, '✅ 依赖已满足，开始实现。'); } catch {}
+    const cleared = clearBlockedState(sc, issue.number);
+    if (cleared.changed) {
+      state.save(cleared.state);
+      delete s[issue.number];
+      cur = s[issue.number];
+      log(issue.number, '依赖已满足，进入实现（清除 blocked 状态条目，等价于全新待实现）');
+      try { commentOnIssue(issue.number, '✅ 依赖已满足，开始实现。'); } catch {}
+    }
   }
 
   // 1) IMPLEMENT
@@ -605,6 +613,24 @@ async function main() {
   }
 
   // watch loop — designed to stay alive in tmux; only Ctrl-C / `--once` stops it
+  //
+  // SINGLE-INSTANCE LOCK (issue #75): two watchers in the same working tree
+  // would race on checkout/reset/commit and destroy each other's implement
+  // branch. Refuse to start if a live instance already holds the lock; take
+  // over a stale lock left by a killed process.
+  const LOCK_FILE = path.join(AGENT, 'watch.lock');
+  const lock = acquireWatchLock(LOCK_FILE);
+  if (!lock.acquired) {
+    console.error(`❌ 已有实例在运行 (PID ${lock.pid})，退出以免两个 watcher 在同一工作区互相破坏。`);
+    console.error(`   如确认该进程已停止，可删除 ${LOCK_FILE} 后重试。`);
+    process.exit(1);
+  }
+  if (lock.tookOver) console.warn(`⚠️ 接管遗留的 watch 锁（原 PID 已不存在）`);
+  const dropLock = () => releaseWatchLock(LOCK_FILE);
+  process.on('exit', dropLock);
+  process.on('SIGINT', () => { dropLock(); process.exit(130); });
+  process.on('SIGTERM', () => { dropLock(); process.exit(143); });
+
   console.log('👀 agent pipeline watch — Ctrl-C 退出（tmux 中可常驻）');
   const ts = () => new Date().toISOString().replace('T', ' ').slice(0, 19);
   let pollFailures = 0;
