@@ -145,6 +145,11 @@ def region_station_counts(stations):
 # Prices are stored with one decimal; half a tenth is noise, not a re-price.
 PRICE_EPSILON = 0.05
 
+# Short fuel keys used by the station stores (`g`/`s`/`d`, same as the region
+# history tiers). The order of this tuple is the order of a stored price row.
+STATION_FUELS = ('g', 's', 'd')
+STATION_FUEL_NAMES = {'g': 'regular', 's': 'super', 'd': 'diesel'}
+
 
 def diff_regions(previous, current):
     """Regions (and fuels) whose observed average moved since the last fetch."""
@@ -158,6 +163,91 @@ def diff_regions(previous, current):
     return changed
 
 
+def station_coord_key(feat):
+    """Stable per-station key: ``"lng,lat"`` rounded to 5 decimals.
+
+    The upstream payload has no station id, so coordinates are the only stable
+    handle. Five decimals (~1 m) has been the de-facto key of
+    ``data/history/station-history.json`` and loses only 0.61% of keys over
+    30 days — far less than a name/address key would.
+    """
+    coords = (feat or {}).get('geometry') or {}
+    coords = coords.get('coordinates') if isinstance(coords, dict) else None
+    if not coords or len(coords) < 2:
+        return None
+    try:
+        return f"{float(coords[0]):.5f},{float(coords[1]):.5f}"
+    except (TypeError, ValueError):
+        return None
+
+
+def station_prices(stations):
+    """Coordinate key -> {short fuel: price} for every priced station.
+
+    Unlike :func:`observed_from_stations` this keeps one entry *per station*,
+    so a +5c move on one pump is never cancelled out by a -5c move on its
+    neighbour inside the same region average.
+    """
+    out = {}
+    for feat in (stations or {}).get('features') or []:
+        props = (feat or {}).get('properties') or {}
+        key = station_coord_key(feat)
+        if not key:
+            continue
+        rec = {}
+        for short in STATION_FUELS:
+            value = props.get(STATION_FUEL_NAMES[short] + '_price')
+            if value is not None:
+                rec[short] = round(float(value), 1)
+        if rec:
+            out[key] = rec
+    return out
+
+
+def prices_to_row(prices):
+    """Compact ``[g, s, d]`` row (``None`` for a fuel the station did not report)."""
+    prices = prices or {}
+    return [prices.get(fuel) for fuel in STATION_FUELS]
+
+
+def prices_from_row(row):
+    """Inverse of :func:`prices_to_row`; drops ``None`` fuels."""
+    return {fuel: value for fuel, value in zip(STATION_FUELS, row or []) if value is not None}
+
+
+def diff_stations(previous, current):
+    """Stations (and fuels) whose *own* price moved since the last snapshot.
+
+    ``previous`` / ``current`` are ``{coord_key: {short fuel: price}}`` maps
+    (:func:`station_prices`). Returns ``{coord_key: [changed fuels]}``.
+
+    Rules:
+    * a fuel counts as changed when both sides have a value and they differ by
+      at least ``PRICE_EPSILON`` (same noise threshold as the region diff);
+    * a station with no previous entry has no baseline -> not a change;
+    * a fuel appearing or disappearing is an availability change, not a
+      re-price -> not a change;
+    * a station missing from ``current`` (vanished from the feed) is not a
+      change either; it is only pruned once it stops being seen.
+    """
+    changed = {}
+    for key, fuels in (current or {}).items():
+        before = (previous or {}).get(key)
+        if not before:
+            continue
+        moved = []
+        for fuel in STATION_FUELS:
+            new = (fuels or {}).get(fuel)
+            old = before.get(fuel)
+            if new is None or old is None:
+                continue
+            if abs(float(new) - float(old)) >= PRICE_EPSILON:
+                moved.append(fuel)
+        if moved:
+            changed[key] = moved
+    return changed
+
+
 def _ensure_hours(profile):
     hours = profile.setdefault('hours', {})
     for h in range(24):
@@ -166,11 +256,14 @@ def _ensure_hours(profile):
         rec.setdefault('observed_hours', 0.0)
         rec.setdefault('change_events', 0)
         rec.setdefault('changed_stations', 0)
+        rec.setdefault('changed_stations_exact', 0)
+        rec.setdefault('stations_observed', 0)
     return hours
 
 
 def record_observation(profile, *, observed, region_counts, now, previous_at=None,
-                       src=None, max_gap_hours=DEFAULT_MAX_GAP_HOURS):
+                       src=None, max_gap_hours=DEFAULT_MAX_GAP_HOURS,
+                       station_changes=None, stations_observed=None):
     """Fold one real fetch into the learnable change-time profile.
 
     Returns ``(profile, summary)``. The change is attributed to the *fetch*
@@ -178,6 +271,12 @@ def record_observation(profile, *, observed, region_counts, now, previous_at=Non
     estimate stays consistent even when the sampler is denser at some hours.
     ``previous_at`` is the timestamp of the previous *observation* (not the
     previous download attempt), which is what the exposure gap must measure.
+
+    ``station_changes`` (exact per-station re-prices) and ``stations_observed``
+    are the station-level calibration of the old, region-average-based
+    ``changed_stations`` estimate. They are recorded side by side so the exact
+    counts stay measurable; the schedule keeps reading the region-level fields
+    until they have been shown to be a better predictor.
     """
     hours = _ensure_hours(profile)
     hour = now.astimezone(timezone.utc).hour
@@ -200,6 +299,12 @@ def record_observation(profile, *, observed, region_counts, now, previous_at=Non
         rec['change_events'] += 1
         rec['changed_stations'] += changed_stations
 
+    exact = None if station_changes is None else int(station_changes)
+    if exact is not None:
+        rec['changed_stations_exact'] = rec.get('changed_stations_exact', 0) + exact
+    if stations_observed is not None:
+        rec['stations_observed'] = int(stations_observed)
+
     profile['last_observed'] = observed
     profile['last_observed_at'] = to_iso(now)
     if src:
@@ -212,6 +317,7 @@ def record_observation(profile, *, observed, region_counts, now, previous_at=Non
         'samples': rec['samples'],
         'changed_regions': sorted(changed),
         'changed_stations': changed_stations,
+        'changed_stations_exact': exact if exact is not None else 0,
     }
     return profile, summary
 

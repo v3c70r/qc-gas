@@ -18,15 +18,20 @@ from fetch_strategy import (  # noqa: E402
     SLOTS_PER_DAY,
     SLOTS_PER_HOUR,
     diff_regions,
+    diff_stations,
     due_decision,
     hour_weights,
     observed_from_stations,
     plan_slots,
+    prices_from_row,
+    prices_to_row,
     record_observation,
     region_station_counts,
     research_prior_weights,
     slot_index,
     slot_label,
+    station_coord_key,
+    station_prices,
 )
 
 UTC = timezone.utc
@@ -40,7 +45,7 @@ def at(hour, minute=0, day=25):
     return datetime(2026, 9, day, hour, minute, tzinfo=UTC)
 
 
-def feature(region, regular=None, super_=None, diesel=None):
+def feature(region, regular=None, super_=None, diesel=None, coords=(-73.5, 45.5)):
     props = {'region': region, 'name': region}
     if regular is not None:
         props['regular_price'] = regular
@@ -50,7 +55,7 @@ def feature(region, regular=None, super_=None, diesel=None):
         props['diesel_price'] = diesel
     return {
         'type': 'Feature',
-        'geometry': {'type': 'Point', 'coordinates': [-73.5, 45.5]},
+        'geometry': {'type': 'Point', 'coordinates': list(coords)},
         'properties': props,
     }
 
@@ -244,6 +249,102 @@ class DiffRegionsTest(unittest.TestCase):
         self.assertEqual(diff_regions(prev, cur), {})
 
 
+class StationKeyTest(unittest.TestCase):
+    def test_key_is_the_coordinates_rounded_to_five_decimals(self):
+        feat = feature('Montréal', regular=170.0, coords=(-79.019574, 48.246759))
+        self.assertEqual(station_coord_key(feat), '-79.01957,48.24676')
+
+    def test_key_is_none_without_usable_coordinates(self):
+        self.assertIsNone(station_coord_key({'geometry': None, 'properties': {}}))
+        self.assertIsNone(station_coord_key(
+            {'geometry': {'coordinates': [None]}, 'properties': {}}))
+
+    def test_key_is_stable_across_snapshots(self):
+        a = feature('Montréal', regular=170.0, coords=(-73.5, 45.5))
+        b = feature('Montréal', regular=171.0, coords=(-73.5000001, 45.5000002))
+        self.assertEqual(station_coord_key(a), station_coord_key(b))
+
+
+class StationPricesTest(unittest.TestCase):
+    def test_prices_are_keyed_by_coordinates_with_short_fuel_keys(self):
+        stations = snapshot(
+            feature('Montréal', regular=170.0, super_=190.0, coords=(-73.5, 45.5)),
+            feature('Estrie', regular=180.5, coords=(-71.9, 45.4)),
+        )
+        prices = station_prices(stations)
+        self.assertEqual(prices['-73.50000,45.50000'], {'g': 170.0, 's': 190.0})
+        self.assertEqual(prices['-71.90000,45.40000'], {'g': 180.5})
+
+    def test_missing_coordinates_are_skipped(self):
+        stations = {'type': 'FeatureCollection', 'features': [
+            {'type': 'Feature', 'geometry': None, 'properties': {'regular_price': 170.0}},
+        ]}
+        self.assertEqual(station_prices(stations), {})
+
+    def test_row_round_trips_gas_super_diesel(self):
+        prices = {'g': 170.0, 'd': 180.0}
+        self.assertEqual(prices_to_row(prices), [170.0, None, 180.0])
+        self.assertEqual(prices_from_row(prices_to_row(prices)), prices)
+        self.assertEqual(prices_to_row({}), [None, None, None])
+
+
+class DiffStationsTest(unittest.TestCase):
+    def test_detects_a_single_station_change(self):
+        prev = {'a,b': {'g': 170.0}}
+        cur = {'a,b': {'g': 175.0}}
+        self.assertEqual(diff_stations(prev, cur), {'a,b': ['g']})
+
+    def test_cancelling_moves_in_one_region_are_both_detected(self):
+        # A station +5c and its neighbour -5c leave the region average flat;
+        # the station-level diff must still report both.
+        prev = {'a,b': {'g': 170.0}, 'c,d': {'g': 180.0}}
+        cur = {'a,b': {'g': 175.0}, 'c,d': {'g': 175.0}}
+        self.assertEqual(diff_stations(prev, cur), {'a,b': ['g'], 'c,d': ['g']})
+
+    def test_ignores_sub_epsilon_noise(self):
+        prev = {'a,b': {'g': 170.0}}
+        cur = {'a,b': {'g': 170.04}}
+        self.assertEqual(diff_stations(prev, cur), {})
+
+    def test_epsilon_is_the_inclusive_threshold(self):
+        prev = {'a,b': {'g': 170.0}}
+        cur = {'a,b': {'g': 170.05}}
+        self.assertEqual(diff_stations(prev, cur), {'a,b': ['g']})
+
+    def test_new_station_has_no_baseline_and_is_not_a_change(self):
+        self.assertEqual(diff_stations({}, {'a,b': {'g': 170.0}}), {})
+
+    def test_disappearing_fuel_is_an_availability_change_not_a_price_change(self):
+        prev = {'a,b': {'g': 170.0, 's': 190.0}}
+        cur = {'a,b': {'g': 170.0}}
+        self.assertEqual(diff_stations(prev, cur), {})
+
+    def test_appearing_fuel_is_not_a_change(self):
+        prev = {'a,b': {'g': 170.0}}
+        cur = {'a,b': {'g': 170.0, 'd': 200.0}}
+        self.assertEqual(diff_stations(prev, cur), {})
+
+    def test_each_fuel_is_reported_independently(self):
+        prev = {'a,b': {'g': 170.0, 's': 190.0, 'd': 200.0}}
+        cur = {'a,b': {'g': 171.0, 's': 190.0, 'd': 205.0}}
+        self.assertEqual(diff_stations(prev, cur), {'a,b': ['g', 'd']})
+
+    def test_a_vanished_station_is_not_reported(self):
+        prev = {'a,b': {'g': 170.0}, 'c,d': {'g': 180.0}}
+        cur = {'a,b': {'g': 170.0}}
+        self.assertEqual(diff_stations(prev, cur), {})
+
+    def test_region_average_is_not_diluted_by_large_regions(self):
+        # 140 flat stations plus one +5c move: the region average moves only
+        # ~0.04c (below PRICE_EPSILON), but the station diff must catch it.
+        prev = {f'k{i}': {'g': 170.0} for i in range(140)}
+        cur = dict(prev)
+        cur['k0'] = {'g': 175.0}
+        self.assertEqual(diff_stations(prev, cur), {'k0': ['g']})
+        self.assertEqual(diff_regions(
+            {'R': {'regular': 170.0}}, {'R': {'regular': 170.04}}), {})
+
+
 class RecordObservationTest(unittest.TestCase):
     def test_first_observation_has_no_baseline_and_counts_no_change(self):
         profile = empty_profile()
@@ -295,6 +396,33 @@ class RecordObservationTest(unittest.TestCase):
         )
         # A 11h gap must not dwarf the exposure of the other hours.
         self.assertLessEqual(profile['hours']['20']['observed_hours'], 2.0)
+
+    def test_exact_station_counts_are_folded_in_next_to_the_region_ones(self):
+        profile = empty_profile()
+        profile, _ = record_observation(
+            profile, observed={'Montréal': {'regular': 170.0}},
+            region_counts={'Montréal': 140}, now=at(11, 0), previous_at=None,
+            station_changes=0, stations_observed=2463,
+        )
+        profile, summary = record_observation(
+            profile, observed={'Montréal': {'regular': 170.04}},
+            region_counts={'Montréal': 140}, now=at(11, 15), previous_at=at(11, 0),
+            station_changes=2, stations_observed=2463,
+        )
+        rec = profile['hours']['11']
+        self.assertEqual(rec['changed_stations_exact'], 2)
+        self.assertEqual(rec['stations_observed'], 2463)
+        self.assertEqual(rec['changed_stations'], 0)  # region average never moved
+        self.assertEqual(summary['changed_stations_exact'], 2)
+
+    def test_omitting_station_counts_keeps_the_region_only_record(self):
+        profile = empty_profile()
+        profile, summary = record_observation(
+            profile, observed={'Estrie': {'regular': 180.0}}, region_counts={'Estrie': 5},
+            now=at(9, 0), previous_at=None,
+        )
+        self.assertEqual(profile['hours']['9']['changed_stations_exact'], 0)
+        self.assertEqual(summary['changed_stations_exact'], 0)
 
 
 class DueDecisionTest(unittest.TestCase):

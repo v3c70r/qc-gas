@@ -36,10 +36,12 @@ records:
 ```json
 {
   "hours": {
-    "11": {"samples": 12, "observed_hours": 6.5, "change_events": 3, "changed_stations": 812}
+    "11": {"samples": 12, "observed_hours": 6.5, "change_events": 3, "changed_stations": 812,
+           "changed_stations_exact": 47, "stations_observed": 2463}
   },
   "last_observed": {"Montréal": {"regular": 170.5, "super": 188.0, "diesel": 180.0}},
-  "last_observed_at": "2026-09-25T11:20:00Z"
+  "last_observed_at": "2026-09-25T11:20:00Z",
+  "last_station_diff": {"at": "2026-09-25T11:20:00Z", "observed": 2463, "changed": 47}
 }
 ```
 
@@ -48,6 +50,11 @@ records:
   previous observation, capped at 2 h so a long outage cannot distort the rate)
 - `change_events` — fetches that saw at least one real price change
 - `changed_stations` — number of stations in the affected regions
+- `changed_stations_exact` — stations that really re-priced in that hour,
+  counted per station (issue #68); `stations_observed` is how many stations the
+  snapshot held. Both are recorded next to the region fields so the exact
+  signal stays measurable, while the schedule keeps reading the region-level
+  `changed_stations` until the exact counter has been shown to predict better.
 
 The learned signal is the **rate** `changed_stations / observed_hours`
 ("stations re-pricing per hour at this hour of day"). A rate rather than a raw
@@ -60,8 +67,24 @@ weights.
 Detection sensitivity was checked against the already-recorded 6 h history: in
 all 57 buckets of September 2026, 14–53 region-grid fuel averages moved by up to
 13 ¢ between buckets (a single-station move inside a very large region can of
-course stay under the half-a-tenth threshold — that is the acceptable cost of
-keeping the profile tiny and the stats region-level).
+course stay under the half-a-tenth threshold — that is why issue #68 added the
+per-station diff below, which reports exactly which stations re-priced).
+
+### Station-level diff (issue #68)
+
+The region average is a lossy signal: a +5¢ and a −5¢ move inside one region
+cancel out, and a single re-price inside the ~140-station Montréal region is
+diluted far below `PRICE_EPSILON`. `fetch_strategy.diff_stations()` therefore
+compares the two snapshots **station by station**, using the same 5-decimal
+coordinate key as `data/history/station-history.json`, and
+`update_profile.py` folds the result into `data/update-profile.json` (exact
+counts) and `data/history/station-changes.json` (`last_changed_at` /
+`last_seen_at` per station — see
+[`history-data.md`](./history-data.md#station-level-change-detection)).
+
+The learned schedule is deliberately unchanged for now: it keeps using the
+region-level `changed_stations` rate, and the exact counts accumulate alongside
+it so the two can be compared on real data before the schedule switches.
 
 `hour_weights()` blends that rate with the research prior below. The prior is
 weighted by `prior_alpha = 168` observed-hours (one week of hourly coverage):

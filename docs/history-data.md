@@ -13,8 +13,10 @@ everything is committed back into this repository.
 2. `scripts/download_data.py` downloads the latest `stations.geojson.gz`.
 3. `scripts/process_data.py` normalizes it into `data/stations.json`.
 4. `scripts/update_profile.py` diffs the new snapshot against the previous
-   observation and rewrites `data/update-profile.json` (learned change hours)
-   and `data/fetch-schedule.json` (plan for the next runs).
+   observation and rewrites `data/update-profile.json` (learned change hours),
+   `data/history/station-changes.json` (per-station `last_changed_at` /
+   `last_seen_at`, issue #68) and `data/fetch-schedule.json` (plan for the next
+   runs).
 5. `scripts/append_history.py` appends one **region-level** 6h bucket and one
    **station-level daily** snapshot to the history store.
 6. The workflow commits the new files and pushes them back to the repo.
@@ -32,6 +34,7 @@ weighted average (`count` weighted), plus the bucket's `min`/`max` extremes.
 | --- | --- | --- | --- | --- |
 | raw | `data/history/YYYY-MM.json` | 6h bucket | last **14 days** | intraday region dashboard |
 | station daily | `data/history/station-history.json` | 1 day (12:00 UTC) | last **180 days** | station card real history |
+| station changes | `data/history/station-changes.json` | last change / last observation | last **180 days seen** | station freshness (`last_changed_at`) |
 | daily | `data/history/daily.json` | 1 day (12:00 UTC) | **12 months** | 30–365 day region trend views |
 | monthly | `data/history/monthly.json` | 1 month (day 1, 12:00 UTC) | **forever** | long-term trend view |
 | merged | `data/history.json` | mixed (raw+daily+monthly) | mirror of above | frontend single-file read |
@@ -120,6 +123,94 @@ coordinate key. It returns `null` when no recorded history exists, and the
 station card shows the empty `noHistory` placeholder with no change percentage
 and no extrapolated tail.
 
+## Station-level change detection
+
+Region averages hide two things (issue #68): a +5¢ and a −5¢ move inside the
+same region cancel out, and a 140-station region dilutes a single re-price
+below the `PRICE_EPSILON = 0.05` threshold. The upstream `Prices[]` payload has
+no per-station update time, so freshness has to come from our own observation
+history: every fetch now diffs the snapshot **station by station**, keyed by the
+same 5-decimal coordinate key as the station daily tier, and records when each
+key last actually moved.
+
+### Why a separate file (tradeoff)
+
+The alternative was to append the change columns to `station-history.json`.
+A separate store was chosen because:
+
+- `station-history.json` is a **column-oriented, day-aligned** matrix whose
+  insertion logic reindexes every existing array when an out-of-order source
+  day arrives; adding two per-station scalars per row would have to ride that
+  reindexing and would bloat every one of the ~2.5k station rows.
+- the change store has a different retention rule (prune by *last seen*, not by
+day) and a different reader (freshness queries, not charting), so keeping it
+  apart means the station card path cannot regress when this schema changes.
+- the row layout lets a single entry answer both questions without scanning the
+  whole matrix: `t` is freshness, `p` is the diff baseline.
+
+The cost is one extra small file (~0.2 MB) next to the daily tier.
+
+### Schema
+
+```json
+{
+  "v": 1,
+  "generated_at": "2026-10-12T00:50:01Z",
+  "tiers": {"max_age_days": 180},
+  "last": {"at": "2026-10-12T00:50:01Z", "observed": 2463, "changed": 0},
+  "s": {
+    "-79.01957,48.24676": {
+      "t": "2026-10-05T13:15:03Z",
+      "u": "2026-10-12T00:50:01Z",
+      "p": [199.4, 223.9, 295.9]
+    }
+  }
+}
+```
+
+- `s[coord_key]` — one entry per station, key `"lng,lat"` rounded to 5 decimals
+  (identical to the station daily tier's key).
+- `t` — **`last_changed_at`**: fetch timestamp of the last real price change
+  (`null` until a change has been observed for that key).
+- `u` — **`last_seen_at`**: fetch timestamp the station last appeared in the
+  upstream feed (updated on every fetch, even when nothing moved).
+- `p` — `[g, s, d]` last observed prices (regular/super/diesel, `null` for a
+  fuel the station did not report); this is the baseline the next diff compares
+  against.
+- `last` — summary of the most recent fetch. The stations that moved in that
+  fetch are exactly the keys whose `t == last.at`
+  (`update_profile.stations_changed_at(store, store['last']['at'])`).
+
+A fuel counts as changed when both the previous and current snapshot have a
+value and they differ by at least `PRICE_EPSILON` (half a tenth). A new key has
+no baseline and is not a change; a fuel appearing or disappearing is an
+availability change, not a re-price; a station vanishing from the feed keeps its
+last entry until it stops being seen for the retention window.
+
+### What becomes measurable
+
+- **exact change set** — the changed stations and their count for each fetch
+  (`update_profile.py` prints the list; the schedule's learned fields keep the
+  region-level `changed_stations` for compatibility and add
+  `changed_stations_exact` / `stations_observed` next to it)
+- **freshness distribution** — `now - t` over all entries
+- **stale share** — share of keys with `now - t > 7 days`
+- **real change rate** — changed keys per fetch, per 15 min or per hour
+
+### Size & retention
+
+Measured on the live snapshot (2 463 stations):
+
+- whole store: **~200 KB** uncompressed / **~21 KB** `.br`
+- per entry: **~85 B** (5-decimal key + `t` + `u` + three prices)
+- it stores only the *latest* change/observation per station, and entries not
+  seen for 180 days are pruned, so it reaches a steady size with **~0 MB/year**
+  ongoing growth at a fixed station count.
+
+`scripts/check_data_size.py` reports the file explicitly and fails the job if it
+passes its own **8 MB** budget (`MAX_STATION_CHANGES_MB`), in addition to the
+40 MB `data/` total budget.
+
 ## Station-level vs region-level history
 
 Region-level history is stored at 6h/daily/monthly tiers. Station-level
@@ -148,6 +239,12 @@ Station daily tier:
 - Older days are pruned, so this file reaches a steady size and has **~0 MB/year**
   ongoing growth at a fixed station count.
 
+Station change tier:
+
+- Whole file at 2 463 stations: **~200 KB** uncompressed / **~21 KB** `.br`
+- No time dimension: the size follows the *station count*, not the retention
+  length, so 180-day pruning keeps it flat at **~0 MB/year**.
+
 The frontend-facing `data/history.json` (long field names, one series per
 region) is the largest single file at ≈ **1.35 MB** uncompressed after a full
 year, or ≈ **150–250 KB** as `data/history.json.br`. With the station daily
@@ -169,3 +266,8 @@ per-file hard limit is 100 MB). This prevents silent repository bloat.
 `data/history/station-history.json` (404 → no station chart). If either
 history file is missing or empty, the dashboard and station cards degrade
 gracefully (empty chart / "no history" message) instead of throwing.
+
+The station change store is not read by the frontend at all, and
+`update_profile.py` treats a missing or unreadable
+`data/history/station-changes.json` as an empty store, so it is safe to delete:
+the next fetch recreates it and simply has no `last_changed_at` baseline yet.
