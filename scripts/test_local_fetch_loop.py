@@ -52,6 +52,25 @@ class LocalFetchLoopTest(unittest.TestCase):
         self.assertIn('sleep', self.text)
         self.assertRegex(self.text, r'PROBE_INTERVAL_SECONDS:-900')
 
+    def test_sleep_only_tops_up_the_remaining_cycle_time(self):
+        # A fixed sleep *after* the work would make the observed interval
+        # `900s + work`, right at the acceptance bound (<= 16 min).
+        self.assertIn('SECONDS', self.text)
+        self.assertRegex(self.text, r'INTERVAL_SECONDS - ')
+        self.assertIn('sleep "$remaining"', self.text)
+        self.assertNotIn('  sleep "$INTERVAL_SECONDS"', self.text)
+
+    def test_compresses_the_same_file_set_as_the_workflow(self):
+        self.assertNotIn('for f in data/*.json', self.text)
+        for name in ('stations.json', 'stats.json', 'history.json',
+                     'regie-margin.json', 'metrics.json'):
+            self.assertIn(f'data/{name}', self.text)
+        self.assertIn('for f in data/history/*.json', self.text)
+
+    def test_runs_the_size_budget_check_without_failing_the_cycle(self):
+        self.assertIn('check_data_size.py', self.text)
+        self.assertIn('warn_stage', self.text)
+
     def test_never_exits_on_a_failed_step(self):
         self.assertNotRegex(self.text, r'^\s*set -e', re.M)
         self.assertIn('set -uo pipefail', self.text)
@@ -86,6 +105,10 @@ class ProbeDocsTest(unittest.TestCase):
 
     def test_documents_the_local_probe_section(self):
         self.assertIn('本机高频探针', self.text)
+
+    def test_documents_what_the_probe_skips(self):
+        self.assertIn('fetch_bulletin.py', self.text)
+        self.assertIn('check_data_size.py', self.text)
 
     def test_documents_the_fixed_tmux_session_name_and_commands(self):
         self.assertIn('tmux new -d -s probe', self.text)

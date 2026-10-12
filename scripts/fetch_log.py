@@ -59,26 +59,43 @@ def empty_log():
     return {'v': 1, 'fetches': [], 'days': {}, 'summary_sent': False}
 
 
+def _int(value):
+    """Best-effort int: a torn write or hand edit degrades to 0, never raises."""
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        return 0
+
+
 def load_log(path):
-    """Read the ledger, degrading to an empty one on any error."""
+    """Read the ledger, degrading to an empty one on any error.
+
+    Every field is coerced defensively: the shell loop ignores this script's
+    exit code, so a raising loader would silently freeze the ledger forever
+    instead of self-healing.
+    """
     try:
         with open(path, 'r', encoding='utf-8') as f:
             raw = json.load(f)
-    except (FileNotFoundError, json.JSONDecodeError, OSError):
+    except (FileNotFoundError, json.JSONDecodeError, OSError, UnicodeDecodeError):
         return empty_log()
     if not isinstance(raw, dict):
         return empty_log()
 
-    fetches = [str(f) for f in raw.get('fetches') or [] if f]
+    raw_fetches = raw.get('fetches')
+    fetches = [str(f) for f in raw_fetches if f] if isinstance(raw_fetches, list) else []
+
     days = {}
-    for day, rec in (raw.get('days') or {}).items():
-        if not isinstance(rec, dict):
-            continue
-        days[str(day)] = {
-            'ok': int(rec.get('ok') or 0),
-            'failed': int(rec.get('failed') or 0),
-            'retries': int(rec.get('retries') or 0),
-        }
+    raw_days = raw.get('days')
+    if isinstance(raw_days, dict):
+        for day, rec in raw_days.items():
+            if not isinstance(rec, dict):
+                continue
+            days[str(day)] = {
+                'ok': _int(rec.get('ok')),
+                'failed': _int(rec.get('failed')),
+                'retries': _int(rec.get('retries')),
+            }
     sent = raw.get('summary_sent')
     return {
         'v': 1,

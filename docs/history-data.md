@@ -55,11 +55,20 @@ Actions 的 `schedule` 被 GitHub 严重节流（实测 37 次间隔：中位数
 538 分），所以**闸门预算再高也可能几小时不抓取**。为了给「必要间隔」的评估
 （#76）提供 ground truth，仓库里有一个**临时/学习用**的本机探针：
 
-- `scripts/local_fetch_loop.sh`（tmux 常驻）：每 ~15 分钟完整跑一遍与
-  `update-data.yml` **完全相同**的链路 —— `download_data.py` →
+- `scripts/local_fetch_loop.sh`（tmux 常驻）：每 ~15 分钟跑一遍与
+  `update-data.yml` 相同的数据链路 —— `download_data.py` →
   `process_data.py` → `update_profile.py` → `append_history.py` →
-  `metrics.py` —— 然后复用工作流的 brotli 步骤、以
-  `Update gas prices data (local probe) [skip ci]` 提交并推送。
+  `metrics.py` —— 再跑一次**只报不堵**的 `check_data_size.py`，然后复用工作流
+  **同一组** brotli 文件（`stations` / `stats` / `history` / `regie-margin` /
+  `metrics` + `data/history/*.json`，不用通配，以免为 `fetch-log` /
+  `fetch-state` / `fetch-schedule` / `update-profile` 生成永不使用的 `.br`），
+  最后以 `Update gas prices data (local probe) [skip ci]` 提交并推送。
+- **与 Actions 的差异**：不调用 `fetch_bulletin.py`（每周 PDF 周报，与高频探测
+  无关）与 `should_fetch.py`；`check_data_size.py` 只记录警告，不会阻断探针
+  （工作流里它是阻断提交的）。除这些之外二者共用同一批脚本，没有第二套抓取实现。
+- **周期节奏**：计时从周期开始算，`sleep` 只补足 `PROBE_INTERVAL_SECONDS`
+  的**剩余**时间（`work=…s sleep=…s`）；固定 `sleep 900` 会把观测间隔拉成
+  `900 s + 链路耗时`，从而歪偏 #76 的评估。
 - 它**故意绕过** `scripts/should_fetch.py`（本机这一轮要的是无条件的高频采样，
   不是闸门决策），也**不复制任何抓取逻辑**：所有上游请求仍然只由
   `download_data.py` 发出；`should_fetch.py` 的判定逻辑与 Actions 侧行为**不变**。

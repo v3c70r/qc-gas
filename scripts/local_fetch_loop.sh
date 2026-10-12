@@ -11,8 +11,10 @@
 #
 # It is intentionally thin:
 #   download_data.py -> process_data.py -> update_profile.py ->
-#   append_history.py -> metrics.py   (exactly what update-data.yml runs)
-#   then fetch_log.py records the completed cycle in data/fetch-log.json.
+#   append_history.py -> metrics.py   (the same data chain update-data.yml runs)
+#   + a report-only check_data_size.py, then fetch_log.py records the completed
+#   cycle in data/fetch-log.json. `fetch_bulletin.py` (weekly PDF, unrelated to
+#   high-frequency probing) is deliberately skipped, as is `should_fetch.py`.
 #
 # Safety:
 #   * a failing stage never stops the loop (no `set -e`, no `should_fetch.py`);
@@ -56,23 +58,36 @@ touch "$LOG_FILE"
 
 log() { printf '[%s] %s\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$*" >>"$LOG_FILE"; }
 
-# Run one pipeline stage, capturing its output as evidence. Never aborts.
-run_stage() {
-  local label="$1"
-  shift
+# Run a stage, appending its output to the log as evidence.
+# `fatal=1` propagates the exit code (caller marks the cycle failed); a
+# report-only stage (`fatal=0`) always returns 0 so it can never stop the probe.
+_stage() {
+  local label="$1" fatal="$2"
+  shift 2
   local out rc
   out="$("$@" 2>&1)"
   rc=$?
   if [ -n "$out" ]; then
     printf '%s\n' "$out" >>"$LOG_FILE"
   fi
-  if [ "$rc" -ne 0 ]; then
+  if [ "$rc" -ne 0 ] && [ "$fatal" -eq 1 ]; then
     log "stage $label failed (rc=$rc)"
+  elif [ "$rc" -ne 0 ]; then
+    log "stage $label warned (rc=$rc); continuing"
   else
     log "stage $label ok"
   fi
-  return "$rc"
+  if [ "$fatal" -eq 1 ]; then
+    return "$rc"
+  fi
+  return 0
 }
+
+run_stage() { _stage "$1" 1 "${@:2}"; }
+
+# Report-only stage (data-size budget: gates the commit in the workflow, but
+# must not stop the probe from collecting observations).
+warn_stage() { _stage "$1" 0 "${@:2}"; }
 
 # Start-of-cycle sync: the Actions side keeps pushing data, so rebase first.
 # The remote always wins; a conflicted rebase is aborted and discarded.
@@ -112,14 +127,19 @@ push_with_retries() {
   done
 }
 
-# Refresh the committed .br siblings exactly like the workflow's brotli step.
+# Refresh the committed .br siblings — the **same explicit set** the workflow's
+# brotli step compresses. A blanket `data/*.json` glob would also create `.br`
+# files for fetch-log / fetch-state / fetch-schedule / update-profile, which are
+# never served; the first two change every cycle, so they would churn in every
+# probe commit.
 compress_data() {
   if ! command -v brotli >/dev/null 2>&1; then
     log "brotli not found; skipping .br refresh"
     return 0
   fi
   local f
-  for f in data/*.json; do
+  for f in data/stations.json data/stats.json data/history.json \
+           data/regie-margin.json data/metrics.json; do
     [ -f "$f" ] || continue
     brotli -fZ "$f" -o "$f.br" >>"$LOG_FILE" 2>&1 || log "brotli failed for $f"
   done
@@ -194,6 +214,11 @@ cycle() {
   if [ -f scripts/metrics.py ]; then
     run_stage metrics "$PYTHON" scripts/metrics.py || failed=1
   fi
+  # The workflow runs this before committing; here it is a report-only guard so
+  # an over-budget data/ directory shows up in the log without stopping the probe.
+  if [ -f scripts/check_data_size.py ]; then
+    warn_stage size-budget "$PYTHON" scripts/check_data_size.py
+  fi
 
   now="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
   if [ "$failed" -ne 0 ]; then
@@ -215,6 +240,9 @@ cycle() {
   if ! commit_and_push; then
     failed=1
     # A push that gave up is a real incident: count it (no extra timestamp).
+    # This write happens *after* the commit, so it stays uncommitted and rides
+    # the next cycle's commit — self-healing, and the counter cannot inflate the
+    # interval series.
     "$PYTHON" scripts/fetch_log.py append --at "$now" --fail >>"$LOG_FILE" 2>&1
   fi
 
@@ -224,13 +252,24 @@ cycle() {
 cycles=0
 while :; do
   cycles=$((cycles + 1))
+  cycle_start="$SECONDS"
   log "probe cycle $cycles start (interval ${INTERVAL_SECONDS}s, max_push_retries ${MAX_PUSH_RETRIES})"
   cycle || log "probe cycle $cycles finished with errors"
   log "probe cycle $cycles done"
   if [ "$MAX_CYCLES" -gt 0 ] && [ "$cycles" -ge "$MAX_CYCLES" ]; then
     break
   fi
-  sleep "$INTERVAL_SECONDS"
+
+  # Top up only the *remaining* part of the interval: sleeping the full
+  # INTERVAL_SECONDS after the work would stretch the observed interval to
+  # `900 s + cycle duration` and bias the #76 evaluation.
+  elapsed=$((SECONDS - cycle_start))
+  remaining=$((INTERVAL_SECONDS - elapsed))
+  if [ "$remaining" -lt 0 ]; then
+    remaining=0
+  fi
+  log "probe cycle $cycles work=${elapsed}s sleep=${remaining}s"
+  sleep "$remaining"
 done
 
 log "probe loop exiting after $cycles cycle(s)"

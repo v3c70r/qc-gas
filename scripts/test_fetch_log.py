@@ -49,6 +49,23 @@ class LoadLogTest(TempDataDirTest):
         path.write_text('{not json', encoding='utf-8')
         self.assertEqual(fetch_log.load_log(path)['fetches'], [])
 
+    def test_corrupt_day_counters_degrade_to_zero(self):
+        path = self.data_dir / 'fetch-log.json'
+        path.write_text(json.dumps({'days': {'2026-10-12': {'ok': 'x', 'failed': None,
+                                                          'retries': '2'}}}), encoding='utf-8')
+        log = fetch_log.load_log(path)
+        self.assertEqual(log['days']['2026-10-12'], {'ok': 0, 'failed': 0, 'retries': 2})
+
+    def test_non_dict_days_section_is_ignored(self):
+        path = self.data_dir / 'fetch-log.json'
+        path.write_text(json.dumps({'days': [1, 2]}), encoding='utf-8')
+        self.assertEqual(fetch_log.load_log(path)['days'], {})
+
+    def test_non_list_fetches_section_is_ignored(self):
+        path = self.data_dir / 'fetch-log.json'
+        path.write_text(json.dumps({'fetches': {'a': 1}}), encoding='utf-8')
+        self.assertEqual(fetch_log.load_log(path)['fetches'], [])
+
 
 class AppendFetchTest(TempDataDirTest):
     def test_appends_iso_timestamp_in_order(self):
@@ -283,6 +300,15 @@ class CliTest(TempDataDirTest):
         code, out = self.run_cli(['summary', '--now', iso(12, 1, 0)])
         self.assertEqual(code, 0)
         self.assertIn('本机探针', out)
+
+    def test_append_keeps_working_after_a_corrupt_counter(self):
+        (self.data_dir / fetch_log.LOG_FILE).write_text(
+            json.dumps({'days': {'2026-10-11': {'ok': 'torn'}}}), encoding='utf-8')
+        code, _ = self.run_cli(['append', '--at', iso(12, 0, 0)])
+        self.assertEqual(code, 0)
+        log = self.read_log()
+        self.assertEqual(log['fetches'], [iso(12, 0, 0)])
+        self.assertEqual(log['days']['2026-10-12']['ok'], 1)
 
 
 if __name__ == '__main__':
