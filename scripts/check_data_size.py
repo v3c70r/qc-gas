@@ -17,9 +17,13 @@ MAX_FILE_MB = 90  # keep well below GitHub's 100 MB per-file hard limit
 # state (it holds only the latest change/observation per key, pruned after 180
 # days), so anything past a few MB means the pruning stopped working.
 MAX_STATION_CHANGES_MB = int(os.environ.get('MAX_STATION_CHANGES_MB', '8'))
+# Freshness metrics (#70): a summary plus a bounded rolling latency ledger.
+# The ledger is capped in scripts/metrics.py, so 50 KB is generous.
+MAX_METRICS_KB = int(os.environ.get('MAX_METRICS_KB', '50'))
 
 DATA_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), '..', 'data')
 STATION_CHANGES_REL = os.path.join('history', 'station-changes.json')
+METRICS_REL = 'metrics.json'
 
 
 def scan(data_dir):
@@ -40,7 +44,7 @@ def scan(data_dir):
     return total, files
 
 
-def budget_errors(total_mb, largest_mb, changes_mb):
+def budget_errors(total_mb, largest_mb, changes_mb, metrics_kb=0):
     """Human-readable budget violations (empty list means the commit is safe)."""
     errors = []
     if total_mb > MAX_DATA_MB:
@@ -50,6 +54,10 @@ def budget_errors(total_mb, largest_mb, changes_mb):
         errors.append(f'{STATION_CHANGES_REL} is {changes_mb:.2f} MB, above its '
                       f'{MAX_STATION_CHANGES_MB} MB budget: check station-change '
                       f'pruning in update_profile.py.')
+    if metrics_kb > MAX_METRICS_KB:
+        errors.append(f'{METRICS_REL} is {metrics_kb:.1f} KB, above its '
+                      f'{MAX_METRICS_KB} KB budget: check the latency ledger cap '
+                      f'in metrics.py.')
     if largest_mb > MAX_FILE_MB:
         errors.append(f'a single file exceeds {MAX_FILE_MB} MB (GitHub hard limit 100 MB).')
     return errors
@@ -60,21 +68,24 @@ def main():
     file_count = len(files)
     largest_rel, largest_size = files[0] if files else ('', 0)
     changes_size = dict(files).get(STATION_CHANGES_REL, 0)
+    metrics_size = dict(files).get(METRICS_REL, 0)
 
     total_mb = total / (1024 * 1024)
     largest_mb = largest_size / (1024 * 1024)
     changes_mb = changes_size / (1024 * 1024)
+    metrics_kb = metrics_size / 1024
 
     print(f'data/ size: {total_mb:.2f} MB across {file_count} files '
           f'(budget {MAX_DATA_MB} MB, largest {largest_rel} at {largest_mb:.2f} MB)')
     print(f'Station change store: {changes_mb:.3f} MB '
           f'(budget {MAX_STATION_CHANGES_MB} MB)')
+    print(f'Metrics file: {metrics_kb:.1f} KB (budget {MAX_METRICS_KB} KB)')
 
     if largest_size > MAX_FILE_MB * 1024 * 1024:
         print(f'WARNING: largest file exceeds {MAX_FILE_MB} MB: {largest_rel}',
               file=sys.stderr)
 
-    errors = budget_errors(total_mb, largest_mb, changes_mb)
+    errors = budget_errors(total_mb, largest_mb, changes_mb, metrics_kb)
     for message in errors:
         print(f'ERROR: {message}', file=sys.stderr)
     if errors:

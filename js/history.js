@@ -6,6 +6,9 @@ let historyPromise = null;
 let stationHistoryData = null;
 let stationHistoryPromise = null;
 
+let stationChangesData = null;
+let stationChangesPromise = null;
+
 const DAY_MS = 24 * 60 * 60 * 1000;
 const FUEL_SHORT = { regular: 'g', super: 's', diesel: 'd' };
 
@@ -25,6 +28,20 @@ export async function loadStationHistoryData() {
     .then(d => { stationHistoryData = d; return d; })
     .catch(err => { stationHistoryPromise = null; throw err; });
   return stationHistoryPromise;
+}
+
+/**
+ * Per-station observation timestamps (issue #68 store, issue #70 display):
+ * `last_seen_at` (when we last saw the station) and `last_changed_at` (when
+ * its price last really moved). Tolerates a missing file so the UI can degrade.
+ */
+export async function loadStationChangesData() {
+  if (stationChangesPromise) return stationChangesPromise;
+  stationChangesPromise = fetch('data/history/station-changes.json')
+    .then(r => r.json())
+    .then(d => { stationChangesData = d; return d; })
+    .catch(err => { stationChangesPromise = null; throw err; });
+  return stationChangesPromise;
 }
 
 function tsOf(entry) {
@@ -90,6 +107,24 @@ function stationHistoryPoints(feature, fuel = 'regular') {
     points.push({ date: `${dates[i]}T12:00:00Z`, price: v });
   }
   return points.length ? points : null;
+}
+
+/**
+ * Observation timestamps for the station on screen, or null when the station
+ * change store has no entry for it. `seenAt` / `changedAt` are ms since epoch;
+ * `changedAt` is null while no price change has ever been observed.
+ */
+export function getStationObservations(feature) {
+  if (!stationChangesData || !feature) return null;
+  const key = stationKey(feature);
+  const rec = key ? stationChangesData.s && stationChangesData.s[key] : null;
+  if (!rec) return null;
+  const seenAt = Date.parse(rec.u ?? '');
+  const changedAt = rec.t ? Date.parse(rec.t) : NaN;
+  return {
+    seenAt: Number.isFinite(seenAt) ? seenAt : null,
+    changedAt: Number.isFinite(changedAt) ? changedAt : null
+  };
 }
 
 export function getStationHistory(feature, fuel = 'regular', days = 90) {

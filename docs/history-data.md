@@ -20,7 +20,10 @@ everything is committed back into this repository.
    runs).
 5. `scripts/append_history.py` appends one **region-level** 6h bucket and one
    **station-level daily** snapshot to the history store.
-6. The workflow commits the new files and pushes them back to the repo.
+6. `scripts/metrics.py` folds the station change store, the snapshot and the
+   previous metrics into `data/metrics.json` — the latency / freshness numbers
+   below.
+7. The workflow commits the new files and pushes them back to the repo.
 
 ## Fetch rhythm vs upstream regeneration
 
@@ -59,7 +62,8 @@ weighted average (`count` weighted), plus the bucket's `min`/`max` extremes.
 | --- | --- | --- | --- | --- |
 | raw | `data/history/YYYY-MM.json` | 6h bucket | last **14 days** | intraday region dashboard |
 | station daily | `data/history/station-history.json` | 1 day (12:00 UTC) | last **180 days** | station card real history |
-| station changes | `data/history/station-changes.json` | last change / last observation | last **180 days seen** | station freshness (`last_changed_at`) |
+| station changes | `data/history/station-changes.json` | last change / last observation | last **180 days seen** | station freshness (`last_changed_at`) + station card "observed X ago" |
+| metrics | `data/metrics.json` | summary + rolling latency ledger | last **300** latency samples | CI / PM agent freshness evidence |
 | daily | `data/history/daily.json` | 1 day (12:00 UTC) | **12 months** | 30–365 day region trend views |
 | monthly | `data/history/monthly.json` | 1 month (day 1, 12:00 UTC) | **forever** | long-term trend view |
 | merged | `data/history.json` | mixed (raw+daily+monthly) | mirror of above | frontend single-file read |
@@ -218,9 +222,12 @@ last entry until it stops being seen for the retention window.
   (`update_profile.py` prints the list; the schedule's learned fields keep the
   region-level `changed_stations` for compatibility and add
   `changed_stations_exact` / `stations_observed` next to it)
-- **freshness distribution** — `now - t` over all entries
+- **freshness distribution** — `now - u` over all entries
 - **stale share** — share of keys with `now - t > 7 days`
 - **real change rate** — changed keys per fetch, per 15 min or per hour
+
+`scripts/metrics.py` (below) turns these into a committed summary instead of
+leaving them as raw fields to recompute by hand.
 
 ### Size & retention
 
@@ -235,6 +242,59 @@ Measured on the live snapshot (2 463 stations):
 `scripts/check_data_size.py` reports the file explicitly and fails the job if it
 passes its own **8 MB** budget (`MAX_STATION_CHANGES_MB`), in addition to the
 40 MB `data/` total budget.
+
+## Freshness metrics (`data/metrics.json`)
+
+`scripts/metrics.py` (standard library only, issue #70) answers "is the data we
+show actually fresh?" with numbers instead of impressions. It runs once after
+`append_history.py` in the workflow (`continue-on-error`, so it can never block
+the data commit) and reads only committed files:
+
+| Input | Used for |
+| --- | --- |
+| `data/stations.json` | upstream `metadata.generated_at`, station count |
+| `data/history/station-changes.json` | per-station `last_seen_at` / `last_changed_at` |
+| `data/fetch-state.json`, `update-profile.json` | fetch time, exact hourly change counters |
+| `data/metrics.json` (previous) | the rolling latency ledger |
+
+It writes `data/metrics.json` (and prints a human summary; `--json` prints the
+same payload machine-readably for the PM agent). Schema:
+
+```json
+{
+  "v": 1,
+  "generated_at": "2026-10-12T07:38:08Z",
+  "source_generated_at": "2026-10-12T06:50:01Z",
+  "observed_at": "2026-10-12T06:51:13Z",
+  "stations": 2463,
+  "latency_seconds": {"p50": 72.0, "p90": 72.0, "p95": 72.0, "max": 72.0, "count": 1,
+                      "samples": [{"at": "2026-10-12T06:51:13Z", "s": 71.887}]},
+  "freshness_seconds": {"p50": 2815.9, "p90": 2815.9, "max": 2815.9, "count": 2463},
+  "stale": {"total": 2463, "never_changed": 2009, "over_7d": 1, "over_30d": 0,
+            "over_7d_share": 0.0004, "over_30d_share": 0.0,
+            "examples": [{"key": "-73.50000,45.50000", "days": 11.0}]},
+  "hourly_changes": {"hours": [{"hour": 6, "changed": 454, "observed_hours": 1.0, "rate": 454.0}],
+                     "total_changed": 454, "mean_rate": 2.649}
+}
+```
+
+- `latency_seconds` — **end-to-end delay** `observed_at - source_generated_at`:
+  how long after upstream published the snapshot it was fetched and recorded.
+  Because only the *last* fetch timestamp is committed elsewhere, the script
+  keeps a bounded rolling ledger of samples in this same file
+  (`MAX_LATENCY_SAMPLES = 300`, ~3 days of hourly fetching); p50/p90/p95/max are
+  computed over that ledger, so the number is a real distribution, not one value.
+- `freshness_seconds` — `now - last_seen_at` over the 2 463 station entries:
+  how far the on-screen prices can lag upstream. The card reader uses the same
+  `last_seen_at` to render "observed X minutes ago".
+- `stale` — share of stations whose last real price change is older than 7 / 30
+  days (frozen-source candidates). `t: null` entries count as `never_changed`,
+  not as stale, because no change has been observed for them yet.
+- `hourly_changes` — per-UTC-hour `changed_stations_exact / observed_hours` from
+  the learned profile, i.e. the real station re-price rate (#68 signal).
+
+`scripts/check_data_size.py` reports the file and fails if it passes
+**50 KB** (`MAX_METRICS_KB`), on top of the 40 MB `data/` total budget.
 
 ## Station-level vs region-level history
 
@@ -292,7 +352,9 @@ per-file hard limit is 100 MB). This prevents silent repository bloat.
 history file is missing or empty, the dashboard and station cards degrade
 gracefully (empty chart / "no history" message) instead of throwing.
 
-The station change store is not read by the frontend at all, and
-`update_profile.py` treats a missing or unreadable
-`data/history/station-changes.json` as an empty store, so it is safe to delete:
-the next fetch recreates it and simply has no `last_changed_at` baseline yet.
+The station change store is read by the frontend only for the honesty label on
+the station card / detail panel ("price observed X minutes ago"); it does not
+feed prices or charts. `loadStationChangesData()` tolerates a missing or
+malformed file (the label is simply not rendered), and `update_profile.py`
+treats a missing one as an empty store, so it is safe to delete: the next fetch
+recreates it and simply has no `last_changed_at` baseline yet.

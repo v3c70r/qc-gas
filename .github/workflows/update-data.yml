@@ -73,6 +73,14 @@ jobs:
           fi
           python scripts/fetch_bulletin.py || echo "Bulletin fetch failed; keeping previous data"
 
+      # Freshness / latency metrics (issue #70): one small, machine-readable
+      # summary the PM agent can cite. Never blocks the data commit.
+      - name: Compute freshness metrics
+        if: steps.gate.outputs.due == 'true'
+        continue-on-error: true
+        run: |
+          python scripts/metrics.py || echo "Metrics computation failed"
+
       - name: Enforce data size budget
         if: steps.gate.outputs.due == 'true'
         run: |
@@ -87,6 +95,7 @@ jobs:
           brotli -fZ data/stats.json -o data/stats.json.br
           brotli -fZ data/history.json -o data/history.json.br
           [ -f data/regie-margin.json ] && brotli -fZ data/regie-margin.json -o data/regie-margin.json.br
+          [ -f data/metrics.json ] && brotli -fZ data/metrics.json -o data/metrics.json.br
           for f in data/history/*.json; do
             [ -f "$f" ] || continue
             brotli -fZ "$f" -o "$f.br"

@@ -3,7 +3,8 @@
 // Popup = compact card; side panel = expanded card (Chart.js area chart).
 
 import { t, tf, translations, getLanguage, onLanguageChange } from './i18n.js';
-import { getStationHistory, getStationHistoryCoverage, loadStationHistoryData } from './history.js';
+import { getStationHistory, getStationHistoryCoverage, getStationObservations, loadStationHistoryData, loadStationChangesData } from './history.js';
+import { formatRelativeTime } from './freshness.js';
 import { computeRegionBenchmark } from './benchmark.js';
 import { getRegionMargin, loadRegieData } from './regie.js';
 import { loadChartJS } from './chartjs.js';
@@ -74,6 +75,7 @@ onLanguageChange(async () => {
   const notice = document.getElementById('station-gone-notice');
   if (notice && !notice.hidden) notice.textContent = t('stationGone');
   await loadStationHistoryData().catch(() => {});
+  await loadStationChangesData().catch(() => {});
   if (activePopup && currentFeature) {
     activePopup.setHTML(cardHTML(currentFeature));
   }
@@ -193,6 +195,32 @@ function updatedTextFor(snapshot) {
   if (Number.isNaN(d.getTime())) return '';
   const timeStr = d.toLocaleString(getLanguage(), { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' });
   return tf('dataUpdated', { time: timeStr });
+}
+
+// How long a station's last observed price change may be before we flag it as
+// possibly frozen source data (issue #70).
+const STALE_CHANGE_DAYS = 7;
+
+// Honest station-level freshness (issue #70): when *this station* was last seen
+// in the upstream feed, not just when the whole snapshot was generated. Returns
+// an empty string when no observation record exists, so the card shows nothing
+// rather than a made-up age.
+function stationFreshnessHTML(feature, prefix) {
+  const obs = getStationObservations(feature);
+  if (!obs || !obs.seenAt) return '';
+
+  const rel = formatRelativeTime(obs.seenAt, Date.now());
+  if (!rel) return '';
+  const observed = `<div class="${prefix}-observed">${tf('observedAgo', { time: rel })}</div>`;
+
+  let stale = '';
+  if (obs.changedAt) {
+    const days = Math.floor((Date.now() - obs.changedAt) / 86400000);
+    if (days >= STALE_CHANGE_DAYS) {
+      stale = `<div class="${prefix}-stale">${tf('staleHint', { n: days })}</div>`;
+    }
+  }
+  return observed + stale;
 }
 
 function showStationGoneNotice() {
@@ -350,6 +378,7 @@ function cardHTML(feature) {
       ${t('expand')}
     </button>
     <button class="sc-fillup" data-fillup-add>⛽ ${t('fillupRecordHere')}</button>
+    ${stationFreshnessHTML(feature, 'sc')}
     ${popupUpdated ? `<div class="sc-updated">${popupUpdated}</div>` : ''}
   </div>`;
 }
@@ -370,6 +399,7 @@ export async function showStationCard(feature, map, updatedText = '') {
   currentFeature = feature;
 
   await loadStationHistoryData().catch(() => {});
+  await loadStationChangesData().catch(() => {});
   await loadRegieData();
   const coverage = getStationHistoryCoverage(feature, popupFuel);
   if (coverage.days > 0) popupRange = Math.min(popupRange, coverage.days);
@@ -553,6 +583,7 @@ function buildDetailPanel() {
       <div class="sd-head-info">
         <div class="sd-name"></div>
         <div class="sd-sub"></div>
+        <div class="sd-freshness"></div>
       </div>
       <div class="sd-head-actions">
         <button class="sd-fav" aria-label="${t('favorite')}" aria-pressed="false">${STAR_ICON}</button>
@@ -907,6 +938,7 @@ export async function openStationDetail(feature, map, updatedText = '') {
   panel.classList.add('open');
   document.getElementById('map-container').classList.add('panel-open');
   await loadStationHistoryData().catch(() => {});
+  await loadStationChangesData().catch(() => {});
   await loadRegieData();
   const coverage = getStationHistoryCoverage(feature, detailFuel);
   if (coverage.days > 0) detailRange = Math.min(detailRange, coverage.days);
@@ -916,6 +948,7 @@ export async function openStationDetail(feature, map, updatedText = '') {
 async function renderDetail() {
   if (!detailFeature) return;
   await loadStationHistoryData().catch(() => {});
+  await loadStationChangesData().catch(() => {});
   await loadRegieData();
   const props = detailFeature.properties;
   const available = FUEL_KEYS.filter(f => props[f + '_price'] != null);
@@ -924,6 +957,7 @@ async function renderDetail() {
   detailEl.querySelector('.sd-name').textContent = props.name || props.brand || '';
   const region = props.region ? ' · ' + props.region : '';
   detailEl.querySelector('.sd-sub').textContent = `${props.brand || ''}${region}`;
+  detailEl.querySelector('.sd-freshness').innerHTML = stationFreshnessHTML(detailFeature, 'sd');
 
   // Favorite star
   const fav = isFavorite(detailFeature);
