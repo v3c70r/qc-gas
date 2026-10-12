@@ -5,7 +5,7 @@
 //  Roles:
 //    A implementer  — reads approved issue, implements, opens PR
 //    B reviewer     — reviews PR diff, posts comments, discusses w/ A
-//    C tester       — builds & runs Playwright on the PR branch, merges
+//    C tester       — builds & runs the repo's build/test scripts, merges
 //
 //  Shared memory:  PR comments (GitHub) + .agent/logs/issue-<N>.md
 //  Trigger:        issue labelled `agent-approved` by GitHub Actions triage
@@ -21,12 +21,17 @@
 //    MAX_REVIEW_ROUNDS (default 3)  MAX_TEST_FIXES (default 2)
 //    TEST_SKIP=1                    skip functional tests (demo mode)
 //    TEST_ENV_FILE=/abs/path/.env   env file to copy into test worktree
+//    AGENT_BUILD_CMD / AGENT_TEST_CMD  Agent C's build/test commands
+//                                   (default `npm run build` / `npm test`;
+//                                    empty string = skip that step; non-npm
+//                                    repos MUST set them, e.g. `make build`,
+//                                    `pytest -q`)
 // ══════════════════════════════════════════════════════════════════
 import { execFileSync } from 'node:child_process';
 import { mkdirSync, readFileSync, writeFileSync, existsSync, copyFileSync, symlinkSync, rmSync } from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { detectBase, resolvePi, sh } from './lib.mjs';
+import { detectBase, isRejectedIssue, mergeIssueState, prepareImplementerBranch, resolvePi, resolveTesterCommands, selectPendingIssues, sh } from './lib.mjs';
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const AGENT = path.join(ROOT, '.agent');
@@ -38,6 +43,31 @@ const BASE = detectBase();
 
 // ── upstream feedback (self-improvement of the agent-dev-team skill) ──
 // .agent/config.json: { "upstream": "<owner>/<repo>", "feedbackOptIn": true }
+
+// ── issue dependencies ──
+// Issues may declare prerequisites in their body, e.g.
+//   "Depends on: #12, #13"  /  "Blocked by: #12"  /  "阻塞于 #12"
+// The pipeline refuses to start such an issue while any prerequisite is open,
+// so a freshly created batch with dependencies can be auto-approved safely.
+function parseDependencies(body) {
+  const m = String(body || '').match(/^\s*(?:Depends on|Blocked by|Depends|阻塞于|依赖于|依赖)\s*[:：]?\s*((?:#\d+[\s,，、]*)+)/im);
+  if (!m) return [];
+  return [...m[1].matchAll(/#(\d+)/g)].map(x => parseInt(x[1], 10));
+}
+function openDependencies(issue) {
+  const deps = parseDependencies(issue && issue.body);
+  if (!deps.length) return [];
+  const open = [];
+  for (const n of deps) {
+    if (n === Number(issue.number)) continue;
+    try {
+      const st = ghJson(['issue', 'view', String(n), '--json', 'state,title']);
+      if (st.state === 'OPEN') open.push({ number: n, title: st.title });
+    } catch { /* unknown issue → treat as non-blocking */ }
+  }
+  return open;
+}
+
 function loadConfig() {
   try { return JSON.parse(readFileSync(path.join(AGENT, 'config.json'), 'utf8')); } catch { return {}; }
 }
@@ -107,15 +137,11 @@ async function runImplementer(issue, roundNote = '') {
   const s = state.load();
   const branch = `agent/${issue.number}`;
   const prompt = buildPrompt('implementer', { issue, branch, roundNote });
-  log(issue.number, `A: 开始实现 (branch=${branch}, model=${describeModel(IMPL)}) ${roundNote ? '——' + roundNote : ''}`);
-  try {
-    sh(['git', 'fetch', 'origin', BASE]);
-    sh(['git', 'checkout', '-B', branch, `origin/${BASE}`]);
-  } catch {
-    // branch exists upstream; reset local tracking copy
-    sh(['git', 'checkout', branch]);
-    sh(['git', 'reset', '--hard', `origin/${branch}`]);
-  }
+  // Fix rounds MUST continue on the PR's existing branch; only the first round
+  // branches off base. `git checkout -B` on an existing branch would reset it
+  // back to base (lesson #18), so branch prep lives in a tested helper.
+  const { reused } = prepareImplementerBranch({ branch, base: BASE });
+  log(issue.number, `A: 开始实现 (branch=${branch}, ${reused ? `修复轮：基于 PR 现有分支 origin/${branch}` : `首轮：基于 origin/${BASE}`}, model=${describeModel(IMPL)}) ${roundNote ? '——' + roundNote : ''}`);
   const out = runPi(`agent-issue-${issue.number}`, prompt, branch, IMPL);
   log(issue.number, `A: pi 输出（尾）:\n${out.split('\n').slice(-40).join('\n')}`);
 
@@ -140,9 +166,10 @@ async function runImplementer(issue, roundNote = '') {
   }
   if (pr) {
     commentOnPr(pr.number, `🤖 **Agent A 完成实现**（${describeModel(IMPL)}），等待 Agent B review（${describeModel(REVIEW)}）。`);
-    s[issue.number] = { status: 'pr_open', pr: pr.number, branch, round: 0, fixes: 0, title: issue.title };
+    // merge, never replace — `round`/`fixes` recorded by earlier rounds must survive
+    s[issue.number] = mergeIssueState(s[issue.number], { status: 'pr_open', pr: pr.number, branch, title: issue.title });
   } else {
-    s[issue.number] = { status: 'pr_open', pr: null, branch, round: 0, fixes: 0, title: issue.title };
+    s[issue.number] = mergeIssueState(s[issue.number], { status: 'pr_open', pr: null, branch, title: issue.title });
     log(issue.number, 'PR 尚未可查，稍后按分支重查');
   }
   state.save(s);
@@ -201,8 +228,20 @@ async function runReviewRound(issueNum, prNum) {
 }
 
 // ── Role C: tester (functional tests) ──
+
+/** Human-readable report of which commands Agent C will actually run. */
+function describeTesterCommands(cmds) {
+  const line = (label, v, key) => (v ? `- ${label}: \`${v}\`` : `- ${label}: 已跳过（\`${key}\` 为空）`);
+  return [line('build', cmds.build, 'AGENT_BUILD_CMD'), line('test', cmds.test, 'AGENT_TEST_CMD')].join('\n');
+}
+
 function runTester(issueNum, prNum, branch) {
   log(issueNum, `C: 开始功能测试 on ${branch}`);
+  // Commands are shell strings (so `pytest -q` / `make build` work) and are
+  // reported verbatim in the PR comment — the claim must equal what ran (lesson #17).
+  const cmds = resolveTesterCommands();
+  const ran = describeTesterCommands(cmds);
+  const nothingToRun = !cmds.build && !cmds.test;
   const wt = path.join(TMP, `wt-${issueNum}`);
   rmSync(wt, { recursive: true, force: true });
   mkdirSync(TMP, { recursive: true });
@@ -226,15 +265,16 @@ function runTester(issueNum, prNum, branch) {
       symlinkSync(rootModules, path.join(wt, 'node_modules'), 'dir');
     }
     if (process.env.TEST_ENV_FILE && existsSync(process.env.TEST_ENV_FILE)) copyFileSync(process.env.TEST_ENV_FILE, path.join(wt, '.env'));
-    sh(['npm', 'run', 'build'], { cwd: wt });
-    const report = sh(['npm', 'test'], { cwd: wt }).split('\n').slice(-60).join('\n');
-    log(issueNum, `C: 测试通过 ✅\n${report}`);
-    commentOnPr(prNum, `🤖 **Agent C 功能测试通过** ✅（build + Playwright）`);
+    if (cmds.build) sh(['bash', '-lc', cmds.build], { cwd: wt });
+    const testOut = cmds.test ? sh(['bash', '-lc', cmds.test], { cwd: wt }) : '';
+    const report = testOut.split('\n').slice(-60).join('\n');
+    log(issueNum, `C: 测试通过 ✅（${ran}）\n${report}`);
+    commentOnPr(prNum, `🤖 **Agent C 功能测试通过** ✅${nothingToRun ? '（未配置构建/测试命令，已跳过执行）' : '（构建 + 测试套件通过）'}\n\n实际执行：\n${ran}`);
     return { pass: true };
   } catch (e) {
     const report = (e.stdout || e.message || '').split('\n').slice(-60).join('\n');
     log(issueNum, `C: 测试失败 ❌\n${report}`);
-    commentOnPr(prNum, `🤖 **Agent C 功能测试失败** ❌\n\`\`\`\n${report.slice(0, 3000)}\n\`\`\``);
+    commentOnPr(prNum, `🤖 **Agent C 功能测试失败** ❌\n\n实际执行：\n${ran}\n\n\`\`\`\n${report.slice(0, 3000)}\n\`\`\``);
     return { pass: false };
   } finally {
     if (added) { try { sh(['git', 'worktree', 'remove', wt, '--force']); } catch {} }
@@ -317,12 +357,59 @@ async function processIssue(issue, force = false) {
 
 async function processIssueInner(issue, force = false) {
   const s = state.load();
+  // /reject 是硬性否决（issue #14）：标签驱动的取活只加否定标签不等于取消，
+  // 必须把 agent-rejected 当作硬排除，并在实现/合并前落成终态 `rejected`。
+  // 边界：若实现已在运行，本函数不会中断正在跑的 pi 会话（不在本 PR 范围），
+  // 但下一轮不再接管，PR 也不会被自动合并（见 docs/lessons.md #19）。
+  if (isRejectedIssue(issue) && !force) {
+    s[issue.number] = mergeIssueState(s[issue.number], { status: 'rejected', title: issue.title });
+    state.save(s);
+    log(issue.number, '状态: rejected（issue 带 agent-rejected 标签，硬性跳过实现与合并）');
+    return { skipped: 'rejected' };
+  }
   const cur = s[issue.number];
   const terminal = ['merged', 'rejected', 'failed'];
   if (cur && terminal.includes(cur.status) && !force) return { skipped: cur.status };
 
   const branch = cur?.branch || `agent/${issue.number}`;
   let pr = prForBranch(branch) || openPrFor(issue.number, branch) || (cur?.pr ? { number: cur.pr } : null);
+
+  // 0) DEPENDENCIES — never start work whose prerequisites are still open
+  if (!pr) {
+    // throttle dependency re-checks (the watcher ticks every 30s)
+    const sT = state.load();
+    const lastCheck = sT[issue.number]?.blockedCheckedAt ? Date.parse(sT[issue.number].blockedCheckedAt) : 0;
+    const blockedFresh = sT[issue.number]?.status === 'blocked' && (Date.now() - lastCheck) < 5 * 60_000;
+    if (blockedFresh) return { skipped: 'blocked' };
+    const blockedBy = openDependencies(issue);
+    if (blockedBy.length) {
+      const list = blockedBy.map(d => `#${d.number} (${d.title})`).join(', ');
+      log(issue.number, `blocked: 等待依赖 ${list}`);
+      const sB = state.load();
+      if (!sB[issue.number]) sB[issue.number] = {};
+      const firstNotice = !sB[issue.number].blockedNotified;
+      sB[issue.number].status = 'blocked';
+      sB[issue.number].blockedBy = blockedBy.map(d => d.number);
+      sB[issue.number].blockedCheckedAt = new Date().toISOString();
+      if (firstNotice) sB[issue.number].blockedNotified = true;
+      state.save(sB);
+      if (firstNotice) {
+        try { commentOnIssue(issue.number, `⏳ 该 issue 声明了依赖，暂不开始实现：等待 ${list} 关闭。\n\n依赖完成后流水线会自动接手（无需操作）。`); } catch {}
+      }
+      return { skipped: 'blocked' };
+    }
+  }
+
+  // dependencies satisfied → clear the blocked marker
+  if (state.load()[issue.number]?.status === 'blocked') {
+    const sc = state.load();
+    sc[issue.number].status = 'pr_open';
+    delete sc[issue.number].blockedBy;
+    delete sc[issue.number].blockedNotified;
+    delete sc[issue.number].blockedCheckedAt;
+    state.save(sc);
+    try { commentOnIssue(issue.number, '✅ 依赖已满足，开始实现。'); } catch {}
+  }
 
   // 1) IMPLEMENT
   if (!cur || (cur.status === 'pr_open' && (!pr || force))) {
@@ -378,16 +465,14 @@ async function processIssueInner(issue, force = false) {
 
   if (process.env.TEST_SKIP === '1') {
     commentOnIssue(issue.number, `🧪 TEST_SKIP=1，跳过功能测试。`);
-    await finishMerge(issue.number, s2[issue.number].pr || pr.number);
-    return { merged: true };
+    return await finishMerge(issue.number, s2[issue.number].pr || pr.number);
   }
 
   const maxFixes = parseInt(process.env.MAX_TEST_FIXES || '2', 10);
   for (let f = 0; f <= maxFixes; f++) {
     const t = runTester(issue.number, s2[issue.number].pr || pr.number, s2[issue.number].branch);
     if (t.pass) {
-      await finishMerge(issue.number, s2[issue.number].pr || pr.number);
-      return { merged: true };
+      return await finishMerge(issue.number, s2[issue.number].pr || pr.number);
     }
     if (f === maxFixes) {
       commentOnIssue(issue.number, `❌ 功能测试在 ${maxFixes + 1} 次尝试后仍失败，PR 保持开放，请人工处理。`);
@@ -396,11 +481,38 @@ async function processIssueInner(issue, force = false) {
       return { skipped: 'failed' };
     }
     const note = `Agent C 功能测试失败。请修复后重新推送。失败信息见 PR #${s2[issue.number].pr || pr.number} 评论。`;
+    // `round` counts review rounds, `fixes` counts test-driven fix rounds.
+    // Save BEFORE runImplementer so its merge (mergeIssueState) reads the new value.
+    s2[issue.number].fixes = (s2[issue.number].fixes || 0) + 1;
+    state.save(s2);
     await runImplementer(issue, note);
   }
 }
 
 async function finishMerge(issueNum, prNum) {
+  // 合并不可逆 —— 在真正 `gh pr merge` 之前重新取一次 issue 标签确认 /reject。
+  // review + test 窗口长达数十分钟，正是用户最想反悔的时候；只在取活时检查
+  // 无法覆盖"实现已经在跑"的 in-flight 路径（issue #14 明确承诺"PR 不会被
+  // 自动合并"）。取不到标签 = 无法确认 → 失败关闭，绝不做不可逆动作。
+  let freshIssue;
+  try {
+    freshIssue = ghJson(['issue', 'view', String(issueNum), '--json', 'labels']);
+  } catch (e) {
+    const sf = state.load();
+    sf[issueNum] = mergeIssueState(sf[issueNum], { status: 'needs_human' });
+    state.save(sf);
+    log(issueNum, `状态: needs_human（合并前无法确认 /reject 标签: ${e.message}）`);
+    try { commentOnIssue(issueNum, `⚠️ 合并前无法确认 /reject 状态（\`${e.message}\`），为安全起见未自动合并 PR #${prNum}，请人工处理。`); } catch {}
+    return { skipped: 'needs_human' };
+  }
+  if (isRejectedIssue(freshIssue)) {
+    const sr = state.load();
+    sr[issueNum] = mergeIssueState(sr[issueNum], { status: 'rejected' });
+    state.save(sr);
+    log(issueNum, `状态: rejected（合并前检查到 /reject，已阻止自动合并 PR #${prNum}）`);
+    try { commentOnIssue(issueNum, `🛑 合并前检测到 /reject，已**阻止自动合并** PR #${prNum}。该 PR 保持开放，等待人工处理。`); } catch {}
+    return { skipped: 'rejected' };
+  }
   // GitHub forbids approving your own PR. If A/B share one account,
   // record B's approval as a comment instead of a formal review.
   try {
@@ -417,7 +529,7 @@ async function finishMerge(issueNum, prNum) {
     sf[issueNum].status = 'needs_human';
     state.save(sf);
     log(issueNum, '状态: needs_human (merge blocked)');
-    return;
+    return { skipped: 'needs_human' };
   }
   const s = state.load();
   if (!s[issueNum]) s[issueNum] = {};
@@ -425,6 +537,7 @@ async function finishMerge(issueNum, prNum) {
   state.save(s);
   commentOnIssue(issueNum, `🎉 已合并 (PR #${prNum})。issue 将被自动关闭。`);
   log(issueNum, '状态: merged');
+  return { merged: true };
 }
 
 // ── CLI ──
@@ -459,7 +572,7 @@ async function main() {
     const list = issueNum ? [{ number: issueNum, title: '', body: '' }] : approvedIssues();
     for (const issue of list) {
       const full = issueNum
-        ? (await gh(['issue', 'view', String(issueNum), '--json', 'number,title,body']))
+        ? (await gh(['issue', 'view', String(issueNum), '--json', 'number,title,body,labels']))
         : issue;
       await processIssue(typeof full === 'string' ? JSON.parse(full) : full, force);
     }
@@ -499,10 +612,8 @@ async function main() {
     try {
       const issues = approvedIssues();
       const s = state.load();
-      const pending = issues.filter(it => {
-        const c = s[it.number];
-        return !c || !['merged', 'failed', 'needs_human', 'rejected'].includes(c.status);
-      });
+      // 否决优先 + 终态排除（可测试的纯函数；见 templates/lib.mjs）
+      const pending = selectPendingIssues(issues, s);
       if (pending.length === 0) {
         console.log(`[${ts()}] 💤 idle — 等待新的 agent-approved issue …`);
         pollFailures = 0;
