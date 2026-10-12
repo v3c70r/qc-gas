@@ -66,6 +66,33 @@ DEFAULT_PRIOR_HOURS = 168.0                  # one week of observed hours
 # can still accumulate evidence and stop being a permanent prior artifact.
 DEFAULT_EXPLORE_FRAC = 0.15
 
+# ── Layered learning (issue #71) ─────────────────────────────────────────────
+# One global 24-hour distribution averages regions and brands together. Measured
+# on the live profile, the per-hour spread of the global signal was only
+# 745-1235 changed stations (1.65x) - barely above noise, which is what you get
+# when Montréal, Laval and Gaspésie are averaged into one curve. What lives here
+# instead:
+#
+# * ``hour_rates(channel='exact')`` switches the weighting to the *number* of
+#   stations that re-priced (``changed_stations_exact``, issue #68) once the
+#   exact counter covers the day. The legacy region-average estimate saturates,
+#   because a region counts in full as soon as any of its fuel averages moved
+#   (in a 6h replay of the real history that made nearly every region "move" in
+#   nearly every bucket: 1.14x spread).
+# * per-region hourly counters (:func:`record_observation`) with hierarchical
+#   shrinkage: a region with little exposure falls back to the global weights
+#   (:data:`REGION_PRIOR_HOURS` is its prior strength, in observed hours).
+# * a coverage constraint (:func:`coverage_hours`) that pins each region's
+#   distinctive hours, so a reduced budget cannot starve a remote region.
+# * per-quarter-hour counters and :func:`learned_mark_orders`, which pick the
+#   busiest :00/:15/:30/:45 mark of an hour instead of the coarsest one.
+REGION_PRIOR_HOURS = 24.0                    # one day of regional exposure
+REGION_PEAK_HOURS = 2                        # peak hours pinned per region
+REGION_PEAK_RATIO = 1.25                     # ... only if they beat the province by this
+COVERAGE_BUDGET_SHARE = 0.5                  # ... and never more than this share of the plan
+EXACT_READY_SAMPLES = 48                     # exact-channel fetches before the switch
+MARK_MIN_SAMPLES = 32                        # fetches in an hour before :15 marks count
+
 # Environment overrides read by *both* CLIs (``update_profile.py`` writes the
 # schedule, ``should_fetch.py`` gates on it) so the workflow has a single
 # source of truth and the two scripts can never disagree.
@@ -109,6 +136,11 @@ def env_float(name, default, environ=None):
 # Order in which the quarter-hour marks of an hour are used, coarsest spread
 # first: one slot -> :00, two -> :00/:30, three -> :00/:30/:15, four -> every mark.
 SLOT_MARK_PRIORITY = (0, 30, 15, 45)
+
+# The same order as in-hour slot offsets (0..3), used by ``_exploit_slots``
+# whenever a learned mark order (:func:`learned_mark_orders`) has nothing to
+# say about that hour.
+DEFAULT_MARK_ORDER = tuple(mark // SLOT_MINUTES for mark in SLOT_MARK_PRIORITY)
 
 # Order exploration probes the marks of an hour: start with the quarter-hour
 # offset the exploitation plan does not already use, so a delayed run still
@@ -200,6 +232,17 @@ def observed_from_stations(stations):
         region: {fuel: round(total / count, 1) for fuel, (total, count) in fuels.items()}
         for region, fuels in sums.items()
     }
+
+
+def slot_hour_counts(slots):
+    """Per-hour poll counts of a daily slot list (24-length, index = UTC hour)."""
+    counts = [0] * 24
+    for slot in slots or ():
+        try:
+            counts[int(slot) // SLOTS_PER_HOUR] += 1
+        except (TypeError, ValueError):
+            continue
+    return counts
 
 
 def region_station_counts(stations):
@@ -319,6 +362,21 @@ def diff_stations(previous, current):
     return changed
 
 
+def station_regions(stations):
+    """Coordinate key -> region, so a re-priced station can be attributed.
+
+    Uses the same 5-decimal coordinate key as :func:`station_prices`, so the
+    output of :func:`diff_stations` can be mapped back to regions (issue #71).
+    """
+    out = {}
+    for feat in (stations or {}).get('features') or []:
+        props = (feat or {}).get('properties') or {}
+        key = station_coord_key(feat)
+        if key:
+            out[key] = props.get('region') or 'Inconnue'
+    return out
+
+
 def _ensure_hours(profile):
     hours = profile.setdefault('hours', {})
     for h in range(24):
@@ -329,12 +387,57 @@ def _ensure_hours(profile):
         rec.setdefault('changed_stations', 0)
         rec.setdefault('changed_stations_exact', 0)
         rec.setdefault('stations_observed', 0)
+        rec.setdefault('exact_samples', 0)
     return hours
+
+
+def _record_regions(profile, region_counts, changed_regions, changed_stations, hour, gap):
+    """Fold one fetch into the per-region hourly counters (issue #71).
+
+    Only hours that were actually observed are stored, so the block stays
+    sparse (18 regions x 24 hours only once every hour of the day has been
+    sampled). ``changed_stations`` are the *exact* per-station re-prices inside
+    that region (issue #68), which is the count-based signal the global
+    region-average estimate lacks.
+    """
+    regions = profile.setdefault('regions', {})
+    for region, stations in (region_counts or {}).items():
+        entry = regions.setdefault(region, {'stations': 0, 'hours': {}})
+        entry['stations'] = int(stations)
+        rec = entry['hours'].setdefault(str(hour), {
+            'samples': 0, 'observed_hours': 0.0,
+            'change_events': 0, 'changed_stations': 0,
+        })
+        rec['samples'] += 1
+        rec['observed_hours'] = round(rec['observed_hours'] + gap, 6)
+        if region in (changed_regions or ()):
+            rec['change_events'] += 1
+        rec['changed_stations'] += int((changed_stations or {}).get(region, 0))
+    return regions
+
+
+def _record_mark(profile, hour, now, changed_stations):
+    """Count a fetch's exact re-prices on its quarter-hour mark of ``hour``.
+
+    The upstream snapshot is regenerated on the quarter-hour grid and the plan
+    can hold several marks of one hour, so :00/:15/:30/:45 can carry information
+    the hour-level buckets average away (issue #71, point 2). Only the exact
+    per-station counter feeds this: the region-average channel is too coarse to
+    resolve a quarter hour.
+    """
+    mark = now.astimezone(timezone.utc).minute // SLOT_MINUTES
+    marks = profile.setdefault('marks', {})
+    hour_marks = marks.setdefault(str(hour), {})
+    rec = hour_marks.setdefault(str(mark), {'samples': 0, 'changed_stations': 0})
+    rec['samples'] += 1
+    rec['changed_stations'] += int(changed_stations)
+    return rec
 
 
 def record_observation(profile, *, observed, region_counts, now, previous_at=None,
                        src=None, max_gap_hours=DEFAULT_MAX_GAP_HOURS,
-                       station_changes=None, stations_observed=None):
+                       station_changes=None, stations_observed=None,
+                       region_changed_stations=None):
     """Fold one real fetch into the learnable change-time profile.
 
     Returns ``(profile, summary)``. The change is attributed to the *fetch*
@@ -346,8 +449,13 @@ def record_observation(profile, *, observed, region_counts, now, previous_at=Non
     ``station_changes`` (exact per-station re-prices) and ``stations_observed``
     are the station-level calibration of the old, region-average-based
     ``changed_stations`` estimate. They are recorded side by side so the exact
-    counts stay measurable; the schedule keeps reading the region-level fields
-    until they have been shown to be a better predictor.
+    counts stay measurable; :func:`hour_rates` switches to them once
+    :func:`exact_channel_ready` reports enough coverage.
+
+    ``region_changed_stations`` (issue #71) is ``{region: exact re-priced
+    stations}`` and enables the per-region counters used by the layered
+    weights; passing it (or not) is what turns regional learning on, so a
+    caller written before #71 keeps writing exactly the old record.
     """
     hours = _ensure_hours(profile)
     hour = now.astimezone(timezone.utc).hour
@@ -373,8 +481,13 @@ def record_observation(profile, *, observed, region_counts, now, previous_at=Non
     exact = None if station_changes is None else int(station_changes)
     if exact is not None:
         rec['changed_stations_exact'] = rec.get('changed_stations_exact', 0) + exact
+        rec['exact_samples'] = int(rec.get('exact_samples') or 0) + 1
+        _record_mark(profile, hour, now, exact)
     if stations_observed is not None:
         rec['stations_observed'] = int(stations_observed)
+    if region_changed_stations is not None:
+        _record_regions(profile, region_counts, changed, region_changed_stations,
+                        hour, gap)
 
     profile['last_observed'] = observed
     profile['last_observed_at'] = to_iso(now)
@@ -402,37 +515,254 @@ def research_prior_weights():
     return [r / total for r in raw]
 
 
-def hour_weights(profile, prior_alpha=DEFAULT_PRIOR_HOURS):
-    """Blend learned per-hour change rates with the research prior.
+def hour_rates(profile, channel='auto'):
+    """Expected station re-prices per hour of day, plus the exposure behind it.
 
-    ``prior_alpha`` is expressed in observed *hours*: after a week of hourly
-    coverage the prior and the data weigh the same, and the prior keeps fading.
+    Returns ``(rates, observed_hours)``. ``channel`` selects the detector:
+
+    * ``'region'`` — the legacy estimate: stations living in regions whose
+      *average* price moved this fetch, divided by the observed hours. It is
+      event-based and saturates, because a region counts in full as soon as any
+      of its fuel averages moved.
+    * ``'exact'`` — stations that really re-priced (issue #68), a *count* per
+      hour instead of an event, so the hourly contrast survives (issue #71).
+    * ``'auto'`` (default) — ``'exact'`` once :func:`exact_channel_ready` says
+      the per-station channel covers the whole day, else ``'region'``.
+
+    The two channels have different units (a region contributes its whole
+    station count vs one station per pump that moved), so they are never mixed
+    inside one distribution: the switch happens for all hours at once.
     """
-    prior = research_prior_weights()
     hours = (profile or {}).get('hours') or {}
+    if channel == 'auto':
+        channel = 'exact' if exact_channel_ready(profile) else 'region'
+    key = 'changed_stations_exact' if channel == 'exact' else 'changed_stations'
 
     rates = [0.0] * 24
     observed_total = 0.0
     for h in range(24):
         rec = hours.get(str(h)) or {}
-        observed_hours = max(0.0, float(rec.get('observed_hours') or 0.0))
-        changed = max(0.0, float(rec.get('changed_stations') or 0.0))
-        observed_total += observed_hours
-        rates[h] = changed / observed_hours if observed_hours > 0 else 0.0
+        observed = max(0.0, float(rec.get('observed_hours') or 0.0))
+        observed_total += observed
+        if observed > 0:
+            rates[h] = max(0.0, float(rec.get(key) or 0.0)) / observed
+    return rates, observed_total
 
-    rate_sum = sum(rates)
-    if rate_sum <= 0:
-        # Nothing learned yet (or no change ever seen): trust the research prior.
-        return prior
 
-    rate_norm = [r / rate_sum for r in rates]
-    prior_weight = prior_alpha / (prior_alpha + observed_total)
-    weights = [
-        (1.0 - prior_weight) * rate_norm[h] + prior_weight * prior[h]
-        for h in range(24)
-    ]
-    total = sum(weights)
-    return [w / total for w in weights] if total > 0 else prior
+def exact_channel_ready(profile, min_samples=EXACT_READY_SAMPLES):
+    """Has the per-station channel covered every observed hour of the day yet?
+
+    The exact counters (issue #68) started recording after the region-average
+    profile was already weeks old, so switching on the first sample would
+    compare a handful of fetches against a month of history. The channel is
+    trusted once every hour that has observations also has exact samples and
+    the whole profile has at least ``min_samples`` of them.
+    """
+    hours = (profile or {}).get('hours') or {}
+
+    def samples(h):
+        return int((hours.get(str(h)) or {}).get('exact_samples') or 0)
+
+    observed = [h for h in range(24)
+                if float((hours.get(str(h)) or {}).get('observed_hours') or 0.0) > 0]
+    if not observed:
+        return False
+    return (sum(samples(h) for h in range(24)) >= int(min_samples)
+            and all(samples(h) > 0 for h in observed))
+
+
+def _normalize(values):
+    total = sum(values or ())
+    if total <= 0:
+        return None
+    return [float(v) / total for v in values]
+
+
+def _shrink(rates, exposure, fallback, alpha):
+    """Hierarchical shrinkage of a rate distribution toward ``fallback``.
+
+    ``alpha`` is the prior strength in observed hours: with no exposure the
+    result *is* the fallback, with ``exposure == alpha`` the two weigh the same.
+    """
+    norm = _normalize(rates)
+    if norm is None:
+        return list(fallback)
+    w = float(alpha) / (float(alpha) + max(0.0, float(exposure)))
+    blended = [(1.0 - w) * norm[h] + w * fallback[h] for h in range(len(fallback))]
+    return _normalize(blended) or list(fallback)
+
+
+def _region_rates(entry):
+    """``(rates, exposure)`` for one region block: re-priced stations per hour."""
+    hours = (entry or {}).get('hours') or {}
+    rates = [0.0] * 24
+    exposure = 0.0
+    for h in range(24):
+        rec = hours.get(str(h)) or {}
+        observed = max(0.0, float(rec.get('observed_hours') or 0.0))
+        exposure += observed
+        if observed > 0:
+            rates[h] = max(0.0, float(rec.get('changed_stations') or 0.0)) / observed
+    return rates, exposure
+
+
+def _global_hour_weights(profile, prior_alpha=DEFAULT_PRIOR_HOURS):
+    """Province-wide weights: learned hourly rates blended with the prior.
+
+    With no data at all — or no change ever seen — the weights *are* the prior.
+    """
+    rates, observed_total = hour_rates(profile)
+    return _shrink(rates, observed_total, fallback=research_prior_weights(),
+                   alpha=prior_alpha)
+
+
+def hour_weights(profile, prior_alpha=DEFAULT_PRIOR_HOURS, region=None):
+    """Blend learned per-hour change rates with the research prior.
+
+    ``prior_alpha`` is expressed in observed *hours*: after a week of hourly
+    coverage the prior and the data weigh the same, and the prior keeps fading.
+
+    With ``region`` given and regional observations recorded (issue #71), the
+    region's own distribution is shrunk toward the global one with
+    :data:`REGION_PRIOR_HOURS` as the prior strength, so a sparsely sampled
+    region (Nord-du-Québec has 36 stations) cannot drift on two noisy hours.
+
+    Without regional data, or with a province-wide call, the global
+    distribution is returned — exactly the pre-#71 behaviour.
+    """
+    base = _global_hour_weights(profile, prior_alpha)
+    regions = (profile or {}).get('regions') or {}
+    if not regions:
+        return base
+
+    if region is not None:
+        rates, exposure = _region_rates(regions.get(region))
+        return _shrink(rates, exposure, fallback=base, alpha=REGION_PRIOR_HOURS)
+
+    # Province-wide: the expected re-prices of every region, summed. This is the
+    # count-based (non-saturating) replacement of the region-average rate.
+    rates = [0.0] * 24
+    exposure = 0.0
+    for entry in regions.values():
+        region_rates, region_exposure = _region_rates(entry)
+        rates = [a + b for a, b in zip(rates, region_rates)]
+        exposure += region_exposure
+    return _shrink(rates, exposure, fallback=base, alpha=prior_alpha)
+
+
+def region_hour_weights(profile):
+    """``{region: 24 weights}`` for every region with recorded observations."""
+    regions = (profile or {}).get('regions') or {}
+    return {name: hour_weights(profile, region=name)
+            for name, entry in regions.items() if (entry or {}).get('hours')}
+
+
+def _peak_hours(weights, baseline=None, top=REGION_PEAK_HOURS,
+                min_ratio=REGION_PEAK_RATIO):
+    """A region's *distinctive* peak hours, most distinctive first.
+
+    An hour is pinned only when it is a genuine hot hour for the region (at
+    least ``min_ratio`` times its uniform share ``1/24``, so a flat rhythm
+    cannot promote arbitrary hours) *and* the province's own share there is at
+    least ``min_ratio`` times smaller (so an hour the global plan already
+    concentrates on is not pinned again). ``baseline`` is the province-wide
+    distribution; without it the uniform one is assumed.
+
+    The ranking is ``region share / province share``, deliberately *not*
+    weighted by station count: the pin exists for fairness (the volume-based
+    water-fill already serves the big regions), so the pin budget goes to the
+    hours the province plan would otherwise never poll.
+    """
+    hours = len(weights)
+    if not hours:
+        return []
+    uniform = 1.0 / hours
+    if baseline is None:
+        baseline = [uniform] * hours
+
+    def ratio(h):
+        base = baseline[h] if h < len(baseline) else 0.0
+        if base <= 0:
+            # An hour the province never touches: any weight here is a region's
+            # own window, i.e. infinitely more interesting than the baseline.
+            return float('inf') if weights[h] > 0 else 0.0
+        return weights[h] / base
+
+    candidates = [h for h in range(hours)
+                  if weights[h] >= min_ratio * uniform and ratio(h) >= min_ratio]
+    if not candidates:
+        return []
+    ranked = sorted(candidates, key=lambda h: (-ratio(h), -weights[h], h))
+    return sorted(ranked[:max(1, int(top))])
+
+
+def coverage_hours(weights_by_region, baseline=None, top=REGION_PEAK_HOURS):
+    """Hours that must stay in the plan, most distinctive first.
+
+    One global schedule is fetched for the whole province, so a region is only
+    "at risk" of never being sampled during its own hot window. Pinning each
+    region's distinctive hours as mandatory slots keeps a remote region from
+    being starved by the metropolises' weights. The returned list is *ranked*
+    (the hour that stands out the most comes first) so a budget too small to pin
+    everything still spends on the most region-specific hours.
+    """
+    best = {}
+    for weights in (weights_by_region or {}).values():
+        hours = len(weights)
+        if not hours:
+            continue
+        uniform = 1.0 / hours
+        base = baseline if baseline is not None else [uniform] * hours
+        for h in _peak_hours(weights, baseline=base, top=top):
+            share = base[h] if h < len(base) else 0.0
+            ratio = float('inf') if share <= 0 else weights[h] / share
+            if h not in best or ratio > best[h]:
+                best[h] = ratio
+    return sorted(best, key=lambda h: (-best[h], h))
+
+
+def region_coverage(weights_by_region, slots, baseline=None, top=REGION_PEAK_HOURS):
+    """``{region: {'peaks': [...], 'covered': bool}}`` for a planned day."""
+    counts = slot_hour_counts(slots)
+    report = {}
+    for region, weights in (weights_by_region or {}).items():
+        peaks = _peak_hours(weights, baseline=baseline, top=top)
+        report[region] = {'peaks': peaks,
+                          'covered': all(counts[h] >= 1 for h in peaks)}
+    return report
+
+
+def learned_mark_orders(profile, min_samples=MARK_MIN_SAMPLES):
+    """``{hour: (mark, ...)}`` — quarter-hour marks ranked by learned density.
+
+    Only hours with at least ``min_samples`` recorded fetches are returned;
+    everything else falls back to :data:`DEFAULT_MARK_ORDER` (coarsest first),
+    so a quarter hour is never promoted on one lucky sample.
+    """
+    orders = {}
+    for key, marks in ((profile or {}).get('marks') or {}).items():
+        try:
+            hour = int(key)
+        except (TypeError, ValueError):
+            continue
+        records = {}
+        for mark, rec in (marks or {}).items():
+            try:
+                records[int(mark)] = rec or {}
+            except (TypeError, ValueError):
+                continue
+        samples = sum(int(rec.get('samples') or 0) for rec in records.values())
+        if samples < int(min_samples):
+            continue
+
+        def rank(mark):
+            rec = records.get(mark) or {}
+            seen = int(rec.get('samples') or 0)
+            density = float(rec.get('changed_stations') or 0) / seen if seen > 0 else 0.0
+            return (-density, DEFAULT_MARK_ORDER.index(mark))
+
+        orders[hour] = tuple(sorted(range(SLOTS_PER_HOUR), key=rank))
+    return orders
 
 
 # ── Scheduling ───────────────────────────────────────────────────────────────
@@ -451,12 +781,44 @@ def observed_hour_totals(profile):
     ]
 
 
-def _exploit_slots(weights, budget, min_per_hour, max_per_hour):
-    """Legacy water-fill: coverage floor, then learn the busiest hours."""
+def _exploit_slots(weights, budget, min_per_hour, max_per_hour, coverage_hours=(),
+                   mark_orders=None, coverage_share=COVERAGE_BUDGET_SHARE):
+    """Hourly floor, regional pins, then learn the busiest hours.
+
+    The order matters:
+
+    1. every hour keeps ``min_per_hour`` slots while the budget allows, so the
+       hourly freshness floor of issue #77 survives any regional constraint;
+    2. ``coverage_hours`` (issue #71) are then pinned, in the order given
+       (:func:`coverage_hours` ranks them by how much they protect), for at most
+       ``coverage_share`` of the budget left after the floor — so a guarantee for
+       one region can never eat the whole plan;
+    3. the rest is water-filled into the highest-weight hours, using the learned
+       quarter-hour order of that hour (:func:`learned_mark_orders`) or the
+       coarse default (:data:`DEFAULT_MARK_ORDER`).
+    """
     hours = len(weights)
-    base = min(int(min_per_hour), budget // hours) if hours else 0
-    counts = [base] * hours
-    remaining = budget - base * hours
+    counts = [0] * hours
+    remaining = budget
+
+    base = min(int(min_per_hour), remaining // hours) if hours else 0
+    for h in range(hours):
+        counts[h] = base
+    remaining -= base * hours
+
+    share = max(0.0, min(1.0, float(coverage_share or 0.0)))
+    allowance = int(remaining * share)
+    pinned = 0
+    mandatory = list(dict.fromkeys(int(h) for h in (coverage_hours or ())
+                                   if 0 <= int(h) < hours))
+    for h in mandatory:
+        if pinned >= allowance:
+            break
+        if counts[h] > 0:
+            continue          # the hourly floor already covers this hour
+        counts[h] = 1
+        pinned += 1
+    remaining -= pinned
 
     while remaining > 0:
         candidates = [h for h in range(hours) if counts[h] < max_per_hour]
@@ -466,10 +828,12 @@ def _exploit_slots(weights, budget, min_per_hour, max_per_hour):
         counts[chosen] += 1
         remaining -= 1
 
+    orders = mark_orders or {}
     slots = []
     for h in range(hours):
-        for mark in SLOT_MARK_PRIORITY[:counts[h]]:
-            slots.append(h * SLOTS_PER_HOUR + mark // SLOT_MINUTES)
+        marks = orders.get(h) or DEFAULT_MARK_ORDER
+        for mark in marks[:counts[h]]:
+            slots.append(h * SLOTS_PER_HOUR + int(mark))
     return sorted(slots)
 
 
@@ -518,7 +882,8 @@ def _pick_explore_slots(weights, observed_hours, used, count, max_per_hour):
 
 def plan_schedule(weights, budget=DEFAULT_DAILY_BUDGET, min_per_hour=1,
                   max_per_hour=SLOTS_PER_HOUR, observed_hours=None,
-                  explore_frac=DEFAULT_EXPLORE_FRAC):
+                  explore_frac=DEFAULT_EXPLORE_FRAC, coverage_hours=(),
+                  mark_orders=None):
     """Plan the day and say which slots are exploration probes (issue #69).
 
     Returns ``(slots, explore_slots)``. ``slots`` is the same bounded daily
@@ -526,6 +891,10 @@ def plan_schedule(weights, budget=DEFAULT_DAILY_BUDGET, min_per_hour=1,
     the least ``observed_hours``. Exploration is opt-in on evidence:
     ``observed_hours=None`` (no learned profile yet, e.g. the research-prior
     fallback) or ``explore_frac=0`` reproduces the previous plan exactly.
+
+    ``coverage_hours`` / ``mark_orders`` (issue #71) only shape the
+    exploitation part: exploration keeps probing the least-observed hours so
+    the regional pins can never freeze the sampler's own learning.
     """
     hours = len(weights)
     if hours == 0:
@@ -544,7 +913,9 @@ def plan_schedule(weights, budget=DEFAULT_DAILY_BUDGET, min_per_hour=1,
         explore_budget = max(0, min(explore_budget, hours * max_per_hour,
                                     budget - floor_plan))
 
-    exploit = _exploit_slots(weights, budget - explore_budget, min_per_hour, max_per_hour)
+    exploit = _exploit_slots(weights, budget - explore_budget, min_per_hour,
+                             max_per_hour, coverage_hours=coverage_hours,
+                             mark_orders=mark_orders)
     explore = []
     if explore_budget > 0:
         explore = _pick_explore_slots(weights, observed_hours, exploit,
@@ -553,7 +924,7 @@ def plan_schedule(weights, budget=DEFAULT_DAILY_BUDGET, min_per_hour=1,
 
 
 def plan_slots(weights, budget=DEFAULT_DAILY_BUDGET, min_per_hour=1,
-               max_per_hour=SLOTS_PER_HOUR):
+               max_per_hour=SLOTS_PER_HOUR, coverage_hours=(), mark_orders=None):
     """Pick quarter-hour UTC slots for the day under a daily request budget.
 
     Every hour keeps ``min_per_hour`` slots when the budget allows, so the
@@ -561,7 +932,9 @@ def plan_slots(weights, budget=DEFAULT_DAILY_BUDGET, min_per_hour=1,
     the hours that historically produce the most price changes.
     """
     return plan_schedule(weights, budget=budget, min_per_hour=min_per_hour,
-                         max_per_hour=max_per_hour)[0]
+                         max_per_hour=max_per_hour,
+                         coverage_hours=coverage_hours,
+                         mark_orders=mark_orders)[0]
 
 
 def slot_labels(slots):
