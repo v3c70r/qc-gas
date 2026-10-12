@@ -56,6 +56,16 @@ class BudgetTest(unittest.TestCase):
         self.assertGreater(check_data_size.MAX_STATION_CHANGES_MB, 1)
         self.assertEqual(check_data_size.budget_errors(12.0, 8.0, 0.25), [])
 
+    def test_metrics_file_over_its_own_budget_is_an_error(self):
+        errors = check_data_size.budget_errors(
+            12.0, 8.0, 0.2, metrics_kb=check_data_size.MAX_METRICS_KB + 1)
+        self.assertTrue(any('metrics' in e for e in errors))
+
+    def test_metrics_budget_allows_the_measured_file(self):
+        # The rolling latency ledger keeps metrics.json a few KB.
+        self.assertGreaterEqual(check_data_size.MAX_METRICS_KB, 50)
+        self.assertEqual(check_data_size.budget_errors(12.0, 8.0, 0.2, metrics_kb=5), [])
+
 
 if __name__ == '__main__':
     unittest.main()

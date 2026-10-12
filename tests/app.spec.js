@@ -3794,3 +3794,100 @@ test.describe('Mes données backup / restore (Issue #57)', () => {
     await expect(page.locator('#databackup-import')).toBeVisible();
   });
 });
+
+test.describe('Station freshness — observed-at label (Issue #70)', () => {
+  const isoAgo = (ms) => new Date(Date.now() - ms).toISOString();
+  const MIN = 60 * 1000;
+  const DAY = 24 * 60 * MIN;
+
+  // Key every station the same way history.js does, so whichever card opens it
+  // finds an observation record regardless of the sidebar sort order.
+  function changesStore({ seenAgo = 3 * MIN, changedAgo = 30 * DAY, changed = true } = {}) {
+    const s = {};
+    for (const f of stationsFixture.features) {
+      const [lng, lat] = f.geometry.coordinates;
+      s[`${lng.toFixed(5)},${lat.toFixed(5)}`] = {
+        t: changed ? isoAgo(changedAgo) : null,
+        u: isoAgo(seenAgo),
+        p: [f.properties.regular_price, f.properties.super_price, f.properties.diesel_price]
+      };
+    }
+    return JSON.stringify({
+      v: 1,
+      generated_at: isoAgo(seenAgo),
+      last: { at: isoAgo(seenAgo), observed: stationsFixture.features.length, changed: 0 },
+      s
+    });
+  }
+
+  async function serveChanges(page, body) {
+    return page.route('**/data/history/station-changes.json', (route) =>
+      route.fulfill({ status: 200, contentType: 'application/json', body }));
+  }
+
+  async function waitForStations(page) {
+    await page.waitForFunction(
+      () => window.__qcGasMap && window.__qcGasMap.getStationFeatureCount() > 0 && window.__qcGasFreshness,
+      null,
+      { timeout: 15000 }
+    );
+  }
+
+  async function selectLang(page, code) {
+    await page.locator(`#lang-selector button[data-lang="${code}"]`).click();
+  }
+
+  async function openFirstCard(page) {
+    const item = page.locator('#station-list .list-item').first();
+    await expect(item).toBeVisible();
+    await item.click();
+    await expect(page.locator('.mapboxgl-popup').first()).toBeVisible();
+  }
+
+  test('card and detail show the station observation age in three languages', async ({ page }) => {
+    await serveChanges(page, changesStore());
+    await page.goto(BASE_URL);
+    await waitForStations(page);
+
+    await selectLang(page, 'fr-CA');
+    await openFirstCard(page);
+    const popup = page.locator('.mapboxgl-popup').first();
+    await expect(popup.locator('.sc-observed')).toContainText(/il y a 3 min/);
+    await expect(popup.locator('.sc-stale')).toBeVisible();
+
+    await popup.locator('[data-expand]').click();
+    const panel = page.locator('#station-panel');
+    await expect(panel).toHaveClass(/open/);
+    await expect(panel.locator('.sd-observed')).toContainText(/il y a 3 min/);
+    await expect(panel.locator('.sd-stale')).toBeVisible();
+
+    await selectLang(page, 'en-CA');
+    await expect(panel.locator('.sd-observed')).toContainText(/3 min/);
+    await expect(panel.locator('.sd-observed')).toContainText(/ago/);
+
+    await selectLang(page, 'zh-Hans');
+    await expect(panel.locator('.sd-observed')).toContainText(/3 *分钟前/);
+  });
+
+  test('a recently changed station shows no stale hint', async ({ page }) => {
+    await serveChanges(page, changesStore({ changedAgo: 2 * DAY }));
+    await page.goto(BASE_URL);
+    await waitForStations(page);
+    await openFirstCard(page);
+    const popup = page.locator('.mapboxgl-popup').first();
+    await expect(popup.locator('.sc-observed')).toBeVisible();
+    await expect(popup.locator('.sc-stale')).toHaveCount(0);
+  });
+
+  test('without observation data nothing is shown instead of a wrong value', async ({ page }) => {
+    await page.route('**/data/history/station-changes.json', (route) =>
+      route.fulfill({ status: 404, contentType: 'text/plain', body: 'not found' }));
+    await page.goto(BASE_URL);
+    await waitForStations(page);
+    await openFirstCard(page);
+    const popup = page.locator('.mapboxgl-popup').first();
+    await expect(popup.locator('.sc-price')).toBeVisible();
+    await expect(popup.locator('.sc-observed')).toHaveCount(0);
+    await expect(popup.locator('.sc-stale')).toHaveCount(0);
+  });
+});

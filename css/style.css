@@ -1639,6 +1639,9 @@ select:focus-visible {
 }
 .sc-expand:hover { border-color: #1a73e8; color: #1a73e8; background: #f0f7ff; }
 .sc-updated { margin-top: 8px; font-size: 9px; color: #cbd5e1; text-align: center; }
+/* Station-level observation age (issue #70): honest, low-key. */
+.sc-observed { margin-top: 6px; font-size: 10px; color: #94a3b8; text-align: center; }
+.sc-stale { margin-top: 2px; font-size: 9px; color: #b45309; text-align: center; opacity: 0.85; }
 
 /* ══════════════════════════════════════
    Station Detail Panel (expanded card)
@@ -1927,6 +1930,9 @@ select:focus-visible {
 }
 .sd-nav:hover { background: #1557b0; box-shadow: 0 6px 18px rgba(26,115,232,0.35); }
 .sd-updated { font-size: 10px; color: #94a3b8; text-align: center; }
+/* Station-level observation age (issue #70). */
+.sd-observed { margin-top: 2px; font-size: 11px; color: #94a3b8; }
+.sd-stale { margin-top: 1px; font-size: 10px; color: #b45309; opacity: 0.85; }
 
 /* ── Same-day regional benchmark (popup + detail) ── */
 .sc-bench,
