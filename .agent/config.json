@@ -3,9 +3,9 @@
   "feedbackOptIn": true,
   "review": {
     "provider": "zai-coding-cn",
-    "model": "glm-5.3"
+    "model": "glm-5.3-flash"
   },
-  "notes": "qc-gas 是 agent-dev-team 的首个消费者：流水线未预期异常会脱敏上报 [skill-feedback]",
+  "notes": "review = zai-coding-cn (智谱 CN lite coding plan)；reviewFallback = deepseek-flash；screener = deepseek-flash",
   "reviewFallback": {
     "provider": "deepseek",
     "model": "deepseek-v4-flash"
