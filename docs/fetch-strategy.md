@@ -134,17 +134,20 @@ observed_hours=<profile>, explore_frac=0.15)` picks quarter-hour UTC slots:
 3. the remaining budget is greedily water-filled into the highest-weight hours,
    at most 4 slots per hour (one per quarter-hour mark `:00`, `:15`, `:30`,
    `:45`, spread coarse-first);
-4. `budget` is the hard **maximum upstream downloads per day** (default **96**
-   = every quarter-hour slot, i.e. one request per `*/15` wake-up; override
-   with the `FETCH_DAILY_BUDGET` env var or `--budget`). Below 96 the learned
-   weights decide which slots survive; at 96 the budget equals capacity, so the
-   plan is simply every slot. `plan_slots(...)` is the exploration-free wrapper
+4. `budget` is the hard **maximum upstream downloads per day** from the
+   *scheduled plan* (default **24** = one request per hourly wake-up, i.e. the
+   hourly fallback cron's capacity; override with the `FETCH_DAILY_BUDGET` env
+   var or `--budget`). Below 24 the learned weights decide which slots survive;
+   at 24 the budget equals the hourly floor, so the plan is one slot per hour
+   (00:00, 01:00, …) and the ε exploration share has no slack left — hour
+   coverage now comes from the uniform external trigger instead (issue #77).
+   `plan_slots(...)` is the exploration-free wrapper
    used where there is no learned profile yet.
 
-Since the upstream snapshot is regenerated every 5 minutes (see
-"Fetch rhythm vs upstream regeneration" below) and the workflow wakes every 15
-minutes, polling on every wake-up adds freshness without polling faster than
-the schedule that triggers it.
+Sub-hourly cadence is **not** the plan's job any more: it comes from the
+external `repository_dispatch` trigger, which the gate treats as "fetch
+unconditionally" and which does not consume this budget (see
+[Fetch rhythm](#fetch-rhythm-vs-upstream-regeneration)).
 
 Example output (`data/fetch-schedule.json`):
 
@@ -154,21 +157,22 @@ Example output (`data/fetch-schedule.json`):
   "generated_at": "2026-09-25T11:20:00Z",
   "source": "learned",
   "prior": "research-2026-09",
-  "budget_per_day": 96,
-  "allocated_per_day": 96,
+  "budget_per_day": 24,
+  "allocated_per_day": 24,
   "min_per_hour": 1,
   "max_per_hour": 4,
   "explore_frac": 0.15,
-  "explore_count": 14,
-  "explore_slots": ["02:45", "03:45", "07:45", "08:45", "..."],
-  "slots": ["00:00", "00:15", "00:30", "01:00", "..."],
+  "explore_count": 0,
+  "explore_slots": [],
+  "slots": ["00:00", "01:00", "02:00", "...", "23:00"],
   "hour_weights": [0.0288, "..."]
 }
 ```
 
 `explore_slots` is a subset of `slots` (never a duplicate); `should_fetch.py`
 uses it to tag a due hit with `[explore]` in its output, so each poll is
-attributable to exploration or exploitation (issue #69).
+attributable to exploration or exploitation (issue #69). At the shipped budget
+of 24 it is empty by design (the budget only covers the hourly floor).
 
 The plan is rebuilt on every successful fetch. `hour_weights()` uses cumulative
 counters, so the schedule reflects the whole observed history rather than a
@@ -178,7 +182,8 @@ if the learned peaks drift.
 
 ## The workflow gate
 
-`static.yml` now wakes on `*/15 * * * *` instead of hourly. Every wake-up runs
+`static.yml` wakes on the **external trigger** (`repository_dispatch`, target
+cadence 30 min) plus an hourly fallback cron (`17 * * * *`). Every wake-up runs
 `scripts/should_fetch.py`, which downloads **only** when it is due:
 
 1. no previous fetch recorded → fetch (bootstrap / after deploy);
@@ -186,12 +191,13 @@ if the learned peaks drift.
 3. a scheduled slot fell inside `(last_fetch, now]` within a 45-minute grace
    window → fetch (the grace stops a delayed runner from firing on a slot that
    is hours stale);
-4. nothing for more than `max_age_minutes` (default **90 min**, env
-   `FETCH_MAX_AGE_MINUTES`) → fetch anyway (**freshness safety net**, so a bad
-   or empty schedule can never leave the data stale);
+4. nothing for more than `max_age_minutes` (default **120 min** = two hourly
+   wake-ups, env `FETCH_MAX_AGE_MINUTES`) → fetch anyway (**freshness safety
+   net**, so a bad or empty schedule can never leave the data stale);
 5. otherwise → skip until the next slot.
 
-A non-scheduled run (`push`, `workflow_dispatch`) always fetches. The gate writes
+A non-scheduled run (`push`, `workflow_dispatch`, `repository_dispatch`) always
+fetches: one dispatch = at most one poll. The gate writes
 `due=true|false` to `$GITHUB_OUTPUT`; `update-data.yml` gates the download,
 size-check and commit steps on it, and `static.yml` skips the Pages build/deploy
 when `due=false`. So a not-due wake-up costs a checkout plus the gate — upstream
@@ -201,24 +207,28 @@ fail-open, because stale prices are worse than one extra download.
 
 ## Fetch rhythm vs upstream regeneration
 
-Measured evidence (2026-10-11/12, issue #67):
+The rhythm is now defined by **#76/#77** and documented in full (evidence table,
+external-trigger setup, tuning rules) in
+[`history-data.md` §Fetch rhythm](./history-data.md#fetch-rhythm-final-issue-77).
+Short version:
 
-- the upstream snapshot is **regenerated every 5 minutes**, on the quarter-hour
-grid — three consecutive samples of `metadata.generated_at` read
-`04:45:01 → 04:50:01 → 04:55:01`;
-- our own rhythm was **~40 minutes per fetch**: `static.yml` woke every 15
-minutes, but `data/fetch-schedule.json` had `budget_per_day: 36`, so the gate
-only admitted 36 of the 96 wake-ups;
+- the upstream snapshot is **regenerated every 5 minutes** on the quarter-hour
+grid (measured 2026-10-11: `04:45:01 → 04:50:01 → 04:55:01`);
 - **24.5 % of stations re-price on any given day** (603 of 2463 comparable
-stations moved between adjacent days in `data/history/station-history.json`).
+stations moved between adjacent days in `data/history/station-history.json`);
+- #76's staleness study asks for a **30-minute** interval (p90 stale lag ≈ 0.9 ×
+T ≤ 30 min);
+- GitHub's `schedule` cannot deliver that here: measured over 15 days
+(`data/trigger-interval.json`, `scripts/trigger_interval_report.py`), even the
+hourly cron actually ran every ~2 h (p50 120 min) and the `*/15` cron every
+~4.3 h (p50 257 min). So the sub-hourly cadence comes from an **external
+trigger** (`repository_dispatch` type `fetch-data`, see the setup steps in
+`history-data.md`), and the cron is only an hourly best-effort fallback.
 
-Since the bottleneck was our own budget — not upstream — the rhythm is now
-**one fetch per 15-minute wake-up** (budget 96) with a **90-minute** freshness
-safety net, so a station that re-prices is normally picked up within ~15 minutes
-instead of up to several hours later. Upstream load is unchanged in kind: the
-same single request per admitted run, the same `User-Agent`, the same retry
-backoff in `download_data.py`; only the admission rate is higher, and it can
-never exceed the wake-up cadence.
+Upstream load is unchanged in kind: the same single request per admitted run,
+the same `User-Agent`, the same retry backoff in `download_data.py`. A dispatch
+is one poll (the gate fetches unconditionally on non-schedule events), and the
+planned budget can never exceed the wake-up cadence.
 
 ### How to tune it
 
@@ -232,12 +242,20 @@ tests). In CI they are set once in the `env:` block of the `update-data` job in
 `FETCH_EXPLORE_FRAC=0` switches exploration off and reproduces the pre-#69
 plan exactly.
 
+They must stay coupled to the **cron in `static.yml`** (issue #77):
+`FETCH_DAILY_BUDGET = 1440 / cron_interval_minutes` (24 at the hourly fallback)
+and `FETCH_MAX_AGE_MINUTES = 2 × cron_interval_minutes` (120). Otherwise the
+fallback is either denser than the plan (the plan stops meaning anything) or
+sparser (one dropped run eats two hours of freshness).
+`python3 -m unittest scripts.test_trigger_interval_report` fails when they
+drift apart.
+
 `data/fetch-schedule.json` is derived state: its `budget_per_day` only follows
 the env var after the **next successful fetch** rewrites it
 (`update_profile.py`). Until then it keeps the old budget — if the file and the
 env disagree, the gate still uses the file's `slots`, so no manual edit is
 needed. To rebuild it immediately from the committed profile (no network, no
-new observation recorded), re-run the planner over a copy of the profile with
+new observation recorded), re-run the planner over the committed profile with
 the new budget, e.g.:
 
 ```bash
@@ -249,17 +267,17 @@ from scripts.fetch_strategy import hour_weights, observed_hour_totals, plan_sche
 d = pathlib.Path('data')
 profile = json.loads((d / 'update-profile.json').read_text())
 weights = hour_weights(profile)
-slots, explore = plan_schedule(weights, budget=96, min_per_hour=1, max_per_hour=4,
+slots, explore = plan_schedule(weights, budget=24, min_per_hour=1, max_per_hour=4,
                                observed_hours=observed_hour_totals(profile),
                                explore_frac=0.15)
-schedule = up.build_schedule(profile, slots, weights, 96, 1, 4,
+schedule = up.build_schedule(profile, slots, weights, 24, 1, 4,
                              up.parse_iso(profile['updated_at']),
                              explore_slots=explore, explore_frac=0.15)
 (d / 'fetch-schedule.json').write_text(json.dumps(schedule, separators=(',', ':')) + '\n')
 PY
 ```
 
-Then `allocated_per_day` matches `budget_per_day` (96) again.
+Then `allocated_per_day` matches `budget_per_day` (24) again.
 
 ## Necessary fetch interval (measured, issue #76)
 
@@ -286,39 +304,49 @@ interval is ≤ it). T ≤ the sampling resolution is flagged "不可测" and ex
 from the conclusion. See
 [`fetch-interval-report.md`](./fetch-interval-report.md) for the latest run.
 
-## Scheduled triggers are not precise
+## Scheduled triggers are not precise (issue #77)
 
-Measured on this repository (via the Actions API), the previous `0 * * * *`
-cron actually produced only **5–6 runs/day**, at irregular minutes (`:01`,
-`:12`, `:18`, `:44`, …): GitHub delays and drops scheduled triggers under load.
-The strategy is built around that reality instead of pretending it can hit an
-exact minute:
+Measured on this repository, GitHub delays and drops scheduled triggers under
+load, so the strategy is built around that reality instead of pretending it can
+hit an exact minute:
+
+| Trigger | Measured real cadence |
+| --- | --- |
+| `0 * * * *` (older hourly cron, the bulk of the history) | p50 **120 min**, p90 278.8 min, max 754.6 min |
+| `*/15 * * * *` (issues #67–#76) | p50 **257 min**, p90 405.7 min, max 537.9 min |
+
+Source: `scripts/trigger_interval_report.py` over the committed history
+(evidence table in [`history-data.md`](./history-data.md#fetch-rhythm-final-issue-77),
+machine-readable in `data/trigger-interval.json`). Making the cron *denser* made
+the real cadence **worse**, so scheduling is now treated as a safety net and the
+cadence comes from the external trigger:
 
 - the plan keeps an **hourly freshness floor** (`min_per_hour=1`) so any honoured
   run inside an hour is due and staleness stays around an hour;
 - the 45-minute grace window means a run delayed by 10–40 minutes still serves
   its slot instead of being thrown away;
-- the 90-minute freshness net guarantees a download even if every scheduled run
-  is dropped for hours.
-
-Extra density in the learned windows pays off when the platform does honour the
-15-minute triggers; the floor keeps the worst case no worse than the old
-hourly poll.
+- the 120-minute freshness net (= two hourly wake-ups) guarantees a download
+  even if every scheduled run is dropped for hours;
+- the **external trigger** (`repository_dispatch` type `fetch-data`) is the only
+  way to actually get the 30-minute cadence #76 asks for; `static.yml` accepts
+  it and `scripts/dispatch_fetch.sh` is the ready-made caller (setup steps and
+the minimal PAT scope live in
+[`history-data.md`](./history-data.md#external-trigger-step-by-step-setup)).
 
 ## Request budget
 
 | Situation | Upstream downloads/day |
 | --- | --- |
-| before this change | 24 (fixed hourly) |
-| default plan | ≤ 96 (one per 15-minute wake-up) |
-| with `FETCH_DAILY_BUDGET=24` | ≤ 24 while still concentrating on learned windows |
-| empty/corrupt schedule | ≤ 16 from the freshness net (one every 90 min) |
+| default plan | ≤ 24 (one per hourly fallback wake-up) |
+| external trigger (dispatch) | ≤ 48 at a 30-minute cadence, unbounded by the plan but bounded by the external cron |
+| empty/corrupt schedule | ≤ 12 from the freshness net (one every 120 min) |
 | code pushes (`push` event) | unbounded by the plan, but only as often as humans push |
 
 The planned part is structurally bounded: the gate only fires on planned slots
-and the plan can never exceed `budget_per_day` quarter-hour slots. The freshness
-net can add at most one extra fetch every `max_age_minutes` (16/day at the
-90-minute default) when the plan is empty or broken.
+and the plan can never exceed `budget_per_day` slots. The freshness
+net can add at most one extra fetch every `max_age_minutes` (12/day at the
+120-minute default) when the plan is empty or broken; a dispatch is one poll
+each.
 
 ## Files are disposable
 

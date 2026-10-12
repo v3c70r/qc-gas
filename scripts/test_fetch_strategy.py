@@ -192,8 +192,8 @@ class PlanSlotsTest(unittest.TestCase):
         self.assertTrue(set(in_five).issubset({0, 1, 2, 3}))
         self.assertIn(0, in_five)  # the coarse mark always comes first
 
-    def test_default_budget_covers_every_quarter_hour_slot(self):
-        """At the default budget (96) the plan uses every wake-up (issue #67)."""
+    def test_default_budget_uses_one_slot_per_hour(self):
+        """At the default budget (24) the plan uses every hourly wake-up (#77)."""
         weights = [1 / 24] * 24
         weights[4], weights[5], weights[11] = 0.5, 0.3, 0.2  # a clear learned peak
         total = sum(weights)
@@ -201,9 +201,12 @@ class PlanSlotsTest(unittest.TestCase):
         slots = plan_slots(weights, budget=DEFAULT_DAILY_BUDGET, min_per_hour=1,
                            max_per_hour=4)
         self.assertEqual(len(slots), DEFAULT_DAILY_BUDGET)
-        # Budget == capacity, so the learned weights no longer prune anything:
-        # every quarter-hour slot of the day is polled.
-        self.assertEqual(slots, list(range(SLOTS_PER_DAY)))
+        # Budget == the hourly floor, so the learned weights cannot prune any
+        # hour: every hour keeps exactly one slot (the coarse :00 mark).
+        per_hour = [sum(1 for s in slots if s // SLOTS_PER_HOUR == h)
+                    for h in range(24)]
+        self.assertEqual(per_hour, [1] * 24)
+        self.assertEqual(slots, [h * SLOTS_PER_HOUR for h in range(24)])
 
     def test_below_the_default_budget_the_learned_weights_still_prune(self):
         weights = [1 / 24] * 24
@@ -365,19 +368,26 @@ class EnvFloatTest(unittest.TestCase):
 
 
 class FetchDefaultsTest(unittest.TestCase):
-    """Issue #67: the fetch rhythm follows the upstream snapshot cadence."""
+    """Issue #77: the shipped rhythm follows the *measured* trigger cadence."""
 
-    def test_default_budget_is_one_poll_per_quarter_hour_slot(self):
-        # Upstream regenerates its snapshot every 5 minutes on the quarter-hour
-        # grid and the workflow wakes every 15 minutes, so the whole day is 96
-        # slots and the default budget spends exactly one request per slot.
+    def test_default_budget_is_one_poll_per_hourly_wake_up(self):
+        # The fallback cron is hourly (`static.yml`), so the day holds 24
+        # wake-ups and the default budget spends exactly one request each.
+        # Sub-hourly crons are throttled away on this repo (measured p50 ~4.3 h
+        # for `*/15`), which is why the sub-hourly cadence comes from the
+        # external `repository_dispatch` trigger instead.
         self.assertEqual(SLOTS_PER_DAY, 96)
-        self.assertEqual(DEFAULT_DAILY_BUDGET, SLOTS_PER_DAY)
+        self.assertEqual(DEFAULT_DAILY_BUDGET, SLOTS_PER_DAY // SLOTS_PER_HOUR)
+        self.assertEqual(DEFAULT_DAILY_BUDGET, 24)
 
-    def test_default_freshness_net_is_90_minutes(self):
-        self.assertEqual(DEFAULT_MAX_AGE_MINUTES, 90)
-        # Two hours without a fetch is stale *by default* now (it was not at 3h).
-        due, reason = due_decision(at(3, 7), ['00:00'], at(1, 0))
+    def test_default_freshness_net_is_two_hourly_wakes(self):
+        self.assertEqual(DEFAULT_MAX_AGE_MINUTES, 120)
+        # Exactly 120 minutes without a fetch is still considered fresh (the net
+        # must not be denser than the hourly plan)...
+        due, reason = due_decision(at(3, 0), ['00:00'], at(1, 0))
+        self.assertFalse(due, reason)
+        # ...but one minute past it, it is stale.
+        due, reason = due_decision(at(3, 1), ['00:00'], at(1, 0))
         self.assertTrue(due)
         self.assertIn('stale', reason)
 
