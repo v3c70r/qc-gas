@@ -261,6 +261,31 @@ PY
 
 Then `allocated_per_day` matches `budget_per_day` (96) again.
 
+## Necessary fetch interval (measured, issue #76)
+
+`scripts/interval_report.py` answers "how often *must* we fetch?" from the
+15-minute ground truth of the local probe (#74). It replays the git revisions of
+`data/history/station-changes.json` (the probe commits one per cycle) as a
+station-price series, measures the change-arrival distribution (p50/p90/p99, by
+region and brand), simulates polling every T minutes and reports the stale-lag
+distribution (p50/p90/p99) plus the share of stations showing an out-of-date
+price at a random instant.
+
+```bash
+python3 scripts/interval_report.py       # -> docs/fetch-interval-report.md + data/fetch-interval.json
+```
+
+Decision rule: the longest T whose **p90 stale lag ≤ 30 minutes** *and*
+**stale share ≤ 5 %**. Until the probe has ≥ 3 days of observations *and* ≥ 30
+change events, the script reports *样本不足 / needs N more days* and marks every
+table preliminary instead of inventing a recommendation. 15-minute sampling
+cannot see sub-interval flapping and can only locate a change at the observation
+that first showed the new price, so the measured change rate is a **lower bound**
+and the eventual recommendation is an **optimistic ceiling** (the truly required
+interval is ≤ it). T ≤ the sampling resolution is flagged "不可测" and excluded
+from the conclusion. See
+[`fetch-interval-report.md`](./fetch-interval-report.md) for the latest run.
+
 ## Scheduled triggers are not precise
 
 Measured on this repository (via the Actions API), the previous `0 * * * *`
