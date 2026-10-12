@@ -23,8 +23,13 @@ duplicate snapshot, but still runs tier rollup/pruning so retention advances.
 """
 
 import json
+import sys
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
+
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+
+from fetch_strategy import station_prices  # noqa: E402
 
 ROOT = Path(__file__).resolve().parent.parent
 DATA_DIR = ROOT / 'data'
@@ -149,32 +154,14 @@ def build_snapshot(stations, src_dt):
     }
 
 
-def station_coord_key(feat):
-    coords = (feat.get('geometry') or {}).get('coordinates')
-    if not coords or len(coords) < 2:
-        return None
-    try:
-        return f"{float(coords[0]):.5f},{float(coords[1]):.5f}"
-    except (TypeError, ValueError):
-        return None
-
-
 def build_station_snapshot(stations):
-    """Return one scalar price per fuel per station, keyed by 5-decimal coords."""
-    out = {}
-    for feat in stations.get('features', []):
-        props = feat.get('properties') or {}
-        key = station_coord_key(feat)
-        if not key:
-            continue
-        rec = {}
-        for fuel, short in FUEL_SHORT.items():
-            val = props.get(fuel + '_price')
-            if val is not None:
-                rec[short] = round(float(val), 1)
-        if rec:
-            out[key] = rec
-    return out
+    """Return one scalar price per fuel per station, keyed by 5-decimal coords.
+
+    Shares the coordinate key and the price extraction with the station change
+    store (`fetch_strategy.station_prices`) so the station card history and the
+    `last_changed_at` store can never disagree about what a station key is.
+    """
+    return station_prices(stations)
 
 
 def update_station_history(store, snapshot, today, cutoff_day):

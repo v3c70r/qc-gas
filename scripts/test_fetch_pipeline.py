@@ -22,18 +22,23 @@ UTC = timezone.utc
 
 
 def write_json(path, obj):
-    Path(path).write_text(json.dumps(obj), encoding='utf-8')
+    path = Path(path)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps(obj), encoding='utf-8')
 
 
 def read_json(path):
     return json.loads(Path(path).read_text(encoding='utf-8'))
 
 
-def feature(region, regular):
+def feature(region, regular, coords=(-73.5, 45.5), **fuels):
+    props = {'region': region, 'name': region, 'regular_price': regular}
+    for fuel, value in fuels.items():
+        props[fuel.replace('_price', '') + '_price'] = value
     return {
         'type': 'Feature',
-        'geometry': {'type': 'Point', 'coordinates': [-73.5, 45.5]},
-        'properties': {'region': region, 'name': region, 'regular_price': regular},
+        'geometry': {'type': 'Point', 'coordinates': list(coords)},
+        'properties': props,
     }
 
 
@@ -109,6 +114,100 @@ class UpdateProfileCliTest(TempDataDirTest):
         self.assertEqual(rc, 0)
         self.assertFalse((self.data_dir / 'update-profile.json').exists())
         self.assertFalse((self.data_dir / 'fetch-schedule.json').exists())
+
+
+class StationChangesStoreTest(TempDataDirTest):
+    """Per-station change detection (issue #68) folded into update_profile."""
+
+    def store(self):
+        return read_json(self.data_dir / 'history' / 'station-changes.json')
+
+    def run_profile(self, now):
+        return update_profile.main(['--data-dir', str(self.data_dir), '--now', now])
+
+    def test_first_run_records_seen_stations_without_a_change_time(self):
+        self.stations_file(
+            feature('Montréal', 170.0, coords=(-73.5, 45.5), super_price=190.0),
+            feature('Montréal', 180.0, coords=(-73.6, 45.6)),
+        )
+        self.assertEqual(self.run_profile('2026-09-25T11:00:00Z'), 0)
+        store = self.store()
+        self.assertEqual(store['v'], 1)
+        self.assertEqual(store['tiers']['max_age_days'], update_profile.STATION_CHANGES_DAYS)
+        self.assertEqual(sorted(store['s']), ['-73.50000,45.50000', '-73.60000,45.60000'])
+        entry = store['s']['-73.50000,45.50000']
+        self.assertIsNone(entry['t'])                       # no baseline yet
+        self.assertEqual(entry['u'], '2026-09-25T11:00:00Z')  # last_seen_at
+        self.assertEqual(entry['p'], [170.0, 190.0, None])    # g, s, d
+        self.assertEqual(store['last'],
+                         {'at': '2026-09-25T11:00:00Z', 'observed': 2, 'changed': 0})
+
+    def test_cancelling_moves_in_one_region_are_both_detected(self):
+        self.stations_file(
+            feature('Montréal', 170.0, coords=(-73.5, 45.5)),
+            feature('Montréal', 180.0, coords=(-73.6, 45.6)),
+        )
+        self.run_profile('2026-09-25T11:00:00Z')
+        # +5c on one station, -5c on the other: the region average is unchanged
+        # (diff_regions sees nothing) but two stations really did re-price.
+        self.stations_file(
+            feature('Montréal', 175.0, coords=(-73.5, 45.5)),
+            feature('Montréal', 175.0, coords=(-73.6, 45.6)),
+        )
+        self.run_profile('2026-09-25T11:15:00Z')
+
+        store = self.store()
+        self.assertEqual(store['last']['changed'], 2)
+        self.assertEqual(
+            update_profile.stations_changed_at(store, '2026-09-25T11:15:00Z'),
+            ['-73.50000,45.50000', '-73.60000,45.60000'],
+        )
+        self.assertEqual(store['s']['-73.50000,45.50000']['t'], '2026-09-25T11:15:00Z')
+
+        profile = read_json(self.data_dir / 'update-profile.json')
+        self.assertEqual(profile['hours']['11']['changed_stations'], 0)   # region flat
+        self.assertEqual(profile['hours']['11']['changed_stations_exact'], 2)
+        self.assertEqual(profile['hours']['11']['stations_observed'], 2)
+        self.assertEqual(profile['last_station_diff'],
+                         {'at': '2026-09-25T11:15:00Z', 'observed': 2, 'changed': 2})
+
+    def test_unchanged_station_advances_last_seen_but_not_last_changed(self):
+        self.stations_file(feature('Estrie', 180.0, coords=(-71.9, 45.4)))
+        self.run_profile('2026-09-25T11:00:00Z')
+        self.stations_file(feature('Estrie', 181.0, coords=(-71.9, 45.4)))
+        self.run_profile('2026-09-25T11:15:00Z')
+        self.stations_file(feature('Estrie', 181.0, coords=(-71.9, 45.4)))
+        self.run_profile('2026-09-25T11:30:00Z')
+
+        entry = self.store()['s']['-71.90000,45.40000']
+        self.assertEqual(entry['t'], '2026-09-25T11:15:00Z')  # last_changed_at
+        self.assertEqual(entry['u'], '2026-09-25T11:30:00Z')  # last_seen_at
+
+    def test_sub_epsilon_noise_is_not_a_change(self):
+        self.stations_file(feature('Estrie', 180.0, coords=(-71.9, 45.4)))
+        self.run_profile('2026-09-25T11:00:00Z')
+        self.stations_file(feature('Estrie', 180.04, coords=(-71.9, 45.4)))
+        self.run_profile('2026-09-25T11:15:00Z')
+        self.assertIsNone(self.store()['s']['-71.90000,45.40000']['t'])
+        self.assertEqual(self.store()['last']['changed'], 0)
+
+    def test_stations_not_seen_for_the_retention_window_are_pruned(self):
+        write_json(self.data_dir / 'history' / 'station-changes.json', {
+            'v': 1,
+            's': {
+                '-70.00000,46.00000': {'t': '2026-01-01T00:00:00Z',
+                                       'u': '2026-01-01T00:00:00Z', 'p': [170.0, None, None]},
+                '-71.00000,46.10000': {'t': None,
+                                       'u': '2026-09-20T00:00:00Z', 'p': [180.0, None, None]},
+            },
+        })
+        self.stations_file(feature('Estrie', 180.0, coords=(-71.0, 46.1)))
+        self.run_profile('2026-09-25T11:00:00Z')
+        self.assertEqual(list(self.store()['s']), ['-71.00000,46.10000'])
+
+    def test_missing_snapshot_does_not_touch_the_station_store(self):
+        self.assertEqual(self.run_profile('2026-09-25T11:00:00Z'), 0)
+        self.assertFalse((self.data_dir / 'history' / 'station-changes.json').exists())
 
 
 class ShouldFetchCliTest(TempDataDirTest):

@@ -4,9 +4,12 @@
 Runs after ``process_data.py`` on every successful fetch (see
 ``.github/workflows/update-data.yml``):
 
-1. Diff the freshly downloaded snapshot against the previously observed one
-   (``fetch_strategy.diff_regions``) and fold the result into
-   ``data/update-profile.json`` (per-UTC-hour change rates).
+1. Diff the freshly downloaded snapshot against the previously observed one —
+   per **station** (`fetch_strategy.diff_stations`, issue #68) to get the exact
+   set of re-priced stations and their ``last_changed_at``, and per **region**
+   (`fetch_strategy.diff_regions`) to keep the learned schedule compatible — and
+   fold both into ``data/update-profile.json`` (per-UTC-hour change rates) and
+   ``data/history/station-changes.json`` (per-station freshness).
 2. Turn the learned weights into a bounded daily poll schedule and write
    ``data/fetch-schedule.json``, which ``should_fetch.py`` uses as the gate.
 
@@ -18,7 +21,7 @@ import argparse
 import json
 import os
 import sys
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
@@ -26,13 +29,17 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 from fetch_strategy import (  # noqa: E402
     DEFAULT_DAILY_BUDGET,
     SLOTS_PER_HOUR,
+    diff_stations,
     hour_weights,
     observed_from_stations,
     parse_iso,
     plan_slots,
+    prices_from_row,
+    prices_to_row,
     record_observation,
     region_station_counts,
     slot_labels,
+    station_prices,
     to_iso,
 )
 
@@ -42,6 +49,8 @@ DEFAULT_BUDGET = int(os.environ.get('FETCH_DAILY_BUDGET', DEFAULT_DAILY_BUDGET))
 DEFAULT_MIN_PER_HOUR = 1
 DEFAULT_MAX_PER_HOUR = SLOTS_PER_HOUR
 PRIOR_ID = 'research-2026-09'
+STATION_CHANGES_REL = Path('history') / 'station-changes.json'
+STATION_CHANGES_DAYS = 180  # same window as the station daily history tier
 
 
 def load_json(path, fallback=None):
@@ -79,6 +88,71 @@ def build_schedule(profile, slots, weights, budget, min_per_hour, max_per_hour, 
     }
 
 
+def stations_changed_at(store, timestamp):
+    """Sorted station keys whose last price change landed at ``timestamp``.
+
+    The store keeps only the *latest* change per station (that is the whole
+    point of ``last_changed_at``), so the list of stations that moved in one
+    given fetch is exactly the set of keys stamped with that fetch's time.
+    """
+    stamp = str(timestamp)
+    return sorted(key for key, rec in (store.get('s') or {}).items()
+                  if (rec or {}).get('t') == stamp)
+
+
+def update_station_changes(store, prices, changed, now, cutoff_day):
+    """Upsert the per-station change store and prune stations no longer seen.
+
+    ``prices`` is ``{coord_key: {fuel: price}}`` for the whole current snapshot
+    and ``changed`` is ``{coord_key: [fuel]}`` from :func:`fetch_strategy.
+    diff_stations`. Each entry is
+
+    * ``t`` = ``last_changed_at`` — the fetch time of the last real re-price
+      (``null`` while no change has ever been observed for that key)
+    * ``u`` = ``last_seen_at`` — the fetch time the station last appeared in
+      the upstream feed
+    * ``p`` = ``[g, s, d]`` — the last observed prices (``null`` when a fuel
+      was not reported), which is the baseline the next diff compares against
+
+    Stations that have not been seen for ``STATION_CHANGES_DAYS`` are dropped,
+    so the file reaches a steady size instead of growing with churn.
+    """
+    stamp = to_iso(now)
+    entries = {key: dict(rec or {}) for key, rec in (store.get('s') or {}).items()}
+
+    for key, fuels in (prices or {}).items():
+        rec = entries.get(key) or {'t': None, 'u': None, 'p': None}
+        rec['u'] = stamp
+        rec['p'] = prices_to_row(fuels)
+        if key in (changed or {}):
+            rec['t'] = stamp
+        entries[key] = rec
+
+    pruned = {
+        key: rec for key, rec in entries.items()
+        if str(rec.get('u') or '')[:10] >= cutoff_day
+    }
+
+    return {
+        'v': 1,
+        'generated_at': stamp,
+        'tiers': {'max_age_days': STATION_CHANGES_DAYS},
+        'last': {
+            'at': stamp,
+            'observed': len(prices or {}),
+            'changed': len(changed or {}),
+        },
+        's': pruned,
+    }
+
+
+def load_station_change_baseline(store):
+    """``{coord_key: {fuel: price}}`` baseline for the next station diff."""
+    return {key: prices_from_row((rec or {}).get('p'))
+            for key, rec in (store.get('s') or {}).items()
+            if (rec or {}).get('p')}
+
+
 def main(argv=None):
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--data-dir', default=str(DEFAULT_DATA_DIR))
@@ -107,13 +181,26 @@ def main(argv=None):
     counts = region_station_counts(stations)
     src = (stations.get('metadata') or {}).get('generated_at')
 
+    # ── Station-level diff (#68): compare every station against the last
+    # observed price of the same coordinate key, so a +5c/-5c pair inside one
+    # region is reported as the two re-prices it really is.
+    changes_path = data_dir / STATION_CHANGES_REL
+    station_store = load_json(changes_path, {}) or {}
+    prices = station_prices(stations)
+    changed = diff_stations(load_station_change_baseline(station_store), prices)
+    cutoff_day = (now - timedelta(days=STATION_CHANGES_DAYS)).strftime('%Y-%m-%d')
+    station_store = update_station_changes(station_store, prices, changed, now, cutoff_day)
+
     profile, summary = record_observation(
         profile,
         observed=observed,
         region_counts=counts,
         now=now,
         src=src,
+        station_changes=len(changed),
+        stations_observed=len(prices),
     )
+    profile['last_station_diff'] = dict(station_store['last'])
 
     weights = hour_weights(profile)
     slots = plan_slots(weights, budget=args.budget, min_per_hour=args.min_per_hour,
@@ -123,11 +210,19 @@ def main(argv=None):
 
     save_json(profile_path, profile)
     save_json(data_dir / 'fetch-schedule.json', schedule)
+    save_json(changes_path, station_store)
 
     hot = sorted(range(24), key=lambda h: weights[h], reverse=True)[:3]
     print(f"Fetch profile: hour {summary['hour']:02d} samples={summary['samples']} "
           f"changed_regions={len(summary['changed_regions'])} "
-          f"changed_stations={summary['changed_stations']} (gap {summary['gap_hours']}h)")
+          f"changed_stations={summary['changed_stations']} "
+          f"changed_stations_exact={summary['changed_stations_exact']} "
+          f"(gap {summary['gap_hours']}h)")
+    print(f"Station changes: {len(changed)} of {len(prices)} observed stations "
+          f"re-priced at {station_store['last']['at']}")
+    if changed:
+        movers = stations_changed_at(station_store, station_store['last']['at'])
+        print('Changed stations: ' + ', '.join(movers))
     print(f"Schedule: {len(slots)} downloads/day (budget {args.budget}), "
           f"peak UTC hours {', '.join(f'{h:02d}' for h in hot)}")
     return 0
