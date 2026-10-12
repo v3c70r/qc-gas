@@ -11,12 +11,12 @@ the shipped trigger actually fetch*. The tests pin:
 * the shipped rhythm itself: the Actions cron interval, the gate budget and the
   freshness net must stay consistent with each other and with the target
   interval (#76), and an external trigger must be wired when the cron alone
-  cannot reach the target;
-* the external-trigger helper script: no secrets in the repo, minimal token
-  scope, the right dispatch endpoint and event type.
+  cannot reach the target.
+
+The behaviour of the external-trigger helper itself (`scripts/dispatch_fetch.sh`,
+its exit codes above all) is pinned in `scripts/test_dispatch_fetch.py`.
 """
 
-import subprocess
 import sys
 import unittest
 from datetime import datetime, timedelta, timezone
@@ -29,7 +29,6 @@ import trigger_interval_report as tir  # noqa: E402
 ROOT = Path(__file__).resolve().parent.parent
 STATIC_YML = ROOT / '.github' / 'workflows' / 'static.yml'
 UPDATE_YML = ROOT / '.github' / 'workflows' / 'update-data.yml'
-DISPATCH_SH = ROOT / 'scripts' / 'dispatch_fetch.sh'
 HISTORY_DOC = ROOT / 'docs' / 'history-data.md'
 
 UTC = timezone.utc
@@ -242,40 +241,6 @@ class ShippedRhythmTest(unittest.TestCase):
         for needle in ('repository_dispatch', 'fetch-data', 'fetch-interval-report.md',
                        'trigger_interval_report.py', 'tmux kill-session -t probe'):
             self.assertIn(needle, doc, needle)
-
-
-class DispatchScriptTest(unittest.TestCase):
-    @classmethod
-    def setUpClass(cls):
-        cls.text = DISPATCH_SH.read_text(encoding='utf-8') if DISPATCH_SH.exists() else ''
-
-    def test_script_exists_and_is_executable(self):
-        self.assertTrue(DISPATCH_SH.exists(), 'scripts/dispatch_fetch.sh is missing')
-        self.assertTrue(DISPATCH_SH.stat().st_mode & 0o111, 'dispatch script not executable')
-
-    def test_syntax_is_valid(self):
-        result = subprocess.run(['bash', '-n', str(DISPATCH_SH)],
-                                capture_output=True, text=True)
-        self.assertEqual(result.returncode, 0, result.stderr)
-
-    def test_calls_the_repository_dispatch_endpoint(self):
-        self.assertIn('/dispatches', self.text)
-        self.assertIn('api.github.com/repos', self.text)
-        self.assertRegex(self.text, r'event_type')
-        self.assertIn(tir.DISPATCH_EVENT_TYPE, self.text)
-
-    def test_token_comes_from_the_environment_only(self):
-        # Access is PAT-only (contents:write), so `GITHUB_TOKEN` would be
-        # rejected: the variable name must say it is a PAT-ish secret, and no
-        # literal token may ever be committed.
-        self.assertIn('GH_DISPATCH_TOKEN', self.text)
-        self.assertNotRegex(self.text, r'(gh[pousr]_[A-Za-z0-9]{16,})')
-        self.assertNotRegex(self.text, r'Authorization: Bearer [^$]')
-
-    def test_pat_scope_is_documented(self):
-        # Minimal scope reminder lives next to the code that uses it.
-        self.assertRegex(self.text, r'contents: *write')
-        self.assertNotIn('repo ', self.text.split('\n')[0])
 
 
 if __name__ == '__main__':

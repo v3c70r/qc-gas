@@ -106,7 +106,11 @@ external scheduler's environment.
    ```
 
    `scripts/dispatch_fetch.sh` exits `2` with the minimal-scope reminder when the
-   token is unset, and never prints the token. `static.yml` accepts the dispatch
+   token is unset, `3` on unusable input (repo name or event type), and `4` when
+   the dispatch request itself fails — a wrong-scope PAT, a renamed repo or a
+   network blip therefore shows up as a **cron failure** instead of a silent
+   no-op that only the 12-hour evidence report would catch. It never prints the
+   token. `static.yml` accepts the dispatch
    (`repository_dispatch: types: [fetch-data]`).
 3. **Schedule it** on a free external cron service (e.g. cron-job.org,
    EasyCron, a Vercel/GH-Actions-in-another-repo cron, or simply your own
@@ -120,6 +124,11 @@ external scheduler's environment.
    # crontab -e  — every 30 minutes
    */30 * * * * GH_DISPATCH_TOKEN=github_pat_... /path/to/repo/scripts/dispatch_fetch.sh >> /tmp/qc-gas-dispatch.log 2>&1
    ```
+
+   The script's exit code mirrors the request (`0` dispatched, `2`/`3`/`4` as
+   above), so any cron service that reports failures will alert on a broken
+   token or a dropped network — and if yours does not, `/tmp/qc-gas-dispatch.log`
+   keeps the reason (it never contains the token itself).
 
    Nothing to deploy on our side: the dispatch wakes the *existing* workflow
    (data fetch + Pages deploy) and the gate skips the deploy when it decides no
