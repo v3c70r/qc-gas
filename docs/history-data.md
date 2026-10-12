@@ -14,7 +14,8 @@ everything is committed back into this repository.
 2. `scripts/download_data.py` downloads the latest `stations.geojson.gz`.
 3. `scripts/process_data.py` normalizes it into `data/stations.json`.
 4. `scripts/update_profile.py` diffs the new snapshot against the previous
-   observation and rewrites `data/update-profile.json` (learned change hours),
+   observation and rewrites `data/update-profile.json` (learned change hours —
+   global, per region and per quarter-hour mark, issue #71),
    `data/history/station-changes.json` (per-station `last_changed_at` /
    `last_seen_at`, issue #68) and `data/fetch-schedule.json` (plan for the next
    runs).
@@ -45,6 +46,72 @@ to rebuild it from the committed profile immediately, see
 One upstream request per admitted run is unchanged (`download_data.py` does not
 retry-storm; the `User-Agent` is untouched), and the budget can never exceed the
 wake-up cadence.
+
+## Fetch profile (`update-profile.json`)
+
+The fetch profile is the learned "when do stations re-price" state that
+`update_profile.py` maintains and `fetch_strategy.hour_weights()` turns into the
+poll schedule ([`fetch-strategy.md`](./fetch-strategy.md)). It is derived state,
+not history: it has **no retention window** — it is cumulative by design, so the
+schedule reflects the whole observed history instead of chasing single days.
+
+```json
+{
+  "v": 1,
+  "hours": {
+    "11": {"samples": 12, "observed_hours": 6.5, "change_events": 3,
+           "changed_stations": 812, "changed_stations_exact": 47,
+           "stations_observed": 2463, "exact_samples": 12}
+  },
+  "regions": {
+    "Montréal": {"stations": 452, "hours": {
+      "11": {"samples": 12, "observed_hours": 6.5,
+             "change_events": 3, "changed_stations": 18}
+    }}
+  },
+  "marks": {
+    "11": {"0": {"samples": 3, "changed_stations": 21},
+           "1": {"samples": 3, "changed_stations": 9}}
+  },
+  "last_observed": {"Montréal": {"regular": 170.5, "super": 188.0}},
+  "last_observed_at": "2026-09-25T11:20:00Z",
+  "last_station_diff": {"at": "2026-09-25T11:20:00Z", "observed": 2463, "changed": 47}
+}
+```
+
+- `hours` — province-wide per-UTC-hour counters (the pre-#71 schema, unchanged;
+  `changed_stations` is the region-average estimate, `changed_stations_exact`
+  the per-station count of issue #68).
+- `regions` — the same accounting per region (issue #71), **sparse**: only hours
+  that were actually observed are written, and `changed_stations` is always the
+  exact per-station count. `stations` is the region's station count at the last
+  fetch (the weight of the region in the province-wide expectation).
+- `marks` — per quarter-hour counter (`0` = `:00`, `1` = `:15`, `2` = `:30`,
+  `3` = `:45`) of fetches and exact re-prices; it only resolves the intra-hour
+  pattern once an hour has been sampled enough (see
+  [`fetch-strategy.md`](./fetch-strategy.md#layered-weights-regions-expected-volume-quarter-hours-issue-71)).
+- `last_observed` / `last_station_diff` — the diff baselines of the next fetch.
+
+### Size & growth
+
+All three blocks are bounded by the calendar, not by time:
+
+- `hours`: 24 counters, ~90 B each → **~2 KB**;
+- `regions`: 18 regions x 24 hours x ~75 B → **~33 KB** when every hour of the
+  day has been sampled in every region; only observed hours are stored, so a
+  partially covered day (the common case early on) is a few hundred bytes per
+  region;
+- `marks`: 24 hours x 4 marks x ~40 B → **~4 KB** once every mark has samples.
+
+Measured on an offline replay of the real snapshot (two days of 15-minute
+fetches, all 18 regions, 432 region-hour cells — i.e. saturated):
+**43.9 KB** uncompressed for the whole file, ~9 KB as `.br`. The workflow
+brotli-compresses the `data/*.json` set.
+
+The file does **not grow with time**: the counters are cumulative, so they grow
+in *value*, not in size. The 40 MB `data/` budget of
+`scripts/check_data_size.py` is therefore unaffected (the whole `data/`
+directory is currently ~1.5 MB).
 
 ## Granularity & downsampling
 

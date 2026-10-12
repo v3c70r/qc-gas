@@ -18,25 +18,36 @@ from fetch_strategy import (  # noqa: E402
     BUDGET_ENV_VAR,
     DEFAULT_DAILY_BUDGET,
     DEFAULT_MAX_AGE_MINUTES,
+    EXACT_READY_SAMPLES,
+    MARK_MIN_SAMPLES,
     MAX_AGE_ENV_VAR,
+    REGION_PEAK_HOURS,
+    REGION_PRIOR_HOURS,
     SLOTS_PER_DAY,
     SLOTS_PER_HOUR,
+    coverage_hours,
     diff_regions,
     diff_stations,
     due_decision,
     env_int,
+    exact_channel_ready,
+    hour_rates,
     hour_weights,
+    learned_mark_orders,
     observed_from_stations,
     plan_slots,
     prices_from_row,
     prices_to_row,
     record_observation,
+    region_hour_weights,
     region_station_counts,
     research_prior_weights,
+    slot_hour_counts,
     slot_index,
     slot_label,
     station_coord_key,
     station_prices,
+    station_regions,
 )
 
 UTC = timezone.utc
@@ -478,6 +489,368 @@ class RecordObservationTest(unittest.TestCase):
         )
         self.assertEqual(profile['hours']['9']['changed_stations_exact'], 0)
         self.assertEqual(summary['changed_stations_exact'], 0)
+
+
+def one_hot(*hours):
+    """24-length weight vector with mass on the given hours (test helper)."""
+    weights = [0.0] * 24
+    for h in hours:
+        weights[h] = 1.0
+    total = sum(weights)
+    return [w / total for w in weights]
+
+
+def region_hour(changed_stations, observed_hours, samples=4, change_events=None):
+    """One region-hour record: stations that re-priced over the exposure."""
+    return {
+        'samples': samples,
+        'observed_hours': float(observed_hours),
+        'change_events': samples if change_events is None else change_events,
+        'changed_stations': changed_stations,
+    }
+
+
+def region_block(stations, hours):
+    """profile['regions'][name] block; ``hours`` maps hour (int) -> record."""
+    return {'stations': stations,
+            'hours': {str(h): rec for h, rec in hours.items()}}
+
+
+def saturated_profile(changed_stations=1000.0, observed_hours=2.0, exact=None):
+    """Global profile whose region-average channel is perfectly flat.
+
+    ``changed_stations`` is the legacy region-average estimate: whole regions
+    count in full as soon as one of their fuel averages moved, so in practice it
+    is (nearly) the same number in every hour. ``exact`` optionally adds the
+    per-station counters of issue #68.
+    """
+    profile = empty_profile()
+    for h in range(24):
+        rec = profile['hours'][str(h)]
+        rec.update(samples=4, observed_hours=observed_hours, change_events=4,
+                   changed_stations=changed_stations)
+        if exact is not None:
+            rec.update(exact_samples=4, stations_observed=2463,
+                       changed_stations_exact=exact.get(h, 100))
+    return profile
+
+
+class StationRegionsTest(unittest.TestCase):
+    def test_maps_every_priced_station_key_to_its_region(self):
+        stations = snapshot(
+            feature('Montréal', regular=170.0, coords=(-73.5, 45.5)),
+            feature('Estrie', regular=180.0, coords=(-71.9, 45.4)),
+        )
+        self.assertEqual(station_regions(stations),
+                         {'-73.50000,45.50000': 'Montréal', '-71.90000,45.40000': 'Estrie'})
+
+    def test_unkeyable_stations_are_skipped(self):
+        stations = {'type': 'FeatureCollection', 'features': [
+            {'type': 'Feature', 'geometry': None, 'properties': {'region': 'Estrie'}},
+        ]}
+        self.assertEqual(station_regions(stations), {})
+
+
+class HourRatesTest(unittest.TestCase):
+    """Expected changed stations per hour, and the detector that measures it."""
+
+    def test_region_channel_counts_a_whole_region_when_its_average_moves(self):
+        rates, observed = hour_rates(saturated_profile(), channel='region')
+        self.assertEqual(rates, [500.0] * 24)
+        self.assertEqual(observed, 48.0)
+
+    def test_region_channel_saturates_at_a_flat_distribution(self):
+        rates, _ = hour_rates(saturated_profile(), channel='region')
+        self.assertLessEqual(max(rates) / min(rates), 1.65)
+
+    def test_exact_channel_preserves_the_real_hourly_contrast(self):
+        profile = saturated_profile(exact={4: 5000, 17: 200})
+        rates, _ = hour_rates(profile, channel='exact')
+        self.assertEqual(max(range(24), key=lambda h: rates[h]), 4)
+        self.assertGreater(max(rates) / min(rates), 1.65)
+
+    def test_unobserved_hours_have_no_rate(self):
+        profile = saturated_profile()
+        profile['hours']['3']['observed_hours'] = 0.0
+        rates, _ = hour_rates(profile, channel='region')
+        self.assertEqual(rates[3], 0.0)
+
+    def test_exact_channel_is_ready_only_once_it_covers_every_observed_hour(self):
+        profile = saturated_profile(exact={})
+        self.assertTrue(exact_channel_ready(profile))
+        profile['hours']['7']['exact_samples'] = 0
+        self.assertFalse(exact_channel_ready(profile))
+
+    def test_exact_channel_is_not_ready_on_a_thin_sample(self):
+        profile = saturated_profile(exact={})
+        for h in range(24):
+            profile['hours'][str(h)]['exact_samples'] = 1
+        self.assertLess(24, EXACT_READY_SAMPLES)
+        self.assertFalse(exact_channel_ready(profile))
+
+    def test_auto_switches_to_exact_only_once_it_is_ready(self):
+        profile = saturated_profile(exact={4: 5000})
+        exact_rates, _ = hour_rates(profile, channel='exact')
+        self.assertEqual(hour_rates(profile)[0], exact_rates)
+        profile['hours']['7']['exact_samples'] = 0
+        region_rates, _ = hour_rates(profile, channel='region')
+        self.assertEqual(hour_rates(profile)[0], region_rates)
+
+
+class RegionLayeredWeightsTest(unittest.TestCase):
+    """Hierarchical shrinkage: little regional exposure -> global weights."""
+
+    def base_profile(self):
+        return saturated_profile()
+
+    def test_a_region_without_observations_uses_the_global_distribution(self):
+        profile = self.base_profile()
+        profile['regions'] = {'Estrie': {'stations': 10, 'hours': {}}}
+        self.assertEqual(hour_weights(profile, region='Estrie'), hour_weights(profile))
+
+    def test_a_region_with_little_exposure_stays_close_to_the_global_distribution(self):
+        profile = self.base_profile()
+        base = hour_weights(profile)
+        # One quiet fetch hour in the region: exposure far below
+        # REGION_PRIOR_HOURS, so the posterior must stay at the global weights.
+        profile['regions'] = {'Estrie': region_block(
+            300, {3: region_hour(10, 0.25, samples=1, change_events=1)})}
+        weights = hour_weights(profile, region='Estrie')
+        self.assertEqual(len(weights), 24)
+        self.assertLess(abs(weights[3] - base[3]), 0.02)
+        self.assertAlmostEqual(sum(weights), 1.0, places=9)
+
+    def test_a_region_with_plenty_of_exposure_follows_its_own_peak(self):
+        profile = self.base_profile()
+        # Four days of 15-minute fetches at 04:00 and 11:00 UTC: 10 of the 78
+        # stations re-price at 04:00, one fuel at 11:00.
+        profile['regions'] = {'Nord-du-Quebec': region_block(78, {
+            4: region_hour(160, 4.0, samples=16, change_events=16),
+            11: region_hour(8, 4.0, samples=16, change_events=2),
+        })}
+        weights = hour_weights(profile, region='Nord-du-Quebec')
+        self.assertEqual(max(range(24), key=lambda h: weights[h]), 4)
+        self.assertGreater(weights[4], hour_weights(profile)[4])
+        self.assertGreater(REGION_PRIOR_HOURS, 8.0)  # still a shrunk estimate
+
+    def test_region_weights_are_a_normalized_distribution(self):
+        profile = self.base_profile()
+        profile['regions'] = {'Estrie': region_block(300, {
+            18: region_hour(500, 10.0, samples=40)})}
+        weights = hour_weights(profile, region='Estrie')
+        self.assertAlmostEqual(sum(weights), 1.0, places=9)
+        self.assertTrue(all(w >= 0 for w in weights))
+
+    def test_province_weights_learn_from_the_regions_not_the_region_average(self):
+        profile = self.base_profile()
+        base = hour_weights(profile)
+        # Two regions with complementary peaks: the province expectation must
+        # rise in both hours even though the region-average channel is flat.
+        profile['regions'] = {
+            'Montreal': region_block(678, {4: region_hour(400, 4.0)}),
+            'Gaspesie': region_block(177, {17: region_hour(80, 4.0)}),
+        }
+        weights = hour_weights(profile)
+        self.assertGreater(weights[4], base[4])
+        self.assertGreater(weights[17], base[17])
+        self.assertAlmostEqual(sum(weights), 1.0, places=9)
+
+    def test_legacy_profile_without_regions_is_unchanged(self):
+        profile = saturated_profile()
+        weights = hour_weights(profile)
+        self.assertEqual(len(weights), 24)
+        self.assertAlmostEqual(sum(weights), 1.0, places=9)
+
+    def test_region_hour_weights_covers_every_observed_region(self):
+        profile = self.base_profile()
+        profile['regions'] = {
+            'Estrie': region_block(300, {18: region_hour(500, 10.0)}),
+            'Laval': {'stations': 210, 'hours': {}},
+        }
+        weights = region_hour_weights(profile)
+        self.assertEqual(sorted(weights), ['Estrie'])  # Laval has no observations yet
+        self.assertAlmostEqual(sum(weights['Estrie']), 1.0, places=9)
+
+
+class RegionCoverageTest(unittest.TestCase):
+    def test_coverage_is_the_union_of_the_regional_peak_hours(self):
+        weights = {
+            'A': one_hot(3, 5, 9),
+            'B': one_hot(5, 20),
+            'C': one_hot(0),
+        }
+        # A peaks at 3 and 5, B at 5 and 20, C at 0: the union is what must be
+        # polled (each region contributes its top REGION_PEAK_HOURS hours).
+        self.assertEqual(sorted(coverage_hours(weights, top=2)), [0, 3, 5, 20])
+
+    def test_a_region_that_follows_the_province_pattern_pins_no_hours(self):
+        flat = [1 / 24] * 24
+        self.assertEqual(coverage_hours({'Montréal': flat}, baseline=flat), [])
+
+    def test_a_region_without_a_hot_hour_pins_nothing(self):
+        # Below REGION_PEAK_RATIO x its own uniform share: no genuine peak.
+        baseline = [0.25 / 23] * 24
+        baseline[4] = 0.75
+        flat = [0.9 / 24] * 24
+        self.assertEqual(coverage_hours({'Côte-Nord': flat}, baseline=baseline), [])
+
+    def test_an_hour_must_stand_out_from_the_province_to_be_pinned(self):
+        baseline = [0.25 / 23] * 24
+        baseline[4] = 0.75                       # the province hot hour: 04:00
+        slight = list(baseline)
+        slight[4] *= 1.1                         # only ~1.1x the province share
+        clear = [0.0] * 24
+        clear[22], clear[4] = 0.7, 0.3           # 22:00 is this region's own peak
+        self.assertEqual(coverage_hours({'A': slight}, baseline=baseline), [])
+        self.assertEqual(coverage_hours({'B': clear}, baseline=baseline), [22])
+
+    def test_pinned_hours_are_ranked_by_how_distinctive_they_are(self):
+        baseline = [0.25 / 23] * 24
+        baseline[4] = 0.75
+        mild = [0.0] * 24
+        mild[9], mild[4] = 0.4, 0.6              # 9:00 stands out the most
+        strong = [0.0] * 24
+        strong[22], strong[4] = 0.9, 0.1
+        ranked = coverage_hours({'A': mild, 'B': strong}, baseline=baseline)
+        self.assertLess(ranked.index(22), ranked.index(9))
+
+    def test_no_regions_means_no_coverage_constraint(self):
+        self.assertEqual(coverage_hours({}), [])
+
+    def test_coverage_hours_are_allocated_even_below_the_hourly_floor(self):
+        slots = plan_slots([1 / 24] * 24, budget=10, min_per_hour=1,
+                           coverage_hours=[3, 7])
+        counts = slot_hour_counts(slots)
+        self.assertEqual(len(slots), 10)
+        self.assertEqual(len(set(slots)), 10)
+        self.assertGreaterEqual(counts[3], 1)
+        self.assertGreaterEqual(counts[7], 1)
+
+    def test_coverage_never_exceeds_the_budget(self):
+        slots = plan_slots([1 / 24] * 24, budget=3, min_per_hour=1,
+                           coverage_hours=[1, 2, 3, 4, 5])
+        counts = slot_hour_counts(slots)
+        self.assertEqual(len(slots), 3)
+        self.assertEqual(sum(1 for h in (1, 2, 3, 4, 5) if counts[h] >= 1), 3)
+
+    def test_a_tight_budget_pins_in_the_priority_order_it_is_given(self):
+        # coverage_hours() ranks hours by how region-specific they are; a budget
+        # too small to pin everything must spend on the top of that list.
+        slots = plan_slots([1 / 24] * 24, budget=2, min_per_hour=0,
+                           coverage_hours=[22, 9, 0])
+        self.assertEqual(sorted(s // SLOTS_PER_HOUR for s in slots), [9, 22])
+
+    def test_an_empty_coverage_set_keeps_the_original_plan(self):
+        weights = [1 / 24] * 24
+        self.assertEqual(plan_slots(weights, budget=48, min_per_hour=1, max_per_hour=4),
+                         plan_slots(weights, budget=48, min_per_hour=1, max_per_hour=4,
+                                    coverage_hours=[]))
+
+
+class LearnedMarkOrderTest(unittest.TestCase):
+    """Quarter-hour discrimination inside an hour (issue #71 point 2)."""
+
+    def profile_with_marks(self, hour, samples, changed):
+        profile = empty_profile()
+        profile['marks'] = {str(hour): {
+            str(mark): {'samples': samples, 'changed_stations': changed.get(mark, 0)}
+            for mark in range(4)
+        }}
+        return profile
+
+    def test_a_hour_with_too_few_samples_keeps_the_default_mark_order(self):
+        profile = self.profile_with_marks(5, MARK_MIN_SAMPLES // 4 - 1, {1: 100})
+        self.assertEqual(learned_mark_orders(profile), {})
+
+    def test_a_busy_hour_lists_its_busiest_mark_first(self):
+        profile = self.profile_with_marks(5, MARK_MIN_SAMPLES,
+                                         {0: 10, 1: 100, 2: 50, 3: 0})
+        self.assertEqual(learned_mark_orders(profile)[5], (1, 2, 0, 3))
+
+    def test_plan_slots_follows_the_learned_mark_order_for_extra_slots(self):
+        # Slots are returned sorted, so compare which marks survived: the two
+        # busiest learned marks instead of the two coarsest default marks.
+        slots = plan_slots(one_hot(5), budget=2, min_per_hour=0,
+                           mark_orders={5: (3, 2, 0, 1)})
+        self.assertEqual(sorted(s % SLOTS_PER_HOUR for s in slots), [2, 3])
+
+    def test_without_learned_marks_the_coarse_marks_come_first(self):
+        slots = plan_slots(one_hot(5), budget=2, min_per_hour=0)
+        self.assertEqual(sorted(s % SLOTS_PER_HOUR for s in slots), [0, 2])
+
+
+class RecordRegionObservationTest(unittest.TestCase):
+    def test_regional_counters_are_folded_in_next_to_the_global_ones(self):
+        profile = empty_profile()
+        profile, _ = record_observation(
+            profile, observed={'Montréal': {'regular': 170.0}, 'Estrie': {'regular': 180.0}},
+            region_counts={'Montréal': 100, 'Estrie': 5},
+            now=at(11, 0), previous_at=None, stations_observed=105,
+            station_changes=0, region_changed_stations={'Montréal': 0, 'Estrie': 0})
+        profile, _ = record_observation(
+            profile, observed={'Montréal': {'regular': 172.0}, 'Estrie': {'regular': 180.0}},
+            region_counts={'Montréal': 100, 'Estrie': 5},
+            now=at(11, 15), previous_at=at(11, 0), stations_observed=105,
+            station_changes=12, region_changed_stations={'Montréal': 12, 'Estrie': 0})
+
+        regions = profile['regions']
+        self.assertEqual(regions['Montréal']['stations'], 100)
+        self.assertEqual(regions['Estrie']['stations'], 5)
+        hour = regions['Montréal']['hours']['11']
+        self.assertEqual(hour['samples'], 2)
+        self.assertEqual(hour['observed_hours'], 0.25)
+        self.assertEqual(hour['change_events'], 1)      # the region average moved
+        self.assertEqual(hour['changed_stations'], 12)  # exact per-station count
+        self.assertEqual(regions['Estrie']['hours']['11']['changed_stations'], 0)
+        self.assertEqual(regions['Estrie']['hours']['11']['change_events'], 0)
+
+    def test_a_quiet_hour_is_never_invented_for_an_unobserved_region_hour(self):
+        profile = empty_profile()
+        profile, _ = record_observation(
+            profile, observed={'Estrie': {'regular': 180.0}},
+            region_counts={'Estrie': 5}, now=at(9, 0), previous_at=None,
+            station_changes=0, region_changed_stations={'Estrie': 0})
+        self.assertEqual(sorted(profile['regions']['Estrie']['hours']), ['9'])
+
+    def test_marks_record_the_quarter_hour_of_the_fetch(self):
+        profile = empty_profile()
+        profile, _ = record_observation(
+            profile, observed={'Estrie': {'regular': 180.0}},
+            region_counts={'Estrie': 5}, now=at(9, 45), previous_at=None,
+            station_changes=7, region_changed_stations={'Estrie': 7})
+        profile, _ = record_observation(
+            profile, observed={'Estrie': {'regular': 180.0}},
+            region_counts={'Estrie': 5}, now=at(9, 45, day=26), previous_at=at(9, 45),
+            station_changes=3, region_changed_stations={'Estrie': 3})
+        mark = profile['marks']['9']['3']
+        self.assertEqual(mark['samples'], 2)
+        self.assertEqual(mark['changed_stations'], 10)
+        self.assertNotIn('0', profile['marks']['9'])
+
+    def test_without_the_exact_channel_no_marks_are_recorded(self):
+        profile = empty_profile()
+        profile, _ = record_observation(
+            profile, observed={'Estrie': {'regular': 180.0}},
+            region_counts={'Estrie': 5}, now=at(9, 45), previous_at=None)
+        self.assertEqual(profile.get('marks'), None)
+
+    def test_a_legacy_profile_gains_the_regional_block_on_the_next_fetch(self):
+        profile = empty_profile()
+        self.assertNotIn('regions', profile)
+        profile, _ = record_observation(
+            profile, observed={'Estrie': {'regular': 180.0}},
+            region_counts={'Estrie': 5}, now=at(9, 0), previous_at=None,
+            station_changes=0, region_changed_stations={'Estrie': 0})
+        self.assertEqual(sorted(profile['regions']), ['Estrie'])
+        self.assertEqual(profile['hours']['9']['samples'], 1)  # legacy fields kept
+
+    def test_the_exact_sample_counter_is_kept_per_hour(self):
+        profile = empty_profile()
+        profile, _ = record_observation(
+            profile, observed={'Estrie': {'regular': 180.0}},
+            region_counts={'Estrie': 5}, now=at(9, 0), previous_at=None,
+            station_changes=0, region_changed_stations={'Estrie': 0})
+        self.assertEqual(profile['hours']['9']['exact_samples'], 1)
 
 
 class DueDecisionTest(unittest.TestCase):

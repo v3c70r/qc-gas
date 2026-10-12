@@ -17,10 +17,13 @@ requests around those windows — without hammering the Régie serveur.
 | Pure strategy logic | `scripts/fetch_strategy.py` | weights, slot planning, diffing, gate decision |
 | Learner / planner (CLI) | `scripts/update_profile.py` | diff new snapshot → update profile → rewrite schedule |
 | Workflow gate (CLI) | `scripts/should_fetch.py` | decide whether *this* workflow run may download |
-| Learned data | `data/update-profile.json` | per-UTC-hour change statistics |
+| Learned data | `data/update-profile.json` | per-UTC-hour change statistics (global + per region + per quarter-hour mark) |
 | Derived plan | `data/fetch-schedule.json` | concrete daily UTC poll slots |
 | Gate state | `data/fetch-state.json` | last actual fetch timestamp |
 | Tests | `scripts/test_fetch_strategy.py`, `scripts/test_fetch_pipeline.py` | unit + CLI coverage |
+
+Schema, retention and size impact of the profile are documented in
+[`history-data.md`](./history-data.md#fetch-profile-update-profilejson).
 
 Workflow wiring lives in `.github/workflows/static.yml` (schedule + deploy
 gating) and `.github/workflows/update-data.yml` (gate + steps).
@@ -37,7 +40,15 @@ records:
 {
   "hours": {
     "11": {"samples": 12, "observed_hours": 6.5, "change_events": 3, "changed_stations": 812,
-           "changed_stations_exact": 47, "stations_observed": 2463}
+           "changed_stations_exact": 47, "stations_observed": 2463, "exact_samples": 12}
+  },
+  "regions": {
+    "Montréal": {"stations": 452, "hours": {
+      "11": {"samples": 12, "observed_hours": 6.5, "change_events": 3, "changed_stations": 18}
+    }}
+  },
+  "marks": {
+    "11": {"0": {"samples": 3, "changed_stations": 21}, "1": {"samples": 3, "changed_stations": 9}}
   },
   "last_observed": {"Montréal": {"regular": 170.5, "super": 188.0, "diesel": 180.0}},
   "last_observed_at": "2026-09-25T11:20:00Z",
@@ -52,9 +63,13 @@ records:
 - `changed_stations` — number of stations in the affected regions
 - `changed_stations_exact` — stations that really re-priced in that hour,
   counted per station (issue #68); `stations_observed` is how many stations the
-  snapshot held. Both are recorded next to the region fields so the exact
-  signal stays measurable, while the schedule keeps reading the region-level
-  `changed_stations` until the exact counter has been shown to predict better.
+  snapshot held and `exact_samples` how many fetches contributed to this
+  counter
+- `regions` — the same accounting per region (issue #71), sparse: only observed
+  hours are stored, and `changed_stations` there is always the exact
+  per-station count
+- `marks` — per quarter-hour (`0` = `:00`, `1` = `:15`, `2` = `:30`, `3` = `:45`)
+  samples and exact re-prices, so the intra-hour signal is measurable
 
 The learned signal is the **rate** `changed_stations / observed_hours`
 ("stations re-pricing per hour at this hour of day"). A rate rather than a raw
@@ -82,9 +97,9 @@ counts) and `data/history/station-changes.json` (`last_changed_at` /
 `last_seen_at` per station — see
 [`history-data.md`](./history-data.md#station-level-change-detection)).
 
-The learned schedule is deliberately unchanged for now: it keeps using the
-region-level `changed_stations` rate, and the exact counts accumulate alongside
-it so the two can be compared on real data before the schedule switches.
+The learned schedule now reads both channels (see "Weighting by expected
+changed stations" below): the exact per-station counter is used once it has
+covered the day, and the legacy region-average rate until then.
 
 `hour_weights()` blends that rate with the research prior below. The prior is
 weighted by `prior_alpha = 168` observed-hours (one week of hourly coverage):
@@ -96,6 +111,140 @@ w = 168 / (168 + total_observed_hours)
 
 With no data at all the weights *are* the prior; after a week the prior and the
 data weigh the same; after a month the prior is a small correction.
+
+## Layered weights: regions, expected volume, quarter-hours (issue #71)
+
+One global 24-hour distribution averages regions and brands together. Measured
+on the live profile, the per-hour spread of the global signal was only
+**745–1235 changed stations (1.65×)** — barely above noise — which is exactly
+what you get when Montréal, Laval and Gaspésie are averaged into one curve. The
+profile now carries three extra layers.
+
+### 1. Expected changed stations, not "did something change"
+
+`hour_rates(profile, channel=...)` returns the **expected number of stations
+re-pricing per hour of day**, and `hour_weights()` weights the budget by that
+volume:
+
+| channel | signal | behaviour |
+| --- | --- | --- |
+| `region` (legacy) | `changed_stations / observed_hours`: a region counts its *whole* station count as soon as one of its fuel averages moved | event-based, saturates — a 6h replay of the committed history shows nearly every region "moving" in nearly every bucket, spread only **1.14×** |
+| `exact` (#68) | `changed_stations_exact / observed_hours`: stations that really re-priced, one per pump | count-based, keeps the hourly contrast |
+| `auto` (default) | `exact` once `exact_channel_ready()` is true, else `region` | never mixes units inside one distribution |
+
+The switch is deliberately coarse — `EXACT_READY_SAMPLES = 48` fetches and at
+least one exact sample in *every* observed hour — because the two channels have
+different units. The exact counters only start recording after the region
+average channel already had weeks of history, so the exact side is ignored
+until it can cover the whole day; until then the schedule behaves exactly as
+before.
+
+### 2. Per-region hourly weights (hierarchical shrinkage)
+
+`update_profile.py` now attributes every re-priced station to its region
+(`station_regions()` + `diff_stations()`) and folds `{region: {hour: ...}}` into
+the profile — sparse, only observed hours, with the exact per-station count.
+
+```
+rate_{region,hour} = changed_stations_{region,hour} / observed_hours_{region,hour}
+province_rate_hour = Σ_region rate_{region,hour}      # expected re-prices/hour
+error_region        = Σ_hour  observed_hours_{region,hour}
+
+region_weights = shrink(rate_region, error_region, toward=global_weights,
+                        alpha=REGION_PRIOR_HOURS)     # 24 observed hours
+province_weights = shrink(province_rate, Σ error_region, toward=global_weights,
+                          alpha=168)
+```
+
+`shrink()` is a one-line hierarchical blend: with no exposure the result *is*
+the global distribution, with `exposure == alpha` (one day for a region) the
+region and the province weigh the same. Nord-du-Québec has 36 stations and
+Côte-Nord 177; a handful of noisy fetches cannot move their weights, while a
+metropolis that really has a distinct window eventually dominates its own
+distribution. This is the "global × region" mix the issue asked for, and it
+degrades to the pre-#71 behaviour whenever regional data is missing.
+
+### 3. Regional coverage constraint
+
+`coverage_hours(region_weights, baseline=province_weights)` pins the hours a
+region would otherwise lose to the metropolises. An hour is pinned for a region
+when **both**
+
+- it is a genuine hot hour for that region: its weight is at least
+  `REGION_PEAK_RATIO = 1.25` times the region's uniform share `1/24` (a flat
+  rhythm therefore pins nothing), and
+- the province's own share there is at least 1.25 times smaller, i.e. the global
+  plan does not already concentrate on that hour.
+
+At most `REGION_PEAK_HOURS = 2` hours per region survive, ranked by how far the
+region stands out, and `coverage_hours()` returns the province-wide union in
+that ranked order. `plan_slots(..., coverage_hours=...)` allocates them
+**before** the water-fill, in the order given, so a budget too small to pin
+everything still spends on the most region-specific hours. The schedule records
+the result for review:
+
+```json
+"coverage_hours": [20, 22, 6, 23, 19, 5, 4, 10, 14, 7, 15, 17, 13, 16, 11, 12, 18],
+"region_coverage": {
+  "Nord-du-Québec": {"peaks": [5], "covered": true, "stations": 26},
+  "Montréal": {"peaks": [18], "covered": true, "stations": 226}
+}
+```
+
+Replaying two days of 15-minute fetches against the real snapshot with
+region-specific moves (offline harness, `FETCH_DAILY_BUDGET` lowered to 12 so
+the constraint actually bites):
+
+| budget | pre-#71 plan | #71 plan |
+| --- | --- | --- |
+| 12 | 10/17 pinned hours, 11/18 regions covered | **12/18 regions covered** (the ranked list stops at 12 hours) |
+| 36 | 18/18 | 18/18 |
+| 96 (default) | 18/18 | 18/18 — the budget already equals capacity |
+
+At the default budget the constraint is inert by construction; it is insurance
+for a reduced budget, where a 17-hour pinned list competes with the water-fill.
+Without it, a reduced budget simply clones the province pattern: Nord-du-Québec
+(26 stations, local-midnight reset) or Gaspésie (59 stations, 22:00 UTC) keep
+their window anyway.
+
+### 4. Quarter-hour marks (optional refinement)
+
+`record_observation()` also counts samples and exact re-prices per
+quarter-hour mark (`marks`, `0` = `:00` … `3` = `:45`), and
+`learned_mark_orders()` ranks the marks of an hour by learned density once that
+hour has at least `MARK_MIN_SAMPLES = 32` recorded fetches. `plan_slots()` uses
+that ranking when it has to choose *which* marks of an hour to keep, instead of
+the coarse-first default (`:00`, `:30`, `:15`, `:45`). Below 96 the plan then
+lands on the quarter-hour that historically carried the most re-prices.
+
+### Not done: brand layer
+
+The issue also mentions brands (Costco vs independents). It is deliberately left
+out of this change: the snapshot carries **49** brands (Esso 453, Petro-Canada
+422 … down to a long tail below 10 stations), and with that little data per
+brand the shrinkage prior would dominate every brand distribution anyway, while
+adding a third dimension to a profile that is still accumulating its first
+regional observations. Once the exact counters have a month of data, a brand
+layer can reuse exactly the same helpers (`_record_regions`, `_region_rates`,
+`hour_weights(..., region=...)`) by keying on a bucketed brand.
+
+### Old vs new schedule
+
+The behaviour change is deliberately visible in one place: `hour_weights()` and
+`fetch-schedule.json`.
+
+| | before #71 | after #71 |
+| --- | --- | --- |
+| weight source | one global 24-hour rate | province sum of regional rates, shrunk to global |
+| detector | region average (saturating) | exact per-station count once ready, else region average |
+| per-hour spread (measurable) | 1.65× on live data, **1.14×** on a 6h replay of the committed history | exact channel keeps the real contrast: region-specific replay gives **39.6×** (exact) vs 30.1× (region channel, already region-aware); unit tests pin the flat-vs-sharp property |
+| region guarantee | none | each region's distinctive hours pinned and ranked (`coverage_hours`, `region_coverage`) |
+| intra-hour | coarse-first marks | learned mark order per hour when sampled |
+| old fields | `hours`, `last_observed`, `last_station_diff` | unchanged, still written (additive schema) |
+
+The committed `data/update-profile.json` predates both the exact counters and
+the regional block, so the first fetch after this merge starts filling them;
+the schedule keeps using the legacy path until then.
 
 ## Initial windows (researched, `RESEARCH_PRIOR`)
 
@@ -121,15 +270,17 @@ Real observations replace it automatically — nothing else needs to be edited.
 
 ## From weights to a bounded schedule
 
-`plan_slots(weights, budget, min_per_hour=1, max_per_hour=4)` picks quarter-hour
-UTC slots:
+`plan_slots(weights, budget, min_per_hour=1, max_per_hour=4, coverage_hours=(),
+mark_orders=None)` picks quarter-hour UTC slots:
 
-1. every hour keeps `min_per_hour` slot (default 1) while the budget allows, so
+1. the union of the regional peak hours (`coverage_hours`, issue #71) is pinned
+   first: each of those hours gets a slot while budget remains;
+2. every hour keeps `min_per_hour` slot (default 1) while the budget allows, so
    the learner keeps unbiased coverage of all 24 hours;
-2. the remaining budget is greedily water-filled into the highest-weight hours,
-   at most 4 slots per hour (one per quarter-hour mark `:00`, `:15`, `:30`,
-   `:45`, spread coarse-first);
-3. `budget` is the hard **maximum upstream downloads per day** (default **96**
+3. the remaining budget is greedily water-filled into the highest-weight hours,
+   at most 4 slots per hour (one per quarter-hour mark, in the learned mark
+   order of that hour, or `:00`, `:30`, `:15`, `:45` coarsest-first);
+4. `budget` is the hard **maximum upstream downloads per day** (default **96**
    = every quarter-hour slot, i.e. one request per `*/15` wake-up; override
    with the `FETCH_DAILY_BUDGET` env var or `--budget`). Below 96 the learned
    weights decide which slots survive; at 96 the budget equals capacity, so the
@@ -153,9 +304,15 @@ Example output (`data/fetch-schedule.json`):
   "min_per_hour": 1,
   "max_per_hour": 4,
   "slots": ["00:00", "00:15", "00:30", "01:00", "..."],
-  "hour_weights": [0.0288, "..."]
+  "hour_weights": [0.0288, "..."],
+  "coverage_hours": [],
+  "region_coverage": {}
 }
 ```
+
+`coverage_hours` / `region_coverage` are empty until the profile has regional
+observations (the committed profile predates #71); the first fetch after the
+merge fills both, exactly like the exact counters of #68.
 
 The plan is rebuilt on every successful fetch. `hour_weights()` uses cumulative
 counters, so the schedule reflects the whole observed history rather than a
@@ -229,19 +386,29 @@ the new budget, e.g.:
 python3 - <<'PY'
 import json, pathlib
 from scripts import update_profile as up
-from scripts.fetch_strategy import hour_weights, plan_slots
+from scripts.fetch_strategy import (coverage_hours, hour_weights, learned_mark_orders,
+                                    plan_slots, region_coverage, region_hour_weights)
 
 d = pathlib.Path('data')
 profile = json.loads((d / 'update-profile.json').read_text())
 weights = hour_weights(profile)
-slots = plan_slots(weights, budget=96, min_per_hour=1, max_per_hour=4)
+per_region = region_hour_weights(profile)
+guarded = coverage_hours(per_region)
+slots = plan_slots(weights, budget=96, min_per_hour=1, max_per_hour=4,
+                   coverage_hours=guarded, mark_orders=learned_mark_orders(profile))
+coverage = region_coverage(per_region, slots)
+for name, rec in coverage.items():
+    rec['stations'] = int((profile.get('regions', {}).get(name) or {}).get('stations') or 0)
 schedule = up.build_schedule(profile, slots, weights, 96, 1, 4,
-                             up.parse_iso(profile['updated_at']))
+                             up.parse_iso(profile['updated_at']),
+                             coverage=guarded, regions=coverage)
 (d / 'fetch-schedule.json').write_text(json.dumps(schedule, separators=(',', ':')) + '\n')
 PY
 ```
 
-Then `allocated_per_day` matches `budget_per_day` (96) again.
+Then `allocated_per_day` matches `budget_per_day` (96) again, and a lower
+`--budget` shows the regional coverage constraint at work: the pinned
+`coverage_hours` survive the water-fill, everything else is pruned by weight.
 
 ## Scheduled triggers are not precise
 
