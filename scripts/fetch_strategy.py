@@ -22,8 +22,10 @@ How it works
    not drift when sampling density changes.
 2. ``hour_weights`` blends that learned rate with a research-seeded prior
    (see ``RESEARCH_PRIOR``) whose influence decays as observation-hours pile up.
-3. ``plan_slots`` converts the weights into concrete quarter-hour UTC poll
-   slots under a hard daily request budget, so upstream is never hammered.
+3. ``plan_schedule`` converts the weights into concrete quarter-hour UTC poll
+   slots under a hard daily request budget, reserving an epsilon fraction
+   (``explore_frac``, issue #69) for the hours with the least observation time
+   so the learner can escape its prior and keep discovering new windows.
 4. ``due_decision`` is the workflow gate: it answers "should this run download
    right now?" using the schedule plus a freshness safety net.
 
@@ -55,11 +57,18 @@ DEFAULT_MAX_AGE_MINUTES = 90
 DEFAULT_MAX_GAP_HOURS = 2.0                  # exposure cap for one observation
 DEFAULT_PRIOR_HOURS = 168.0                  # one week of observed hours
 
+# Issue #69: epsilon-greedy sampling. A fraction of the daily budget is spent
+# on the hours with the least observation time instead of the learned peaks,
+# so a slot that never gets sampled (03:00/08:00 had ``observed_hours == 0``)
+# can still accumulate evidence and stop being a permanent prior artifact.
+DEFAULT_EXPLORE_FRAC = 0.15
+
 # Environment overrides read by *both* CLIs (``update_profile.py`` writes the
 # schedule, ``should_fetch.py`` gates on it) so the workflow has a single
 # source of truth and the two scripts can never disagree.
 BUDGET_ENV_VAR = 'FETCH_DAILY_BUDGET'
 MAX_AGE_ENV_VAR = 'FETCH_MAX_AGE_MINUTES'
+EXPLORE_FRAC_ENV_VAR = 'FETCH_EXPLORE_FRAC'
 
 
 def env_int(name, default, environ=None):
@@ -77,9 +86,31 @@ def env_int(name, default, environ=None):
         return int(default)
     return value if value > 0 else int(default)
 
+
+def env_float(name, default, environ=None):
+    """Fraction in ``[0, 1]`` from ``name`` in ``environ``, else ``default``.
+
+    Unlike :func:`env_int` an explicit ``0`` is honoured (it switches
+    exploration off, issue #69); only unset, non-numeric or out-of-range
+    values fall back so a typo cannot silently change the sampling strategy.
+    """
+    raw = (os.environ if environ is None else environ).get(name)
+    if raw is None or str(raw).strip() == '':
+        return float(default)
+    try:
+        value = float(str(raw).strip())
+    except ValueError:
+        return float(default)
+    return value if 0.0 <= value <= 1.0 else float(default)
+
 # Order in which the quarter-hour marks of an hour are used, coarsest spread
 # first: one slot -> :00, two -> :00/:30, three -> :00/:30/:15, four -> every mark.
 SLOT_MARK_PRIORITY = (0, 30, 15, 45)
+
+# Order exploration probes the marks of an hour: start with the quarter-hour
+# offset the exploitation plan does not already use, so a delayed run still
+# lands within the grace window of a slot (issue #69).
+EXPLORE_MARK_PRIORITY = (15, 30, 45, 0)
 
 # ── Research-seeded prior ────────────────────────────────────────────────────
 # Initial windows taken from public discussions of Canadian/Québec fuel-price
@@ -403,20 +434,23 @@ def hour_weights(profile, prior_alpha=DEFAULT_PRIOR_HOURS):
 
 # ── Scheduling ───────────────────────────────────────────────────────────────
 
-def plan_slots(weights, budget=DEFAULT_DAILY_BUDGET, min_per_hour=1,
-               max_per_hour=SLOTS_PER_HOUR):
-    """Pick quarter-hour UTC slots for the day under a daily request budget.
+def observed_hour_totals(profile):
+    """24-length list of ``observed_hours`` from a learned profile.
 
-    Every hour keeps ``min_per_hour`` slots when the budget allows, so the
-    learner keeps unbiased coverage; the remaining budget is water-filled into
-    the hours that historically produce the most price changes.
+    This is the evidence an hour has been *sampled* at all; exploration probes
+    the hours where it is smallest (issue #69). A missing/empty profile is all
+    zeros, which is exactly "probe everywhere cold".
     """
-    hours = len(weights)
-    if hours == 0:
-        return []
-    max_per_hour = max(1, min(int(max_per_hour), SLOTS_PER_HOUR))
-    budget = max(0, min(int(budget), hours * max_per_hour))
+    hours = (profile or {}).get('hours') or {}
+    return [
+        max(0.0, float((hours.get(str(h)) or {}).get('observed_hours') or 0.0))
+        for h in range(24)
+    ]
 
+
+def _exploit_slots(weights, budget, min_per_hour, max_per_hour):
+    """Legacy water-fill: coverage floor, then learn the busiest hours."""
+    hours = len(weights)
     base = min(int(min_per_hour), budget // hours) if hours else 0
     counts = [base] * hours
     remaining = budget - base * hours
@@ -436,6 +470,97 @@ def plan_slots(weights, budget=DEFAULT_DAILY_BUDGET, min_per_hour=1,
     return sorted(slots)
 
 
+def _free_marks(hour, used, max_per_hour):
+    """Quarter-hour marks of ``hour`` not already scheduled and within cap."""
+    start = hour * SLOTS_PER_HOUR
+    if sum(1 for s in used if s // SLOTS_PER_HOUR == hour) >= max_per_hour:
+        return []
+    return [mark for mark in EXPLORE_MARK_PRIORITY
+            if start + mark // SLOT_MINUTES not in used]
+
+
+def _pick_explore_slots(weights, observed_hours, used, count, max_per_hour):
+    """Pick ``count`` probe slots in the least-observed hours.
+
+    Hours are ranked by (observation time, number of probe slots already
+    there, weight, index): every probe goes to the least-observed hour that
+    still has a free mark, and only once those are exhausted does exploration
+    move on to the next-least-observed hour. Marks come from
+    :data:`EXPLORE_MARK_PRIORITY` and can never collide with an exploitation
+    slot, so a probe is always *extra* coverage of that hour rather than a
+    rename of an existing one.
+    """
+    hours = len(weights)
+    used = set(used)
+    probes = [0] * hours
+    out = []
+    for _ in range(count):
+        best = None
+        for h in range(hours):
+            marks = _free_marks(h, used, max_per_hour)
+            if not marks:
+                continue
+            key = (observed_hours[h], probes[h], weights[h], h)
+            if best is None or key < best[0]:
+                best = (key, h, marks[0])
+        if best is None:
+            break
+        _, hour, mark = best
+        index = hour * SLOTS_PER_HOUR + mark // SLOT_MINUTES
+        used.add(index)
+        probes[hour] += 1
+        out.append(index)
+    return out
+
+
+def plan_schedule(weights, budget=DEFAULT_DAILY_BUDGET, min_per_hour=1,
+                  max_per_hour=SLOTS_PER_HOUR, observed_hours=None,
+                  explore_frac=DEFAULT_EXPLORE_FRAC):
+    """Plan the day and say which slots are exploration probes (issue #69).
+
+    Returns ``(slots, explore_slots)``. ``slots`` is the same bounded daily
+    plan as before; ``explore_slots`` is its subset reserved for the hours with
+    the least ``observed_hours``. Exploration is opt-in on evidence:
+    ``observed_hours=None`` (no learned profile yet, e.g. the research-prior
+    fallback) or ``explore_frac=0`` reproduces the previous plan exactly.
+    """
+    hours = len(weights)
+    if hours == 0:
+        return [], []
+    max_per_hour = max(1, min(int(max_per_hour), SLOTS_PER_HOUR))
+    budget = max(0, min(int(budget), hours * max_per_hour))
+
+    frac = 0.0 if explore_frac is None else max(0.0, min(1.0, float(explore_frac)))
+    explore_budget = 0
+    if observed_hours is not None and frac > 0 and budget > 0:
+        explore_budget = int(round(budget * frac))
+        # Never spend more probes than the day can hold one-per-mark. Keep the
+        # exploitation floor intact too: at a budget that only covers
+        # ``min_per_hour`` there is no slack left to probe with.
+        floor_plan = min(int(min_per_hour), budget // hours) * hours
+        explore_budget = max(0, min(explore_budget, hours * max_per_hour,
+                                    budget - floor_plan))
+
+    exploit = _exploit_slots(weights, budget - explore_budget, min_per_hour, max_per_hour)
+    explore = []
+    if explore_budget > 0:
+        explore = _pick_explore_slots(weights, observed_hours, exploit,
+                                      explore_budget, max_per_hour)
+    return sorted(exploit + explore), sorted(explore)
+
+
+def plan_slots(weights, budget=DEFAULT_DAILY_BUDGET, min_per_hour=1,
+               max_per_hour=SLOTS_PER_HOUR):
+    """Pick quarter-hour UTC slots for the day under a daily request budget.
+
+    Every hour keeps ``min_per_hour`` slots when the budget allows, so the
+    learner keeps unbiased coverage; the remaining budget is water-filled into
+    the hours that historically produce the most price changes.
+    """
+    return plan_schedule(weights, budget=budget, min_per_hour=min_per_hour,
+                         max_per_hour=max_per_hour)[0]
+
+
 def slot_labels(slots):
     return [slot_label(s) for s in slots]
 
@@ -443,7 +568,8 @@ def slot_labels(slots):
 # ── Workflow gate ────────────────────────────────────────────────────────────
 
 def due_decision(now, slots, last_fetch_at, *, min_gap_minutes=10,
-                 max_age_minutes=DEFAULT_MAX_AGE_MINUTES, grace_minutes=45):
+                 max_age_minutes=DEFAULT_MAX_AGE_MINUTES, grace_minutes=45,
+                 explore_slots=None):
     """Should this workflow run poll upstream right now?
 
     ``slots`` is a daily list of "HH:MM" UTC labels. The decision:
@@ -482,7 +608,10 @@ def due_decision(now, slots, last_fetch_at, *, min_gap_minutes=10,
     if served:
         latest = max(served)
         lag = (now - latest).total_seconds() / 60.0
-        return True, f'slot {latest.strftime("%H:%M")} due ({lag:.0f} min ago)'
+        label = latest.strftime('%H:%M')
+        probes = {str(s) for s in (explore_slots or ())}
+        tag = ' [explore]' if label in probes else ''
+        return True, f'slot {label}{tag} due ({lag:.0f} min ago)'
 
     if age_minutes > max_age_minutes:
         return True, (f'stale: last fetch {age_minutes:.0f} min ago '

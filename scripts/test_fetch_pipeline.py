@@ -224,6 +224,78 @@ class StationChangesStoreTest(TempDataDirTest):
         self.assertFalse((self.data_dir / 'history' / 'station-changes.json').exists())
 
 
+class ExploreScheduleCliTest(TempDataDirTest):
+    """Issue #69: the written schedule reserves an epsilon exploration share."""
+
+    def seed_profile(self):
+        hours = {str(h): {'samples': 5, 'observed_hours': 10.0, 'change_events': 0,
+                          'changed_stations': 0} for h in range(24)}
+        hours['3'] = {'samples': 0, 'observed_hours': 0.0, 'change_events': 0,
+                      'changed_stations': 0}
+        hours['8'] = {'samples': 0, 'observed_hours': 0.0, 'change_events': 0,
+                      'changed_stations': 0}
+        write_json(self.data_dir / 'update-profile.json', {'v': 1, 'hours': hours})
+
+    def run_profile(self, *extra, now='2026-09-25T12:00:00Z'):
+        self.stations_file(feature('Montréal', 170.0), feature('Estrie', 180.0))
+        rc = update_profile.main(['--data-dir', str(self.data_dir), '--now', now, *extra])
+        self.assertEqual(rc, 0)
+        return read_json(self.data_dir / 'fetch-schedule.json')
+
+    def test_schedule_records_the_exploration_share_and_its_slots(self):
+        self.seed_profile()
+        schedule = self.run_profile('--budget', '48', '--explore-frac', '0.05')
+        self.assertEqual(schedule['explore_frac'], 0.05)
+        self.assertEqual(schedule['explore_count'], len(schedule['explore_slots']))
+        self.assertTrue(schedule['explore_slots'])
+        # Identifiable, in the plan, and never a duplicate.
+        self.assertTrue(set(schedule['explore_slots']).issubset(set(schedule['slots'])))
+        self.assertEqual(len(schedule['slots']), len(set(schedule['slots'])))
+        self.assertEqual(len(schedule['slots']), 48)
+
+    def test_explore_slots_probe_the_least_observed_hours(self):
+        self.seed_profile()
+        schedule = self.run_profile('--budget', '48', '--explore-frac', '0.05')
+        probed = {label[:2] for label in schedule['explore_slots']}
+        self.assertEqual(probed, {'03', '08'})
+
+    def test_zero_exploration_fraction_disables_it(self):
+        self.seed_profile()
+        schedule = self.run_profile('--budget', '48', '--explore-frac', '0')
+        self.assertEqual(schedule['explore_frac'], 0)
+        self.assertEqual(schedule['explore_slots'], [])
+        self.assertEqual(schedule['explore_count'], 0)
+
+    def test_explore_fraction_follows_the_shared_env_var(self):
+        self.seed_profile()
+        with mock.patch.dict(os.environ, {'FETCH_EXPLORE_FRAC': '0'}):
+            schedule = self.run_profile('--budget', '48')
+        self.assertEqual(schedule['explore_slots'], [])
+
+    def test_exploration_never_grows_the_budget(self):
+        self.seed_profile()
+        schedule = self.run_profile('--budget', '48')
+        self.assertEqual(len(schedule['slots']), 48)
+        self.assertLessEqual(len(schedule['explore_slots']),
+                             round(48 * schedule['explore_frac']))
+
+    def test_a_probed_hour_starts_accumulating_samples(self):
+        # Issue #69 acceptance: a fetch that lands on a probe slot folds into
+        # the profile, so a previously never-sampled hour leaves observed_hours 0.
+        self.seed_profile()
+        schedule = self.run_profile('--budget', '48', '--explore-frac', '0.05')
+        probe = schedule['explore_slots'][0]
+        hour = probe[:2]
+        self.assertEqual(
+            read_json(self.data_dir / 'update-profile.json')['hours'][str(int(hour))]['samples'],
+            0)
+        self.run_profile('--budget', '48', '--explore-frac', '0.05',
+                         now=f'2026-09-26T{probe}:00Z')
+        rec = read_json(self.data_dir / 'update-profile.json')['hours'][str(int(hour))]
+        self.assertEqual(rec['samples'], 1)
+        self.assertGreater(rec['observed_hours'], 0)
+
+
 class ShouldFetchCliTest(TempDataDirTest):
     def github_output(self):
         return self.data_dir / 'gh_output'
@@ -324,6 +396,34 @@ class ShouldFetchCliTest(TempDataDirTest):
         (self.data_dir / 'fetch-state.json').write_text('{not json', encoding='utf-8')
         rc = self.run_gate('2026-09-25T11:03:00Z')
         self.assertEqual(rc, 0)
+        self.assertIn('due=true', self.github_output().read_text())
+
+    def test_dry_run_flags_an_exploration_hit(self):
+        write_json(self.data_dir / 'fetch-schedule.json', {
+            'v': 1, 'budget_per_day': 4,
+            'slots': ['11:00', '11:30'],
+            'explore_frac': 0.5, 'explore_slots': ['11:00'],
+        })
+        write_json(self.data_dir / 'fetch-state.json',
+                   {'v': 1, 'last_fetch_at': '2026-09-25T10:50:00Z', 'fetches': 1})
+        buf = io.StringIO()
+        with contextlib.redirect_stdout(buf):
+            self.run_gate('2026-09-25T11:04:00Z', extra=('--dry-run',))
+        self.assertIn('[explore]', buf.getvalue())
+        self.assertIn('due=true', self.github_output().read_text())
+
+    def test_dry_run_does_not_flag_an_exploitation_hit(self):
+        write_json(self.data_dir / 'fetch-schedule.json', {
+            'v': 1, 'budget_per_day': 2,
+            'slots': ['11:00', '11:30'],
+            'explore_frac': 0.5, 'explore_slots': ['11:30'],
+        })
+        write_json(self.data_dir / 'fetch-state.json',
+                   {'v': 1, 'last_fetch_at': '2026-09-25T10:50:00Z', 'fetches': 1})
+        buf = io.StringIO()
+        with contextlib.redirect_stdout(buf):
+            self.run_gate('2026-09-25T11:04:00Z', extra=('--dry-run',))
+        self.assertNotIn('[explore]', buf.getvalue())
         self.assertIn('due=true', self.github_output().read_text())
 
 

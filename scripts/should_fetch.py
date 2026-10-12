@@ -9,7 +9,9 @@ safety net, records the attempt in ``data/fetch-state.json`` and exports
 ``due=true|false`` for the workflow steps that follow.
 
 The gate is intentionally fail-open on a scheduled run when its own state looks
-broken: a stale data snapshot is worse than one extra download.
+broken: a stale data snapshot is worse than one extra download. When a due hit
+is a reserved exploration slot (issue #69), the reason carries ``[explore]`` so
+the poll can be attributed to exploration vs exploitation after the fact.
 """
 
 import argparse
@@ -50,12 +52,19 @@ def load_json(path, fallback=None):
 
 
 def load_slots(data_dir, budget=DEFAULT_DAILY_BUDGET):
-    """Daily "HH:MM" slots, falling back to the research prior plan."""
+    """Daily "HH:MM" slots plus the exploration subset, from the schedule.
+
+    Falls back to the research-prior plan (which has no learned profile yet,
+    so no exploration slots) when the schedule is missing or corrupt.
+    """
     schedule = load_json(Path(data_dir) / SCHEDULE_FILE)
     slots = (schedule or {}).get('slots')
     if isinstance(slots, list) and slots:
-        return [str(s) for s in slots], 'learned'
-    return slot_labels(plan_slots(research_prior_weights(), budget=budget)), 'research-prior'
+        explore = (schedule or {}).get('explore_slots')
+        explore = [str(s) for s in explore] if isinstance(explore, list) else []
+        return [str(s) for s in slots], 'learned', explore
+    slots = slot_labels(plan_slots(research_prior_weights(), budget=budget))
+    return slots, 'research-prior', []
 
 
 def write_output(target, due):
@@ -93,7 +102,7 @@ def main(argv=None):
     if now.tzinfo is None:
         now = now.replace(tzinfo=timezone.utc)
 
-    slots, slots_source = load_slots(data_dir, budget=args.budget)
+    slots, slots_source, explore_slots = load_slots(data_dir, budget=args.budget)
     state = load_json(data_dir / STATE_FILE, {}) or {}
     last_fetch_at = state.get('last_fetch_at')
 
@@ -106,6 +115,7 @@ def main(argv=None):
             min_gap_minutes=args.min_gap_minutes,
             max_age_minutes=args.max_age_minutes,
             grace_minutes=args.grace_minutes,
+            explore_slots=explore_slots,
         )
 
     if due and not args.dry_run:
@@ -123,7 +133,8 @@ def main(argv=None):
             f.write('\n')
 
     write_output(args.github_output, due)
-    print(f'gate [{slots_source}, {len(slots)} slots/day]: {reason}')
+    print(f'gate [{slots_source}, {len(slots)} slots/day, '
+          f'{len(explore_slots)} explore]: {reason}')
     return 0
 
 

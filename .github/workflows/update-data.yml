@@ -26,6 +26,11 @@ jobs:
       # Freshness safety net: force a poll when the last one is older than 90
       # minutes (was 180), i.e. at most one missed poll cycle of drift.
       FETCH_MAX_AGE_MINUTES: '90'
+      # Epsilon-greedy exploration (issue #69): share of the daily budget spent
+      # probing the hours with the least observation time, so a slot that has
+      # never been sampled (03:00 / 08:00 had observed_hours == 0) can still
+      # accumulate evidence. 0 disables it; the plan writer reads this.
+      FETCH_EXPLORE_FRAC: '0.15'
     steps:
       # Check out the latest branch tip so the data commit is based on current
       # master (avoids losing a concurrent code merge when the data push fails).

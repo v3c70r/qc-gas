@@ -28,13 +28,17 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 from fetch_strategy import (  # noqa: E402
     BUDGET_ENV_VAR,
     DEFAULT_DAILY_BUDGET,
+    DEFAULT_EXPLORE_FRAC,
+    EXPLORE_FRAC_ENV_VAR,
     SLOTS_PER_HOUR,
     diff_stations,
+    env_float,
     env_int,
     hour_weights,
     observed_from_stations,
+    observed_hour_totals,
     parse_iso,
-    plan_slots,
+    plan_schedule,
     prices_from_row,
     prices_to_row,
     record_observation,
@@ -69,7 +73,8 @@ def save_json(path, obj):
         f.write('\n')
 
 
-def build_schedule(profile, slots, weights, budget, min_per_hour, max_per_hour, now):
+def build_schedule(profile, slots, weights, budget, min_per_hour, max_per_hour, now,
+                   explore_slots=(), explore_frac=DEFAULT_EXPLORE_FRAC):
     observed_hours = sum(
         float((profile.get('hours', {}).get(str(h)) or {}).get('observed_hours') or 0.0)
         for h in range(24)
@@ -83,6 +88,13 @@ def build_schedule(profile, slots, weights, budget, min_per_hour, max_per_hour, 
         'allocated_per_day': len(slots),
         'min_per_hour': min_per_hour,
         'max_per_hour': max_per_hour,
+        # Issue #69: the share of the budget spent probing the least-observed
+        # hours, and the concrete slots that share bought. ``explore_slots`` is
+        # a subset of ``slots`` so the gate and the audit log agree on which
+        # polls were exploration rather than exploitation.
+        'explore_frac': round(float(explore_frac), 4),
+        'explore_count': len(explore_slots),
+        'explore_slots': slot_labels(explore_slots),
         'slots': slot_labels(slots),
         'hour_weights': [round(w, 4) for w in weights],
     }
@@ -163,6 +175,11 @@ def main(argv=None):
                              f'(env {BUDGET_ENV_VAR})')
     parser.add_argument('--min-per-hour', type=int, default=DEFAULT_MIN_PER_HOUR)
     parser.add_argument('--max-per-hour', type=int, default=DEFAULT_MAX_PER_HOUR)
+    parser.add_argument('--explore-frac', type=float,
+                        default=env_float(EXPLORE_FRAC_ENV_VAR, DEFAULT_EXPLORE_FRAC),
+                        help='share of the daily budget spent probing the '
+                             'least-observed hours (0 disables exploration; '
+                             f'env {EXPLORE_FRAC_ENV_VAR})')
     args = parser.parse_args(argv)
 
     data_dir = Path(args.data_dir)
@@ -205,10 +222,16 @@ def main(argv=None):
     profile['last_station_diff'] = dict(station_store['last'])
 
     weights = hour_weights(profile)
-    slots = plan_slots(weights, budget=args.budget, min_per_hour=args.min_per_hour,
-                       max_per_hour=args.max_per_hour)
+    observed_totals = observed_hour_totals(profile)
+    explore_frac = max(0.0, min(1.0, float(args.explore_frac)))
+    slots, explore_slots = plan_schedule(
+        weights, budget=args.budget, min_per_hour=args.min_per_hour,
+        max_per_hour=args.max_per_hour, observed_hours=observed_totals,
+        explore_frac=explore_frac)
     schedule = build_schedule(profile, slots, weights, args.budget,
-                              args.min_per_hour, args.max_per_hour, now)
+                              args.min_per_hour, args.max_per_hour, now,
+                              explore_slots=explore_slots,
+                              explore_frac=explore_frac)
 
     save_json(profile_path, profile)
     save_json(data_dir / 'fetch-schedule.json', schedule)
@@ -226,7 +249,11 @@ def main(argv=None):
         movers = stations_changed_at(station_store, station_store['last']['at'])
         print('Changed stations: ' + ', '.join(movers))
     print(f"Schedule: {len(slots)} downloads/day (budget {args.budget}), "
+          f"{len(explore_slots)} explore + {len(slots) - len(explore_slots)} exploit "
+          f"(explore_frac {explore_frac:g}), "
           f"peak UTC hours {', '.join(f'{h:02d}' for h in hot)}")
+    if explore_slots:
+        print('Explore slots: ' + ', '.join(slot_labels(explore_slots)))
     return 0
 
 

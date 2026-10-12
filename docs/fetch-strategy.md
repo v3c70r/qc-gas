@@ -121,19 +121,25 @@ Real observations replace it automatically — nothing else needs to be edited.
 
 ## From weights to a bounded schedule
 
-`plan_slots(weights, budget, min_per_hour=1, max_per_hour=4)` picks quarter-hour
-UTC slots:
+`plan_schedule(weights, budget, min_per_hour=1, max_per_hour=4,
+observed_hours=<profile>, explore_frac=0.15)` picks quarter-hour UTC slots:
 
 1. every hour keeps `min_per_hour` slot (default 1) while the budget allows, so
    the learner keeps unbiased coverage of all 24 hours;
-2. the remaining budget is greedily water-filled into the highest-weight hours,
+2. a fraction `explore_frac` (ε, default **0.15**) of the budget is reserved for
+   **explore** slots in the hours with the least `observed_hours`, on a
+   quarter-hour mark the exploitation plan does not already use — this is what
+   stops the learner from being locked onto its prior (issue #69; see
+   [`history-data.md` §Exploration vs exploitation](./history-data.md#exploration-vs-exploitation-ε-greedy));
+3. the remaining budget is greedily water-filled into the highest-weight hours,
    at most 4 slots per hour (one per quarter-hour mark `:00`, `:15`, `:30`,
    `:45`, spread coarse-first);
-3. `budget` is the hard **maximum upstream downloads per day** (default **96**
+4. `budget` is the hard **maximum upstream downloads per day** (default **96**
    = every quarter-hour slot, i.e. one request per `*/15` wake-up; override
    with the `FETCH_DAILY_BUDGET` env var or `--budget`). Below 96 the learned
    weights decide which slots survive; at 96 the budget equals capacity, so the
-   plan is simply every slot.
+   plan is simply every slot. `plan_slots(...)` is the exploration-free wrapper
+   used where there is no learned profile yet.
 
 Since the upstream snapshot is regenerated every 5 minutes (see
 "Fetch rhythm vs upstream regeneration" below) and the workflow wakes every 15
@@ -152,10 +158,17 @@ Example output (`data/fetch-schedule.json`):
   "allocated_per_day": 96,
   "min_per_hour": 1,
   "max_per_hour": 4,
+  "explore_frac": 0.15,
+  "explore_count": 14,
+  "explore_slots": ["02:45", "03:45", "07:45", "08:45", "..."],
   "slots": ["00:00", "00:15", "00:30", "01:00", "..."],
   "hour_weights": [0.0288, "..."]
 }
 ```
+
+`explore_slots` is a subset of `slots` (never a duplicate); `should_fetch.py`
+uses it to tag a due hit with `[explore]` in its output, so each poll is
+attributable to exploration or exploitation (issue #69).
 
 The plan is rebuilt on every successful fetch. `hour_weights()` uses cumulative
 counters, so the schedule reflects the whole observed history rather than a
@@ -209,13 +222,15 @@ never exceed the wake-up cadence.
 
 ### How to tune it
 
-`FETCH_DAILY_BUDGET` and `FETCH_MAX_AGE_MINUTES` are the **single knob** for
-both CLIs: `scripts/should_fetch.py` (the gate) and `scripts/update_profile.py`
-(the plan writer) read the same env vars, falling back to
-`fetch_strategy.DEFAULT_DAILY_BUDGET` / `DEFAULT_MAX_AGE_MINUTES` when unset
-(local runs, tests). In CI they are set once in the `env:` block of the
-`update-data` job in `.github/workflows/update-data.yml` — edit that block, not
-the scripts.
+`FETCH_DAILY_BUDGET`, `FETCH_MAX_AGE_MINUTES` and `FETCH_EXPLORE_FRAC` are the
+**single knobs** for the strategy: `scripts/should_fetch.py` (the gate) and
+`scripts/update_profile.py` (the plan writer) read the same env vars, falling
+back to `fetch_strategy.DEFAULT_DAILY_BUDGET` /
+`DEFAULT_MAX_AGE_MINUTES` / `DEFAULT_EXPLORE_FRAC` when unset (local runs,
+tests). In CI they are set once in the `env:` block of the `update-data` job in
+`.github/workflows/update-data.yml` — edit that block, not the scripts.
+`FETCH_EXPLORE_FRAC=0` switches exploration off and reproduces the pre-#69
+plan exactly.
 
 `data/fetch-schedule.json` is derived state: its `budget_per_day` only follows
 the env var after the **next successful fetch** rewrites it
@@ -229,14 +244,17 @@ the new budget, e.g.:
 python3 - <<'PY'
 import json, pathlib
 from scripts import update_profile as up
-from scripts.fetch_strategy import hour_weights, plan_slots
+from scripts.fetch_strategy import hour_weights, observed_hour_totals, plan_schedule
 
 d = pathlib.Path('data')
 profile = json.loads((d / 'update-profile.json').read_text())
 weights = hour_weights(profile)
-slots = plan_slots(weights, budget=96, min_per_hour=1, max_per_hour=4)
+slots, explore = plan_schedule(weights, budget=96, min_per_hour=1, max_per_hour=4,
+                               observed_hours=observed_hour_totals(profile),
+                               explore_frac=0.15)
 schedule = up.build_schedule(profile, slots, weights, 96, 1, 4,
-                             up.parse_iso(profile['updated_at']))
+                             up.parse_iso(profile['updated_at']),
+                             explore_slots=explore, explore_frac=0.15)
 (d / 'fetch-schedule.json').write_text(json.dumps(schedule, separators=(',', ':')) + '\n')
 PY
 ```
@@ -297,5 +315,6 @@ python3 scripts/should_fetch.py --data-dir /tmp/prof --dry-run
 ```
 
 Both CLIs accept `--now <ISO>` so decisions can be reproduced for any instant.
-Both also honour `FETCH_DAILY_BUDGET` / `FETCH_MAX_AGE_MINUTES` (see "How to tune
-it" above), so a local run reproduces the CI rhythm when those are exported.
+Both also honour `FETCH_DAILY_BUDGET` / `FETCH_MAX_AGE_MINUTES`, and
+`update_profile.py` honours `FETCH_EXPLORE_FRAC` (see "How to tune it" above),
+so a local run reproduces the CI rhythm when those are exported.
