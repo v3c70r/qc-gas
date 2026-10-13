@@ -25009,7 +25009,7 @@
           },
           "super": {
             "avg": 205.8,
-            "min": 200.9,
+            "min": 200.5,
             "max": 217.9
           },
           "diesel": {
@@ -26412,7 +26412,7 @@
     ]
   },
   "metadata": {
-    "generated_at": "2026-10-13T11:10:00.5112518Z",
+    "generated_at": "2026-10-13T11:25:00.8698134Z",
     "latest": "2026-10-13T06:00:00Z",
     "interval_hours": 6,
     "samples_per_day": 4,
