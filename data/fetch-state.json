@@ -1,1 +1,1 @@
-{"v":1,"last_fetch_at":"2026-10-15T11:22:41Z","fetches":103,"last_reason":"slot 11:00 due (23 min ago)","event":"schedule"}
+{"v":1,"last_fetch_at":"2026-10-15T16:56:39Z","fetches":104,"last_reason":"stale: last fetch 334 min ago (> 120 min)","event":"schedule"}
