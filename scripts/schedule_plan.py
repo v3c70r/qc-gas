@@ -375,6 +375,7 @@ def plan_fields(plan, day=None, tz=LOCAL_TZ):
         'hourly_counts': plan.get('hourly_counts') or {},
         'hourly_gap_minutes': plan.get('hourly_gap_minutes') or {},
         'max_gap_minutes': plan.get('max_gap_minutes') or {},
+        'max_gap_minutes_observed': plan.get('max_gap_minutes_observed'),
         'constraints': plan.get('constraints') or {},
         'plan_relearn_after_days': RELEARN_AFTER_DAYS,
         'slots': timetable_utc_labels(plan.get('timetable') or [],

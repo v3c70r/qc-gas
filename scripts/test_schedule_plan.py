@@ -269,6 +269,7 @@ class MergeScheduleTest(unittest.TestCase):
     def test_legacy_fields_survive_the_upgrade(self):
         merged = self.merged()
         self.assertEqual(merged['max_per_hour'], schedule_plan.MAX_TIMETABLE_PER_HOUR)
+        self.assertLessEqual(merged['max_gap_minutes_observed'], 60.0)
         self.assertEqual(merged['prior'], 'research-2026-09')
         self.assertEqual(merged['hour_weights'], [0.5] * 24)
         self.assertEqual(merged['coverage_hours'], [4])
