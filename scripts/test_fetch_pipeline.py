@@ -615,11 +615,14 @@ class TimetableGateTest(TempDataDirTest):
         payload.update(extra)
         write_json(self.data_dir / 'fetch-schedule.json', payload)
 
-    def run_gate(self, now, extra=()):
+    def run_gate(self, now, extra=(), event='schedule'):
         return should_fetch.main([
             '--data-dir', str(self.data_dir), '--now', now,
-            '--event-name', 'schedule',
+            '--event-name', event,
             '--github-output', str(self.data_dir / 'gh_output'), *extra])
+
+    def gate_output(self):
+        return (self.data_dir / 'gh_output').read_text()
 
     def state(self, last_fetch_at):
         write_json(self.data_dir / 'fetch-state.json',
@@ -663,6 +666,90 @@ class TimetableGateTest(TempDataDirTest):
         self.assertEqual(source, 'learned')
         self.assertEqual(timetable, [])
         self.assertIn('11:00', slots)
+
+
+class DispatchGateTest(TempDataDirTest):
+    """Issue #93: the local dispatch wakes the gate often, the timetable decides.
+
+    A `repository_dispatch` (or `workflow_dispatch`) is an *external wake-up*:
+    it must not be treated as "fetch unconditionally" any more — a 5-minute
+    crontab wakes it 288 times a day, so the timetable has to be the thing that
+    admits the real fetches. Not being part of the planned slots, a dispatch
+    hit does not consume the plan budget (the reason string says so).
+    """
+
+    def schedule(self, **extra):
+        payload = {'v': 2, 'budget_per_day': 1, 'timetable': ['06:00'],
+                   'timezone': LOCAL_TZ, 'slots': ['10:00'],
+                   'explore_slots': [], 'explore_count': 0}
+        payload.update(extra)
+        write_json(self.data_dir / 'fetch-schedule.json', payload)
+
+    def state(self, last_fetch_at):
+        write_json(self.data_dir / 'fetch-state.json',
+                   {'v': 1, 'last_fetch_at': last_fetch_at, 'fetches': 1})
+
+    def run_gate(self, now, extra=(), event='repository_dispatch'):
+        return should_fetch.main([
+            '--data-dir', str(self.data_dir), '--now', now,
+            '--event-name', event,
+            '--github-output', str(self.data_dir / 'gh_output'), *extra])
+
+    def output(self):
+        return (self.data_dir / 'gh_output').read_text()
+
+    def test_a_dispatch_on_a_local_slot_is_due(self):
+        self.schedule()
+        self.state('2026-11-16T10:30:00Z')
+        # 11:03Z is 06:03 local (EST): the 06:00 local slot just passed.
+        self.run_gate('2026-11-16T11:03:00Z')
+        self.assertIn('due=true', self.output())
+        state = read_json(self.data_dir / 'fetch-state.json')
+        self.assertEqual(state['event'], 'repository_dispatch')
+        self.assertEqual(state['last_fetch_at'], '2026-11-16T11:03:00Z')
+
+    def test_an_off_schedule_dispatch_is_not_due_and_changes_nothing(self):
+        self.schedule()
+        self.state('2026-11-16T09:30:00Z')
+        self.run_gate('2026-11-16T10:03:00Z')       # 05:03 local: before the slot
+        self.assertIn('due=false', self.output())
+        state = read_json(self.data_dir / 'fetch-state.json')
+        self.assertEqual(state['last_fetch_at'], '2026-11-16T09:30:00Z')
+        self.assertEqual(state['fetches'], 1)
+
+    def test_a_dispatch_right_after_a_fetch_respects_the_min_gap(self):
+        self.schedule()
+        self.state('2026-11-16T11:02:00Z')
+        self.run_gate('2026-11-16T11:04:00Z')       # 2 min later
+        self.assertIn('due=false', self.output())
+
+    def test_workflow_dispatch_obeys_the_same_timetable(self):
+        self.schedule()
+        self.state('2026-11-16T10:30:00Z')
+        self.run_gate('2026-11-16T11:03:00Z', event='workflow_dispatch')
+        self.assertIn('due=true', self.output())
+
+    def test_a_dispatch_hit_says_it_is_not_budget_counted(self):
+        self.schedule()
+        self.state('2026-11-16T10:30:00Z')
+        buf = io.StringIO()
+        with contextlib.redirect_stdout(buf):
+            self.run_gate('2026-11-16T11:03:00Z', extra=('--dry-run',))
+        self.assertIn('not budget-counted', buf.getvalue())
+
+    def test_push_events_still_fetch_unconditionally(self):
+        self.schedule()
+        self.state('2026-11-16T10:30:00Z')
+        self.run_gate('2026-11-16T10:31:00Z', event='push')
+        self.assertIn('due=true', self.output())
+
+    def test_the_gate_reports_the_timetable_slot_count_as_the_budget(self):
+        self.schedule(timetable=['06:00', '06:20'])
+        self.state('2026-11-16T10:30:00Z')
+        buf = io.StringIO()
+        with contextlib.redirect_stdout(buf):
+            self.run_gate('2026-11-16T10:31:00Z', extra=('--dry-run',))
+        self.assertIn('2 local slots/day', buf.getvalue())
 
 
 if __name__ == '__main__':

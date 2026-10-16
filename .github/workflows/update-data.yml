@@ -18,26 +18,30 @@ jobs:
     # editing this env block only; the constants in `scripts/fetch_strategy.py`
     # are just the local fallback.
     env:
-      # `static.yml` wakes this workflow hourly (`cron: '17 * * * *'`) as a
-      # fallback, so 24 = one request per wake-up: the budget can never exceed
-      # the wake-up cadence (issue #77). Sub-hourly crons are throttled too hard
-      # to be worth planning for; the sub-hourly cadence comes from the external
-      # `repository_dispatch` trigger, which bypasses the plan entirely.
-      FETCH_DAILY_BUDGET: '24'
+      # `#91` shipped an explicit local *timetable* (busy 20 min, midnight 10 min,
+      # night 1/h) inside `data/fetch-schedule.json`; `#93` wakes the workflow
+      # every 5 minutes from a local `crontab` (`repository_dispatch`) and lets
+      # the gate admit exactly the timetable's slots. So the budget is no longer
+      # "one request per fallback wake" (the old #77 rule): it must equal the
+      # plan's slot count, otherwise the next successful fetch would rewrite the
+      # committed timetable with a smaller budget and break the busy-hour
+      # cadence the dispatch trigger exists for. `scripts/trigger_interval_report.py`
+      # checks `budget == timetable slots/day` and fails the report otherwise.
+      FETCH_DAILY_BUDGET: '65'
       # Freshness safety net: force a poll when the last one is older than 120
-      # minutes = two hourly wake-ups, i.e. the net only fires after two
-      # consecutive wakes were dropped. Kept at exactly 2 x the cron interval so
-      # the fallback can never be denser than the plan nor sparser than it
-      # (issue #77 acceptance: triggers and gate knobs move together).
+      # minutes = two *fallback* cron wake-ups. Kept at exactly 2 x the hourly
+      # fallback interval so the safety net can neither be denser nor sparser
+      # than the fallback it backs up (the 5-minute dispatch wakes are far
+      # denser; they are gated by the timetable, not by this net).
       FETCH_MAX_AGE_MINUTES: '120'
       # Epsilon-greedy exploration (issue #69): share of the daily budget spent
       # probing the hours with the least observation time, so a slot that has
       # never been sampled (03:00 / 08:00 had observed_hours == 0) can still
       # accumulate evidence. 0 disables it; the plan writer reads this.
-      # At the shipped budget of 24 (= the hourly floor, `min_per_hour=1`) there
-      # is no slack left to probe with, so exploration is effectively off in the
-      # *plan*; hour coverage now comes from the uniform external trigger
-      # instead, which samples every hour equally (issue #77).
+      # At the #91 timetable the gap caps already fill the whole budget
+      # (`hourly_gap_minutes`), so the plan carries no probe slots; the knob is
+      # kept explicit so raising the budget can turn exploration back on with
+      # the same command line. See docs/history-data.md.
       FETCH_EXPLORE_FRAC: '0.15'
     steps:
       # Check out the latest branch tip so the data commit is based on current
@@ -51,13 +55,15 @@ jobs:
         with:
           python-version: '3.11'
 
-      # The trigger (external `repository_dispatch` on the #76 target cadence,
-      # or the hourly fallback cron) wakes this workflow often so a poll can land
-      # right after stations re-price; this gate keeps upstream load bounded by
-      # only downloading inside the learned change windows (plus the
+      # The trigger (local `crontab` -> `repository_dispatch` every 5 minutes,
+      # plus the hourly fallback cron) wakes this workflow often so a poll can
+      # land right after stations re-price; this gate keeps upstream load bounded
+      # by admitting only the #91 timetable's slots (plus the
       # FETCH_MAX_AGE_MINUTES freshness safety net). The budget/freshness env
-      # above is the single knob; non-scheduled runs (push / dispatch) always
-      # fetch. One upstream request per admitted run, no retries.
+      # above is the single knob. A dispatch is not one of the planned slots, so
+      # it is evaluated against the same timetable but does not consume the plan
+      # budget (issue #93); other non-schedule events (push) still fetch
+      # unconditionally. One upstream request per admitted run, no retries.
       - name: Decide whether to fetch (adaptive schedule)
         id: gate
         run: |

@@ -5,19 +5,27 @@
 the shipped trigger actually fetch*. The tests pin:
 
 * commit subject -> trigger source (local probe / Actions / not a fetch at all);
-* the measured-interval statistics and the "does it meet the target" verdict;
+* the measured-interval statistics and the "does it meet the criterion" verdict;
+* the #93 criterion: **busy hours (local 06:00-23:59) p90 <= 20 minutes** plus a
+  stale share <= 5 % for the timetable source, instead of the old global
+  "p90 <= 30 minutes" rule that failed the deliberate 60-minute night floor by
+  construction;
+* the local dispatch source (#93): the committed timetable plus
+  ``scripts/schedule_eval.py`` on the probe series;
 * the refusal to conclude from a window shorter than 12 hours (acceptance
   criterion of #77);
-* the shipped rhythm itself: the Actions cron interval, the gate budget and the
-  freshness net must stay consistent with each other and with the target
-  interval (#76), and an external trigger must be wired when the cron alone
-  cannot reach the target.
+* the shipped rhythm itself: the fallback cron interval, the plan budget (= the
+  committed timetable's slot count since #93), the freshness net and the local
+  wake-up interval must stay consistent with each other.
 
-The behaviour of the external-trigger helper itself (`scripts/dispatch_fetch.sh`,
-its exit codes above all) is pinned in `scripts/test_dispatch_fetch.py`.
+The behaviour of the local trigger helpers themselves (`scripts/dispatch_fetch.sh`
+and `scripts/install_dispatch_cron.sh`) is pinned in `scripts/test_dispatch_fetch.py`
+and `scripts/test_install_dispatch_cron.py`.
 """
 
+import json
 import sys
+import tempfile
 import unittest
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
@@ -84,20 +92,21 @@ class GitLogParsingTest(unittest.TestCase):
 
 
 class IntervalStatsTest(unittest.TestCase):
-    def test_15_minute_series_meets_a_30_minute_target(self):
+    def test_a_fifteen_minute_series_meets_the_busy_criterion(self):
         stats = tir.interval_stats(series(15, 97))
         self.assertEqual(stats['fetches'], 97)
         self.assertEqual(stats['intervals'], 96)
         self.assertEqual(stats['p50'], 15.0)
         self.assertEqual(stats['p90'], 15.0)
+        self.assertEqual(stats['busy_p90'], 15.0)
         self.assertAlmostEqual(stats['span_hours'], 24.0, places=1)
         self.assertEqual(stats['over_target'], 0)
         self.assertEqual(stats['verdict'], 'meets')
 
-    def test_throttled_actions_series_misses_the_target(self):
+    def test_throttled_actions_series_misses_the_criterion(self):
         stats = tir.interval_stats(series(260, 10))
         self.assertEqual(stats['p50'], 260.0)
-        self.assertGreater(stats['p90'], tir.TARGET_INTERVAL_MINUTES)
+        self.assertGreater(stats['p90'], tir.BUSY_P90_MAX_MINUTES)
         self.assertEqual(stats['over_target_share'], 1.0)
         self.assertEqual(stats['verdict'], 'misses')
 
@@ -132,6 +141,47 @@ class IntervalStatsTest(unittest.TestCase):
         self.assertEqual(stats['intervals'], 0)
         self.assertIsNone(stats['p50'])
 
+    def test_a_bad_stale_share_fails_a_plan_that_is_dense_enough(self):
+        stats = tir.interval_stats(series(15, 97), stale_share=0.11)
+        self.assertEqual(stats['busy_p90'], 15.0)
+        self.assertEqual(stats['verdict'], 'misses')
+
+
+class BusyHoursTest(unittest.TestCase):
+    """#93: only the local busy hours (06:00-23:59) count against the criterion.
+
+    The 01:00-05:00 hour is deliberately kept at 60 minutes by #91 (the night
+    carries ~1/121 of the day's re-prices), so the old global p90 rule failed a
+    correct plan by construction.
+    """
+
+    def test_a_night_hole_is_not_counted(self):
+        # 05:00 -> 07:00 local (EDT: 09:00Z -> 11:00Z) is a two-hour hole whose
+        # start is outside the busy window: it must not enter busy_*.
+        times = [datetime(2026, 10, 12, 9, 0, tzinfo=UTC),
+                 datetime(2026, 10, 12, 11, 0, tzinfo=UTC),
+                 datetime(2026, 10, 12, 11, 20, tzinfo=UTC)]
+        busy = tir.busy_intervals_minutes(times)
+        self.assertEqual(busy, [20.0])
+        self.assertEqual(tir.gap_stats(busy)['p90'], 20.0)
+
+    def test_all_gaps_are_still_reported_for_the_historical_shape(self):
+        stats = tir.interval_stats(series(60, 48), since=END - timedelta(hours=12))
+        self.assertEqual(stats['intervals'], 12)
+        self.assertEqual(stats['p90'], 60.0)
+        self.assertEqual(stats['busy_p90'], 60.0)
+
+    def test_a_timetable_with_a_night_floor_meets_the_busy_criterion(self):
+        # busy every 20 min, local midnight every 10 min, 01:00-05:00 hourly.
+        timetable = []
+        for hour in range(6, 24):
+            timetable += [f'{hour:02d}:00', f'{hour:02d}:20', f'{hour:02d}:40']
+        timetable += [f'00:{minute:02d}' for minute in range(0, 60, 10)]
+        timetable += [f'{hour:02d}:00' for hour in range(1, 6)]
+        gaps = tir.timetable_busy_gaps(sorted(timetable))
+        self.assertEqual(sorted(set(gaps)), [20.0])
+        self.assertEqual(tir.gap_stats(gaps)['p90'], 20.0)
+
 
 class DecideTest(unittest.TestCase):
     def test_actions_wins_when_it_meets_the_target(self):
@@ -140,11 +190,18 @@ class DecideTest(unittest.TestCase):
         self.assertEqual(chosen, tir.SOURCE_ACTIONS)
         self.assertIn('cron', message)
 
-    def test_probe_wins_when_actions_is_throttled(self):
+    def test_probe_wins_when_actions_is_throttled_and_dispatch_is_absent(self):
         chosen, message = tir.decide({tir.SOURCE_ACTIONS: 'misses',
                                       tir.SOURCE_PROBE: 'meets'})
         self.assertEqual(chosen, tir.SOURCE_PROBE)
         self.assertIn(tir.SOURCE_PROBE, message)
+
+    def test_the_local_dispatch_chain_is_preferred_over_the_probe(self):
+        chosen, message = tir.decide({tir.SOURCE_ACTIONS: 'misses',
+                                      tir.SOURCE_DISPATCH: 'meets',
+                                      tir.SOURCE_PROBE: 'meets'})
+        self.assertEqual(chosen, tir.SOURCE_DISPATCH)
+        self.assertIn(f'{tir.BUSY_P90_MAX_MINUTES}', message)
 
     def test_stays_undecided_while_the_evidence_window_is_too_short(self):
         chosen, message = tir.decide({tir.SOURCE_ACTIONS: 'misses',
@@ -167,8 +224,31 @@ class PayloadTest(unittest.TestCase):
         self.assertEqual(payload['sources'][tir.SOURCE_ACTIONS]['verdict'], 'misses')
         self.assertEqual(payload['sources'][tir.SOURCE_PROBE]['verdict'], 'meets')
         self.assertEqual(payload['decision']['chosen'], tir.SOURCE_PROBE)
-        self.assertEqual(payload['target_interval_minutes'], 30)
+        self.assertEqual(payload['target_interval_minutes'], tir.BUSY_P90_MAX_MINUTES)
         self.assertEqual(payload['criteria']['min_window_hours'], 12.0)
+        self.assertEqual(payload['criteria']['busy_p90_max_minutes'], 20)
+        self.assertEqual(payload['criteria']['stale_share_max'], tir.STALE_SHARE_MAX)
+
+    def test_the_local_dispatch_source_is_reported_when_injected(self):
+        dispatch = {'method': 'stub', 'history': {'fetches': 65, 'span_hours': 24.0,
+                                                  'intervals': 54, 'busy_p90': 20.0,
+                                                  'p50': 20.0, 'max': 20.0,
+                                                  'over_target_share': 0.0,
+                                                  'stale_share': 0.012,
+                                                  'verdict': 'meets'},
+                    'verdict': 'meets', 'meets_target': True}
+        payload = self.payload({tir.SOURCE_ACTIONS: series(260, 10)}, dispatch=dispatch)
+        self.assertIn(tir.SOURCE_DISPATCH, payload['sources'])
+        self.assertEqual(payload['sources'][tir.SOURCE_DISPATCH]['verdict'], 'meets')
+        self.assertEqual(payload['decision']['chosen'], tir.SOURCE_DISPATCH)
+        self.assertIn(tir.SOURCE_DISPATCH, payload['source'])
+
+    def test_the_notes_explain_the_busy_hour_criterion(self):
+        payload = self.payload({tir.SOURCE_ACTIONS: series(260, 10)})
+        notes = ' '.join(payload['notes'])
+        self.assertIn('忙时', notes)
+        self.assertIn('schedule_eval', notes)
+        self.assertIn('时刻表', notes)
 
     def test_history_can_be_restricted_to_one_rhythm_era(self):
         fetches = {tir.SOURCE_ACTIONS: series(15, 97)}
@@ -195,8 +275,79 @@ class PayloadTest(unittest.TestCase):
 
     def test_summary_is_human_readable(self):
         text = tir.format_summary(self.payload({tir.SOURCE_ACTIONS: series(15, 97)}))
-        self.assertIn('目标间隔 30 分钟', text)
+        self.assertIn('忙时', text)
         self.assertIn('| 来源 |', text)
+        self.assertIn(tir.SOURCE_ACTIONS, text)
+
+
+class DispatchSourceTest(unittest.TestCase):
+    """#93: the local dispatch chain is judged by the committed timetable + #91.
+
+    The gate only admits the timetable's slots, so the *fetch* cadence of the
+    local dispatch source is the timetable itself; the staleness share comes
+    from ``schedule_eval.py`` simulating that timetable on the probe series.
+    """
+
+    def setUp(self):
+        self.tmp = Path(tempfile.mkdtemp(prefix='dispatch-source-test-'))
+        self.data_dir = self.tmp / 'data'
+        self.data_dir.mkdir()
+        self.observations = self.tmp / 'observations.json'
+        entries = []
+        for hour in range(24):
+            price = 150.0 if hour < 10 else (160.0 if hour < 20 else 170.0)
+            entries.append({
+                'at': f'2026-10-16T{hour:02d}:00:00Z',
+                's': {'1.00000,1.00000': {'p': [price, None, None]}},
+            })
+        self.observations.write_text(json.dumps(entries), encoding='utf-8')
+
+    def write_timetable(self, timetable):
+        (self.data_dir / 'fetch-schedule.json').write_text(
+            json.dumps({'v': 2, 'timezone': tir.LOCAL_TZ, 'timetable': timetable}),
+            encoding='utf-8')
+
+    def busy20_timetable(self):
+        return [f'{hour:02d}:{minute:02d}'
+                for hour in range(24) for minute in (0, 20, 40)]
+
+    def test_the_timetable_is_read_from_the_committed_schedule(self):
+        self.write_timetable(['06:00', '06:20'])
+        self.assertEqual(tir.load_shipped_timetable(self.data_dir), ['06:00', '06:20'])
+
+    def test_no_committed_timetable_means_no_dispatch_source(self):
+        self.assertIsNone(tir.dispatch_evidence(self.data_dir))
+
+    def test_a_busy_twenty_minute_timetable_meets_with_a_low_stale_share(self):
+        self.write_timetable(self.busy20_timetable())
+        record = tir.dispatch_evidence(self.data_dir,
+                                       observations_path=self.observations)
+        self.assertIsNotNone(record)
+        self.assertEqual(record['verdict'], 'meets')
+        self.assertTrue(record['meets_target'])
+        self.assertEqual(record['history']['busy_p90'], 20.0)
+        self.assertLess(record['history']['stale_share'], tir.STALE_SHARE_MAX)
+        self.assertIn('时刻表', record['method'])
+        self.assertEqual(record['schedule_eval']['verdict']['acceptable'], True)
+
+    def test_a_coarse_timetable_misses_the_busy_criterion(self):
+        self.write_timetable([f'{hour:02d}:00' for hour in range(24)])
+        record = tir.dispatch_evidence(self.data_dir,
+                                       observations_path=self.observations)
+        self.assertEqual(record['history']['busy_p90'], 60.0)
+        self.assertEqual(record['verdict'], 'misses')
+
+    def test_the_shipped_timetable_meets_on_the_real_probe_series(self):
+        # The acceptance evidence for #93: the plan actually committed in this
+        # repository, evaluated with schedule_eval against the measured series.
+        timetable = tir.load_shipped_timetable(ROOT / 'data')
+        self.assertTrue(timetable)
+        record = tir.dispatch_evidence(ROOT / 'data', root=ROOT)
+        if record['schedule_eval']['events'] is None:
+            self.skipTest('no probe observations in this checkout')
+        self.assertEqual(record['verdict'], 'meets', record['history'])
+        self.assertLessEqual(record['history']['busy_p90'], tir.BUSY_P90_MAX_MINUTES)
+        self.assertLessEqual(record['history']['stale_share'], tir.STALE_SHARE_MAX)
 
 
 class ShippedRhythmTest(unittest.TestCase):
@@ -215,9 +366,27 @@ class ShippedRhythmTest(unittest.TestCase):
     def test_shipped_cron_is_a_long_hourly_fallback(self):
         self.assertEqual(self.shipped['cron_interval_minutes'], 60)
 
-    def test_gate_budget_matches_the_wake_up_cadence(self):
+    def test_gate_budget_matches_the_committed_timetable(self):
+        # #93 replaced the old #77 rule (budget == 1440 / cron interval): the
+        # trigger is the local 5-minute dispatch, and the plan budget is the
+        # timetable's slot count, which the plan writer must not shrink.
         self.assertEqual(self.shipped['daily_budget'],
-                         int(round(1440 / self.shipped['cron_interval_minutes'])))
+                         self.shipped['timetable_fetches_per_day'])
+        self.assertEqual(self.shipped['daily_budget'], 65)
+
+    def test_the_local_wake_up_is_denser_than_the_busy_plan(self):
+        self.assertEqual(self.shipped['dispatch_wake_minutes'], 5)
+        self.assertLessEqual(self.shipped['dispatch_wake_minutes'],
+                             self.shipped['timetable_busy_p90_minutes'])
+
+    def test_the_busy_plan_meets_the_published_criterion(self):
+        self.assertEqual(self.shipped['timetable_busy_p90_minutes'],
+                         tir.BUSY_P90_MAX_MINUTES)
+
+    def test_the_wake_up_interval_is_read_from_the_installer(self):
+        installer = (ROOT / 'scripts' / 'install_dispatch_cron.sh').read_text(encoding='utf-8')
+        self.assertIn('DEFAULT_WAKE_MINUTES=5', installer)
+        self.assertEqual(tir.dispatch_wake_minutes(ROOT), 5)
 
     def test_freshness_net_covers_two_missed_wakes(self):
         self.assertEqual(self.shipped['max_age_minutes'],
@@ -232,14 +401,19 @@ class ShippedRhythmTest(unittest.TestCase):
         self.assertRegex(self.static, r'repository_dispatch:\s*\n\s*types:\s*\[?fetch-data')
 
     def test_target_interval_comes_from_the_76_criteria(self):
-        # p90 stale lag <= 30 min and p90 lag ~ 0.9*T  =>  T <= 33 min -> 30.
+        # #76's overall target (p90 stale lag <= 30 min => T <= 33 min -> 30) is
+        # kept as a reference; the *judged* criterion is #93's busy-hour one.
         self.assertEqual(tir.TARGET_INTERVAL_MINUTES, 30)
+        self.assertEqual(tir.BUSY_P90_MAX_MINUTES, 20)
+        self.assertEqual(tir.STALE_SHARE_MAX, 0.05)
         self.assertEqual(self.shipped['target_interval_minutes'], 30)
 
     def test_docs_document_the_final_rhythm_and_the_probe_decision(self):
         doc = HISTORY_DOC.read_text(encoding='utf-8')
         for needle in ('repository_dispatch', 'fetch-data', 'fetch-interval-report.md',
-                       'trigger_interval_report.py', 'tmux kill-session -t probe'):
+                       'trigger_interval_report.py', 'tmux kill-session -t probe',
+                       'install_dispatch_cron.sh', 'dispatch-cron.log',
+                       'schedule_eval.py', 'fetch-state.json'):
             self.assertIn(needle, doc, needle)
 
 
