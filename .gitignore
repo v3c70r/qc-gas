@@ -68,6 +68,13 @@ tests/screenshots/
 test-results/
 playwright-report/
 
+# ==========================================
+# Local probe sample store (issue #92)
+# ==========================================
+# The probe keeps its samples *outside* the repository: the event log grows
+# locally instead of being committed (~39 MiB/day of snapshots before #92).
+data/probe-local/
+
 # Agent loop
 .agent/tmp/
 .agent/logs/

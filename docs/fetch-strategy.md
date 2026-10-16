@@ -650,14 +650,21 @@ survive the water-fill even when the hourly floor cannot.
 ## Necessary fetch interval (measured, issue #76)
 
 `scripts/interval_report.py` answers "how often *must* we fetch?" from the
-15-minute ground truth of the local probe (#74). It replays the git revisions of
-`data/history/station-changes.json` (the probe commits one per cycle) as a
-station-price series, measures the change-arrival distribution (p50/p90/p99, by
-region and brand), simulates polling every T minutes and reports the stale-lag
-distribution (p50/p90/p99) plus the share of stations showing an out-of-date
-price at a random instant.
+15-minute ground truth of the local probe (#74). It reads that series either
+from the probe's **local event log** `data/probe-local/events.jsonl`
+(`--events-file`, one line per cycle since #92 stopped committing snapshots) or,
+when that file is absent (CI, fresh clone), by replaying the git revisions of
+`data/history/station-changes.json` — both paths go through the same loaders, so
+the change-arrival distribution (p50/p90/p99, by region and brand), the "poll
+every T minutes" simulation and the stale-lag distribution (p50/p90/p99) plus
+the share of stations showing an out-of-date price at a random instant are
+computed with one metric口径. The local log also feeds
+`scripts/schedule_eval.py --events-file` (#91).
 
 ```bash
+# Local probe machine: the event log is the truth source.
+python3 scripts/interval_report.py --events-file data/probe-local/events.jsonl
+# CI / anywhere without the log: falls back to the git snapshot history.
 python3 scripts/interval_report.py       # -> docs/fetch-interval-report.md + data/fetch-interval.json
 ```
 

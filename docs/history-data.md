@@ -187,12 +187,30 @@ p50 257 分钟，见 [Fetch rhythm](#fetch-rhythm-final-issue-77)），而外部
 
 - `scripts/local_fetch_loop.sh`（tmux 常驻）：每 ~15 分钟跑一遍与
   `update-data.yml` 相同的数据链路 —— `download_data.py` →
-  `process_data.py` → `update_profile.py` → `append_history.py` →
-  `metrics.py` —— 再跑一次**只报不堵**的 `check_data_size.py`，然后复用工作流
-  **同一组** brotli 文件（`stations` / `stats` / `history` / `regie-margin` /
-  `metrics` + `data/history/*.json`，不用通配，以免为 `fetch-log` /
-  `fetch-state` / `fetch-schedule` / `update-profile` 生成永不使用的 `.br`），
-  最后以 `Update gas prices data (local probe) [skip ci]` 提交并推送。
+  `process_data.py` → `update_profile.py` → `scripts/probe_events.py append` →
+  `append_history.py` → `metrics.py` —— 再跑一次**只报不堵**的
+  `check_data_size.py`，然后复用工作流**同一组** brotli 文件（`stations` / `stats`
+  / `history` / `regie-margin` / `metrics` + `data/history/*.json`，不用通配，
+  以免为 `fetch-log` / `fetch-state` / `fetch-schedule` / `update-profile`
+  生成永不使用的 `.br`），最后只提交**小账本**（见下）。
+- **样本外置（issue #92）**：探针**不再提交快照** —— `stations.json`(+`.br`)、
+  `history.json`、`history/station-changes.json`(+`.br`)、`stats.json`(+`.br`)、
+  `metrics.json`(+`.br`) 照旧由链路写盘（本地分析仍可用完整快照），但**永不
+  `git add`**；它们过去占**约 39 MiB/天**的仓库增长，而探针的推送不会触发站点
+  部署（`static.yml` 的 `push.paths` 不含 `data/**`），对用户零价值。
+- **每轮真相 → 本地事件日志** `data/probe-local/events.jsonl`（目录已被
+  `.gitignore` 覆盖）：每轮追加一行
+  `{"t": "2026-10-16T20:04:25Z", "changed": 135, "keys": [...], "stations": 2465}`
+  —— `t` = 本轮抓取时刻（`station-changes.json` 的 `last.at`）、`changed` =
+  本轮重定价站点数（就是 `update-profile.json` 的 `changed_stations_exact`）、
+  `keys` = 变更站点坐标键（截断到 100 个）、`stations` = 本轮观测站点数（陈旧
+  占比的分母）。体积目标 < 300 KB/天；逻辑在 `scripts/probe_events.py`，
+  被 `interval_report.py` / `schedule_eval.py` 通过 `--events-file` 直接消费
+  （文件缺失时二者回退 git 修订历史，CI 不报错）。
+- **提交节流**：仓库里**每小时最多提交一次**、只在内容确有变化时提交，且只提交
+  小文件 `data/update-profile.json`、`data/fetch-log.json`、
+  `data/fetch-schedule.json`（`PROBE_COMMIT_INTERVAL_SECONDS`，默认 3600）。
+  上一轮推送若给了，本地提交保留、下一轮继续重推，不受节流影响。
 - **与 Actions 的差异**：不调用 `fetch_bulletin.py`（每周 PDF 周报，与高频探测
   无关）与 `should_fetch.py`；`check_data_size.py` 只记录警告，不会阻断探针
   （工作流里它是阻断提交的）。除这些之外二者共用同一批脚本，没有第二套抓取实现。
@@ -211,41 +229,65 @@ p50 257 分钟，见 [Fetch rhythm](#fetch-rhythm-final-issue-77)），而外部
   （`gh issue comment`，字段见下）；发送失败只写日志，不影响抓取循环。
 - 运行日志写在 `.agent/probe.log`（`.gitignore` 已忽略 `.agent/**/*.log`）。
 
-### 启停方式（固定会话名 `probe`）
+### 独立工作树（**必须**，issue #92）
+
+探针与 agent **不得共用工作区**：实测 agent 在 `agent/*` 分支改文件时，探针的
+数据提交会落到 agent 分支上（连续 3 轮推送失败 ⇒ 账本进不了 master），而
+`sync_with_remote()` 的 `reset --hard '@{u}'` 会直接抹掉 agent 未提交的工作。
+因此：
+
+1. **运行时分支守卫**：当前分支 ≠ `PROBE_BASE_BRANCH`（默认 `master`）时，探针
+   **立即以退出码 2 退出**并写明原因（绝不静默把数据提交到功能分支）；
+2. **用 `git worktree add` 建独立工作树**（共享对象库、几乎不额外占盘）：
 
 ```bash
-# 启动（在 master 工作副本上；<repo> 换成仓库绝对路径）
-tmux new -d -s probe -c <repo> && tmux send-keys -t probe 'bash scripts/local_fetch_loop.sh' Enter
+# 在仓库副本旁创建独立的 master 工作树
+cd <repo> && git worktree add ../qc-gas-probe master
+
+# 启动（固定会话名 probe）
+tmux new -d -s probe -c ../qc-gas-probe \
+  && tmux send-keys -t probe 'bash scripts/local_fetch_loop.sh' Enter
 
 # 查看进度
-tmux attach -t probe          # Ctrl-b d 脱离；cat .agent/probe.log 也可
+tmux attach -t probe          # Ctrl-b d 脱离；cat ../qc-gas-probe/.agent/probe.log 也可
 tmux kill-session -t probe    # 停止
 ```
 
-机器休眠/重启后循环自然停止，重新执行上面的启动命令即可恢复；探针**不会**自动
+3. `sync_with_remote()` 里唯一具有破坏性的 `git reset --hard '@{u}'` 只在**未提交
+   改动全部位于 `data/`**（探针自己的足迹）时才执行；只要出现 `data/` 之外的
+   脏文件（agent 的在途改动），它**拒绝回退**并把原因写进日志。
+
+机器休眠/重启后循环自然停止，重新执行启动命令即可恢复；探针**不会**自动
 拉起，也不会修改任何 workflow。
 
 ### 可用环境变量
 
 | 变量 | 默认 | 说明 |
 | --- | --- | --- |
+| `PROBE_BASE_BRANCH` | `master` | 允许运行的分支；其它分支立即退出（码 2） |
 | `PROBE_INTERVAL_SECONDS` | `900` | 周期间隔（15 分钟） |
+| `PROBE_COMMIT_INTERVAL_SECONDS` | `3600` | 两次数据提交之间的最小间隔（每小时最多一次） |
 | `PROBE_MAX_PUSH_RETRIES` | `3` | 推送被拒后 `pull --rebase` 重试次数（退避 15 s） |
 | `PROBE_MAX_CYCLES` | `0` | `0` = 常驻；`1` 可用于冒烟测试 |
 | `PROBE_SKIP_PUSH` | 未设 | 非空则只本地提交、不推送 |
 | `PROBE_SKIP_SUMMARY` | 未设 | 非空则不评论健康摘要 |
 | `PROBE_TRACKING_ISSUE` | `78` | 健康摘要发到哪个 issue |
+| `PROBE_EVENTS_FILE` | `data/probe-local/events.jsonl` | 本地事件日志（gitignore） |
 | `PROBE_LOG_FILE` | `.agent/probe.log` | 日志文件 |
 | `PROBE_PYTHON` | `python3` | 解释器 |
+| `PROBE_CHECK_ONLY` | 未设 | 非空则只跑启动校验后退出（测试用） |
 
 ### 与 Actions 的并发关系
 
 Actions 侧的数据提交仍在继续，所以本机推送必须让远端优先：
 
-- 每个周期开始前先 `git pull --rebase`，遇冲突则 `rebase --abort` 并
-  `reset --hard @{u}`（**远端数据永远不被本机覆盖**）；
-- 推送被拒时 `pull --rebase` + 重试，最多 `PROBE_MAX_PUSH_RETRIES`（默认 3）次；
-  仍失败则保留本地提交、记一次失败，循环继续；
+- 每个周期开始前先 `git pull --rebase`，遇冲突则 `rebase --abort`，并且**只有在
+  未提交改动全部位于 `data/`**（探针自己的足迹）时才 `reset --hard '@{u}'`；
+  否则拒绝回退、把原因写进日志（保护 agent 的在途工作）；
+- 探针只提交 `data/update-profile.json` / `data/fetch-log.json` /
+  `data/fetch-schedule.json`，每小时最多一次；未推送成功的本地提交在下一轮继续
+  重推（推送被拒时 `pull --rebase` + 重试，最多 `PROBE_MAX_PUSH_RETRIES`，
+  默认 3 次）；仍失败则保留本地提交、记一次失败，循环继续；
 - 任何一步失败都**不会**终止循环（脚本没有 `set -e`，每个 stage 都是
   `continue-on-error` 语义），失败与重试计数进入当天的 `days` 记录。
 

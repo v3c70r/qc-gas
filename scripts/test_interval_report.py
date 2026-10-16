@@ -470,5 +470,118 @@ class CliTest(unittest.TestCase):
         return buf.getvalue()
 
 
+def write_jsonl(path, rows):
+    path = Path(path)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(''.join(json.dumps(row, ensure_ascii=False,
+                                       separators=(',', ':')) + '\n'
+                            for row in rows), encoding='utf-8')
+
+
+def events_lines(days=4, step_minutes=15, per_cycle=2, stations=FIXTURE_STATIONS):
+    """A local probe event log: 15-minute cycles, ``per_cycle`` re-prices each."""
+    steps = (days * 24 * 60) // step_minutes
+    return [{'t': iso(i * step_minutes), 'changed': per_cycle,
+             'keys': [f'{j}.00000,0.00000' for j in range(per_cycle)],
+             'stations': stations}
+            for i in range(steps)]
+
+
+class ProbeEventsFileTest(unittest.TestCase):
+    """Issue #92: the samples live in a local JSONL log, not in git."""
+
+    def setUp(self):
+        self._tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self._tmp.cleanup)
+        self.root = Path(self._tmp.name)
+        self.data_dir = self.root / 'data'
+        self.data_dir.mkdir(parents=True)
+        write_json(self.data_dir / 'stations.json', stations_fixture())
+        # No committed snapshot history at all: only the local log exists.
+        self.events_path = self.root / 'data' / 'probe-local' / 'events.jsonl'
+        write_jsonl(self.events_path, events_lines())
+
+    def test_loads_observations_and_change_events_from_the_jsonl_log(self):
+        observations, events = ir.load_events_file(self.events_path)
+        self.assertEqual(len(observations), 4 * 24 * 60 // 15)
+        self.assertEqual(len(events), 2 * len(observations))
+        self.assertEqual(observations[0]['at'], START)
+        self.assertEqual(observations[0]['stations'], FIXTURE_STATIONS)
+        self.assertEqual(events[0]['key'], '0.00000,0.00000')
+
+    def test_a_cycle_without_changes_still_marks_an_observation(self):
+        write_jsonl(self.events_path, [
+            {'t': iso(0), 'changed': 0, 'stations': 7},
+            {'t': iso(15), 'changed': 1, 'keys': ['a'], 'stations': 7},
+        ])
+        observations, events = ir.load_events_file(self.events_path)
+        self.assertEqual(len(observations), 2)
+        self.assertEqual([event['key'] for event in events], ['a'])
+
+    def test_a_corrupt_log_degrades_to_an_empty_series(self):
+        self.events_path.write_text('not json\n[1]\n', encoding='utf-8')
+        self.assertEqual(ir.load_events_file(self.events_path), ([], []))
+        self.assertEqual(ir.load_events_file(self.root / 'nope.jsonl'), ([], []))
+
+    def test_station_total_comes_from_the_log_when_there_are_no_prices(self):
+        observations = [{'at': START + timedelta(minutes=15 * i), 'stations': 4,
+                         'prices': {}} for i in range(9)]   # 00:00 -> 02:00
+        events = [{'at': START + timedelta(minutes=1), 'key': 'a', 'fuels': {},
+                   'region': ir.UNKNOWN_REGION, 'brand': ir.UNKNOWN_BRAND}]
+        row = ir.simulate_interval(events, observations, 60)
+        self.assertEqual(row['stations'], 4)
+        self.assertEqual(row['events'], 1)
+        # change at 00:01, next hourly poll 01:00 -> 59 min of stale display.
+        self.assertEqual(row['p90'], 59 * 60)
+        self.assertEqual(row['stale_share'],
+                         round(59 * 60 / (4 * 120 * 60), 6))
+
+    def test_report_from_the_local_log_matches_the_git_history_sample(self):
+        observations, events = ir.load_events_file(self.events_path)
+        report = ir.build_report(self.data_dir, self.root, START,
+                                 observations=observations, events=events,
+                                 observations_source=str(self.events_path))
+        sample = report['sample']
+        self.assertEqual(sample['coverage_days'], 4)
+        self.assertEqual(sample['change_events'], len(events))
+        self.assertEqual(sample['stations_observed'], FIXTURE_STATIONS)
+        self.assertEqual(report['status'], 'ok')
+        self.assertEqual(report['bias']['sampling_minutes'], 15)
+        self.assertEqual(report['source']['observations'], str(self.events_path))
+        row = [r for r in report['staleness']['rows']
+               if r['interval_minutes'] == 60][0]
+        self.assertIsNotNone(row['stale_share'])
+
+    def test_cli_uses_the_events_file_when_it_exists(self):
+        out = self._run_capture(['--json', '--no-write',
+                                 '--events-file', str(self.events_path)])
+        payload = json.loads(out)
+        self.assertEqual(payload['sample']['change_events'],
+                         2 * 4 * 24 * 60 // 15)
+        self.assertIn('probe-local', payload['source']['observations'])
+
+    def test_cli_missing_events_file_falls_back_to_git_without_error(self):
+        import contextlib
+        import io
+        err = io.StringIO()
+        with contextlib.redirect_stderr(err):
+            payload = json.loads(self._run_capture(
+                ['--json', '--no-write',
+                 '--events-file', str(self.root / 'data' / 'probe-local' / 'nope.jsonl')]))
+        self.assertEqual(payload['status'], 'insufficient')
+        self.assertIn('git revision history', payload['source']['observations'])
+        self.assertIn('falling back', err.getvalue())
+
+    def _run_capture(self, extra):
+        import contextlib
+        import io
+        buf = io.StringIO()
+        with contextlib.redirect_stdout(buf):
+            rc = ir.main(['--data-dir', str(self.data_dir), '--root', str(self.root),
+                          '--now', iso(0), *extra])
+        self.assertEqual(rc, 0)
+        return buf.getvalue()
+
+
 if __name__ == '__main__':
     unittest.main()

@@ -203,6 +203,69 @@ class PresetTest(unittest.TestCase):
         self.assertEqual(recommended, schedule_plan.plan_timetable(budget=65)['timetable'])
 
 
+class ProbeEventLogTest(unittest.TestCase):
+    """Issue #92: the evaluator can read the local event log instead of git."""
+
+    def setUp(self):
+        import tempfile
+        self._tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self._tmp.cleanup)
+        self.root = Path(self._tmp.name)
+        self.events_path = self.root / 'data' / 'probe-local' / 'events.jsonl'
+        self.events_path.parent.mkdir(parents=True)
+        lines = []
+        for i in range(9):  # 00:00 -> 02:00, one re-price of the same station
+            moment = at(0) + timedelta(minutes=15 * i)
+            keys = ['1.00000,1.00000'] if i == 2 else []
+            lines.append({'t': moment.strftime('%Y-%m-%dT%H:%M:%SZ'),
+                          'changed': len(keys), 'keys': keys, 'stations': 2})
+        self.events_path.write_text(
+            ''.join(json.dumps(line, separators=(',', ':')) + '\n' for line in lines),
+            encoding='utf-8')
+
+    def test_loads_observations_and_events_from_the_log(self):
+        observations, events = schedule_eval.load_events_file(self.events_path)
+        self.assertEqual(len(observations), 9)
+        self.assertEqual([event['key'] for event in events], ['1.00000,1.00000'])
+
+    def test_a_window_built_from_the_log_counts_the_same_events(self):
+        observations, events = schedule_eval.load_events_file(self.events_path)
+        window = schedule_eval.build_window(observations, events=events)
+        self.assertEqual(len(window['events']), 1)
+        self.assertEqual(window['stations'], 2)
+        metrics = schedule_eval.simulate_timetable(['01:00', '02:00'], window,
+                                                  tz=ZoneInfo('UTC'))
+        # re-price detected at 00:30 -> fixed by the 01:00 fetch = 1800 s.
+        self.assertEqual(metrics['events'], 1)
+        self.assertEqual(metrics['p90'], 1800.0)
+
+    def test_cli_uses_the_events_file_when_it_exists(self):
+        import contextlib
+        import io
+        buf = io.StringIO()
+        with contextlib.redirect_stdout(buf):
+            rc = schedule_eval.main([
+                '--plan', 'busy20+night+midnight', '--no-jitter', '--json',
+                '--root', str(self.root),
+                '--events-file', str(self.events_path)])
+        self.assertEqual(rc, 0)
+        self.assertEqual(json.loads(buf.getvalue())['events'], 1)
+
+    def test_cli_missing_events_file_falls_back_to_git_without_error(self):
+        import contextlib
+        import io
+        err = io.StringIO()
+        buf = io.StringIO()
+        with contextlib.redirect_stderr(err), contextlib.redirect_stdout(buf):
+            rc = schedule_eval.main([
+                '--plan', 'busy20+night+midnight', '--json',
+                '--root', str(self.root),
+                '--events-file', str(self.root / 'data' / 'probe-local' / 'nope.jsonl')])
+        self.assertEqual(rc, 0)
+        self.assertEqual(json.loads(buf.getvalue())['events'], 0)
+        self.assertIn('falling back', err.getvalue())
+
+
 class CliTest(unittest.TestCase):
     def test_cli_accepts_an_explicit_timetable(self):
         import contextlib

@@ -38,8 +38,10 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 from interval_report import (  # noqa: E402  (metric口径 is reused, not rewritten)
     change_events,
+    load_events_file,
     load_git_observations,
     normalize_observations,
+    observation_stations,
 )
 from metrics import load_json, parse_iso, percentile, to_iso  # noqa: E402
 from fetch_strategy import (  # noqa: E402
@@ -84,23 +86,37 @@ def load_observations(root=ROOT, observations_path=None,
     return load_git_observations(root, max_revisions=max_revisions)
 
 
-def build_window(observations, labels=None, start=None, end=None):
+def build_window(observations, labels=None, start=None, end=None, events=None):
     """The metric window: observations, their re-price events and the totals.
 
+    ``events`` may be supplied directly (issue #92's local event log already
+    carries the changed keys per cycle); when it is, the change list is not
+    re-derived from prices and ``events_explicit`` tells :func:`split_window`
+    to keep passing it through instead of rebuilding it from the sliced
+    observations.
+
     ``stations`` is the number of coordinate keys seen in the window (the
-    denominator of the stale share, exactly as in ``simulate_interval``).
+    denominator of the stale share, exactly as in ``simulate_interval``), or
+    the log's reported total when the observations carry no prices.
     """
     observations = [obs for obs in (observations or [])
                     if (start is None or obs['at'] >= start)
                     and (end is None or obs['at'] <= end)]
-    events = change_events(observations, labels or {})
-    stations = len({key for obs in observations for key in obs['prices']})
+    explicit = events is not None
+    if explicit:
+        events = [event for event in events
+                  if (start is None or event['at'] >= start)
+                  and (end is None or event['at'] <= end)]
+    else:
+        events = change_events(observations, labels or {})
+    stations = observation_stations(observations)
     window_seconds = 0.0
     if len(observations) >= 2:
         window_seconds = (observations[-1]['at'] - observations[0]['at']).total_seconds()
     return {
         'observations': observations,
         'events': events,
+        'events_explicit': explicit,
         'stations': stations,
         'window_seconds': window_seconds,
         'window_start': observations[0]['at'] if observations else None,
@@ -120,9 +136,10 @@ def split_window(window, fraction=0.6):
     if len(observations) < 4:
         return window, window
     cut = max(1, min(len(observations) - 2, int(round(len(observations) * fraction))))
-    train = build_window(observations[:cut + 1])
+    events = window.get('events') if window.get('events_explicit') else None
+    train = build_window(observations[:cut + 1], events=events)
     train['split'] = 'train'
-    test = build_window(observations[cut:])
+    test = build_window(observations[cut:], events=events)
     test['split'] = 'test'
     return train, test
 
@@ -346,6 +363,10 @@ def main(argv=None):
     parser.add_argument('--data-dir', default=str(DEFAULT_DATA_DIR))
     parser.add_argument('--observations', help='observation series JSON instead '
                                                'of the git revision history')
+    parser.add_argument('--events-file',
+                        help='local probe event log JSONL '
+                             '(data/probe-local/events.jsonl); a missing file '
+                             'falls back to the git revision history')
     parser.add_argument('--timetable', help='comma-separated local "HH:MM" list')
     parser.add_argument('--plan', help='preset plan name (see --table)')
     parser.add_argument('--tz', default=LOCAL_TZ)
@@ -387,7 +408,16 @@ def main(argv=None):
 
     observations = load_observations(root=args.root,
                                      observations_path=args.observations)
-    window = build_window(observations)
+    events = None
+    if args.events_file and not args.observations:
+        events_path = Path(args.events_file)
+        if events_path.exists():
+            observations, events = load_events_file(events_path)
+        else:
+            print(f'note: {args.events_file} not found; falling back to the git '
+                  'revision history', file=sys.stderr)
+            observations = load_observations(root=args.root)
+    window = build_window(observations, events=events)
     if args.split != 'all':
         train, test = split_window(window, fraction=args.fraction)
         window = train if args.split == 'train' else test
