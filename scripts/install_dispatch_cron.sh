@@ -48,7 +48,9 @@ GH_USER="${QC_GAS_GH_USER:-}"
 TOKEN_FILE="${QC_GAS_TOKEN_FILE:-$DEFAULT_TOKEN_FILE}"
 
 usage() {
-  sed -n '2,32p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//'
+  # 只打印文件开头的注释块（第一行之后、直到第一行非注释）
+  awk 'NR > 1 && /^#/ { sub(/^# ?/, ""); print; next }
+       NR > 1 { exit }' "${BASH_SOURCE[0]}"
 }
 
 die() {
