@@ -34,14 +34,17 @@ from fetch_strategy import (  # noqa: E402
     DEFAULT_DAILY_BUDGET,
     DEFAULT_EXPLORE_FRAC,
     EXPLORE_FRAC_ENV_VAR,
+    LOCAL_TZ,
     SLOTS_PER_HOUR,
     coverage_hours,
     diff_stations,
     env_float,
     env_int,
+    gap_caps,
     hour_rates,
     hour_weights,
     learned_mark_orders,
+    local_zone,
     observed_from_stations,
     observed_hour_totals,
     parse_iso,
@@ -52,16 +55,22 @@ from fetch_strategy import (  # noqa: E402
     region_coverage,
     region_hour_weights,
     region_station_counts,
+    slot_indices,
     slot_labels,
     station_prices,
     station_regions,
+    timetable_utc_labels,
     to_iso,
 )
+import schedule_plan  # noqa: E402  (issue #91: the explicit local timetable)
 
 ROOT = Path(__file__).resolve().parent.parent
 DEFAULT_DATA_DIR = ROOT / 'data'
 DEFAULT_MIN_PER_HOUR = 1
-DEFAULT_MAX_PER_HOUR = SLOTS_PER_HOUR
+# The timetable's finest cadence is one fetch every 5 minutes (issue #91); the
+# legacy weighted planner below the gap floor keeps its own quarter-hour cap.
+DEFAULT_MAX_PER_HOUR = schedule_plan.MAX_TIMETABLE_PER_HOUR
+LEGACY_MAX_PER_HOUR = SLOTS_PER_HOUR
 PRIOR_ID = 'research-2026-09'
 STATION_CHANGES_REL = Path('history') / 'station-changes.json'
 STATION_CHANGES_DAYS = 180  # same window as the station daily history tier
@@ -85,12 +94,12 @@ def save_json(path, obj):
 
 def build_schedule(profile, slots, weights, budget, min_per_hour, max_per_hour, now,
                    explore_slots=(), explore_frac=DEFAULT_EXPLORE_FRAC,
-                   coverage=(), regions=None):
+                   coverage=(), regions=None, timetable_plan=None, tz=LOCAL_TZ):
     observed_hours = sum(
         float((profile.get('hours', {}).get(str(h)) or {}).get('observed_hours') or 0.0)
         for h in range(24)
     )
-    return {
+    schedule = {
         'v': 1,
         'generated_at': to_iso(now),
         'source': 'learned' if observed_hours > 0 else 'research-prior',
@@ -113,6 +122,22 @@ def build_schedule(profile, slots, weights, budget, min_per_hour, max_per_hour, 
         'coverage_hours': [int(h) for h in (coverage or ())],
         'region_coverage': regions or {},
     }
+    if timetable_plan is not None:
+        # Issue #91: the same document, upgraded to an explicit *local* timetable
+        # (v2). ``slots`` becomes the timetable's UTC projection for the local
+        # day it was written, and every legacy field above is kept as is. A plan
+        # that cannot honour the gap caps (deliberately small budget) still
+        # records its shortfall, while the legacy slot plan above stands.
+        constraints = timetable_plan.get('constraints') or {}
+        schedule['constraints'] = constraints
+        schedule['max_gap_minutes'] = timetable_plan.get('max_gap_minutes') or {}
+        if constraints.get('satisfied'):
+            day = now.astimezone(local_zone(tz)).date()
+            schedule.update(schedule_plan.plan_fields(timetable_plan, day=day, tz=tz))
+            schedule['budget_per_day'] = int(
+                constraints.get('budget_per_day', budget))
+            schedule['allocated_per_day'] = len(schedule['slots'])
+    return schedule
 
 
 def stations_changed_at(store, timestamp):
@@ -247,11 +272,35 @@ def main(argv=None):
     guarded = coverage_hours(per_region, baseline=weights)
     observed_totals = observed_hour_totals(profile)
     explore_frac = max(0.0, min(1.0, float(args.explore_frac)))
-    slots, explore_slots = plan_schedule(
-        weights, budget=args.budget, min_per_hour=args.min_per_hour,
-        max_per_hour=args.max_per_hour, observed_hours=observed_totals,
-        explore_frac=explore_frac, coverage_hours=guarded,
-        mark_orders=learned_mark_orders(profile))
+
+    # ── Issue #91: explicit local timetable first ────────────────────────────
+    # E_h is the counted per-station channel (``changed_stations_exact``/
+    # observed hours) re-keyed onto local hours; the planner spends the daily
+    # budget on the hard gap caps (busy 20 min, midnight 10 min, night 60 min),
+    # which is exactly the measured optimum at the default budget.
+    expected_local = schedule_plan.expected_counts_from_profile(profile, LOCAL_TZ)
+    observed_local = (schedule_plan.utc_hours_to_local(observed_totals, LOCAL_TZ)
+                      if any(observed_totals) else None)
+    plan = schedule_plan.plan_timetable(
+        expected=expected_local, budget=args.budget, caps=gap_caps(),
+        min_per_hour=args.min_per_hour, max_per_hour=args.max_per_hour,
+        explore_frac=explore_frac, observed_hours=observed_local)
+    timetable_plan = plan if plan['constraints']['satisfied'] else None
+    plan_day = now.astimezone(local_zone(LOCAL_TZ)).date()
+
+    if timetable_plan is not None:
+        slots = slot_indices(timetable_utc_labels(timetable_plan['timetable'],
+                                                  LOCAL_TZ, plan_day))
+        explore_slots = []
+    else:
+        # Below the gap floor (deliberately small FETCH_DAILY_BUDGET) the hard
+        # caps are unreachable, so the weighted quarter-hour plan of #69/#71
+        # keeps its regional guarantees and only the shortfall is recorded.
+        slots, explore_slots = plan_schedule(
+            weights, budget=args.budget, min_per_hour=args.min_per_hour,
+            max_per_hour=min(args.max_per_hour, LEGACY_MAX_PER_HOUR),
+            observed_hours=observed_totals, explore_frac=explore_frac,
+            coverage_hours=guarded, mark_orders=learned_mark_orders(profile))
     coverage = region_coverage(per_region, slots, baseline=weights)
     for name, rec in coverage.items():
         entry = (profile.get('regions') or {}).get(name) or {}
@@ -260,7 +309,8 @@ def main(argv=None):
                               args.min_per_hour, args.max_per_hour, now,
                               explore_slots=explore_slots,
                               explore_frac=explore_frac,
-                              coverage=guarded, regions=coverage)
+                              coverage=guarded, regions=coverage,
+                              timetable_plan=plan)
 
     save_json(profile_path, profile)
     save_json(data_dir / 'fetch-schedule.json', schedule)
@@ -290,12 +340,23 @@ def main(argv=None):
         covered = sum(1 for name in with_peaks if coverage[name]['covered'])
         print(f"Region coverage: {covered}/{len(with_peaks)} regions with a distinct peak "
               f"hour keep it in the plan ({len(guarded)} pinned hours)")
-    print(f"Schedule: {len(slots)} downloads/day (budget {args.budget}), "
-          f"{len(explore_slots)} explore + {len(slots) - len(explore_slots)} exploit "
+    print(f"Schedule: {len(schedule['slots'])} downloads/day (budget {args.budget}), "
+          f"{schedule['explore_count']} explore + "
+          f"{len(schedule['slots']) - schedule['explore_count']} exploit "
           f"(explore_frac {explore_frac:g}), "
           f"peak UTC hours {', '.join(f'{h:02d}' for h in hot)}")
-    if explore_slots:
-        print('Explore slots: ' + ', '.join(slot_labels(explore_slots)))
+    if timetable_plan is not None:
+        print(f"Timetable ({LOCAL_TZ}, {len(timetable_plan['timetable'])} local slots): "
+              + ' '.join(timetable_plan['timetable']))
+        print(f"Gap caps: max {timetable_plan['max_gap_minutes_observed']} min, "
+              f"violations {len(timetable_plan['constraints']['violations'])}; "
+              f"E_h source {'profile' if expected_local else 'gap-floor'}")
+    else:
+        print(f"Timetable: below the {plan['constraints']['floor_per_day']}-fetch "
+              f"gap floor (shortfall {plan['constraints']['shortfall']}); "
+              f"keeping the weighted quarter-hour plan (#69/#71)")
+    if schedule['explore_slots']:
+        print('Explore slots: ' + ', '.join(schedule['explore_slots']))
     return 0
 
 

@@ -19,8 +19,10 @@ from unittest import mock
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
+import schedule_plan  # noqa: E402
 import should_fetch  # noqa: E402
 import update_profile  # noqa: E402
+from fetch_strategy import DEFAULT_DAILY_BUDGET, LOCAL_TZ  # noqa: E402
 
 UTC = timezone.utc
 
@@ -513,6 +515,154 @@ class ShouldFetchCliTest(TempDataDirTest):
             self.run_gate('2026-09-25T11:04:00Z', extra=('--dry-run',))
         self.assertNotIn('[explore]', buf.getvalue())
         self.assertIn('due=true', self.github_output().read_text())
+
+
+class TimetableScheduleTest(TempDataDirTest):
+    """Issue #91: the written schedule is an explicit local timetable."""
+
+    def run_profile(self, *extra, now='2026-10-16T18:27:25Z'):
+        self.stations_file(feature('Montréal', 170.0), feature('Estrie', 180.0))
+        rc = update_profile.main(['--data-dir', str(self.data_dir), '--now', now,
+                                  *extra])
+        self.assertEqual(rc, 0)
+        return read_json(self.data_dir / 'fetch-schedule.json')
+
+    def test_the_default_schedule_is_a_local_timetable(self):
+        schedule = self.run_profile()
+        self.assertEqual(schedule['v'], 2)
+        self.assertEqual(schedule['timezone'], LOCAL_TZ)
+        self.assertEqual(schedule['timetable'], schedule_plan.plan_timetable(
+            budget=DEFAULT_DAILY_BUDGET)['timetable'])
+        self.assertEqual(len(schedule['timetable']), DEFAULT_DAILY_BUDGET)
+        self.assertEqual(schedule['budget_per_day'], DEFAULT_DAILY_BUDGET)
+        self.assertEqual(schedule['allocated_per_day'], len(schedule['timetable']))
+        self.assertTrue(schedule['constraints']['satisfied'])
+        self.assertEqual(schedule['constraints']['violations'], [])
+        self.assertEqual(schedule['plan_relearn_after_days'],
+                         schedule_plan.RELEARN_AFTER_DAYS)
+        self.assertIn('01:00', schedule['timetable'])   # the night floor
+        self.assertIn('00:10', schedule['timetable'])   # the daily batch hour
+        self.assertIn('06:20', schedule['timetable'])   # the 20-minute day
+
+    def test_the_legacy_utc_slots_field_is_the_timetable_projection(self):
+        schedule = self.run_profile()
+        # 2026-10-16 is EDT (UTC-4): local 06:00 -> 10:00Z, local 00:00 -> 04:00Z.
+        self.assertEqual(len(schedule['slots']), len(schedule['timetable']))
+        self.assertEqual(schedule['slots'], sorted(schedule['slots']))
+        self.assertIn('10:00', schedule['slots'])
+        self.assertIn('04:00', schedule['slots'])
+
+    def test_the_projection_keeps_the_local_plan_across_the_dst_switch(self):
+        october = self.run_profile(now='2026-10-16T18:27:25Z')
+        november = self.run_profile(now='2026-11-16T18:27:25Z')
+        self.assertEqual(october['timetable'], november['timetable'])
+        # EST is an hour behind EDT in UTC terms: the same local 06:00 slot
+        # lands one hour later in UTC (10:00Z vs 11:00Z).
+        self.assertIn('10:00', october['slots'])
+        self.assertIn('11:00', november['slots'])
+
+    def test_a_budget_below_the_gap_floor_records_the_shortfall(self):
+        schedule = self.run_profile('--budget', '30')
+        self.assertFalse(schedule['constraints']['satisfied'])
+        self.assertEqual(schedule['constraints']['floor_per_day'],
+                         DEFAULT_DAILY_BUDGET)
+        self.assertGreater(schedule['constraints']['shortfall'], 0)
+        # The legacy weighted plan stands so the #69/#71 guarantees survive.
+        self.assertNotIn('timetable', schedule)
+        self.assertEqual(len(schedule['slots']), 30)
+        self.assertEqual(schedule['allocated_per_day'], 30)
+
+    def test_extra_budget_follows_the_learned_exact_channel(self):
+        """E_h comes from ``changed_stations_exact``, re-keyed onto local hours."""
+        hours = {str(h): {'samples': 40, 'observed_hours': 40.0, 'exact_samples': 40,
+                          'changed_stations_exact': 10.0, 'changed_stations': 1e6}
+                 for h in range(24)}
+        hours['16'] = {'samples': 40, 'observed_hours': 40.0, 'exact_samples': 40,
+                       'changed_stations_exact': 5000.0, 'changed_stations': 1e6}
+        write_json(self.data_dir / 'update-profile.json', {'v': 1, 'hours': hours})
+        schedule = self.run_profile('--budget', '71')
+        counts = schedule['hourly_counts']
+        self.assertEqual(sum(int(v) for v in counts.values()), 71)
+        # UTC 16:00 is local 12:00 in October (EDT): the extra slots land there.
+        self.assertEqual(max(counts, key=lambda h: int(counts[h])), '12')
+        self.assertGreater(int(counts['12']), 3)
+        self.assertEqual(schedule['explore_count'], len(schedule['explore_slots']))
+
+    def test_exploration_probes_the_least_observed_hours(self):
+        hours = {str(h): {'samples': 5, 'observed_hours': 0.0,
+                          'changed_stations_exact': 0.0, 'exact_samples': 0}
+                 for h in range(24)}
+        for h in range(24):
+            hours[str(h)]['samples'] = 40
+            hours[str(h)]['observed_hours'] = 40.0
+        # Local 03:00 = UTC 07:00 in October: the only hour never sampled.
+        hours['7']['observed_hours'] = 0.0
+        hours['7']['samples'] = 0
+        write_json(self.data_dir / 'update-profile.json', {'v': 1, 'hours': hours})
+        schedule = self.run_profile()
+        self.assertEqual(schedule['explore_slots'], ['03:00'])
+        self.assertTrue(set(schedule['explore_slots']).issubset(
+            set(schedule['timetable'])))
+
+
+class TimetableGateTest(TempDataDirTest):
+    """The gate reads the local timetable, and stays correct across DST."""
+
+    def schedule(self, **extra):
+        payload = {'v': 2, 'budget_per_day': 1, 'timetable': ['06:00'],
+                   'timezone': LOCAL_TZ, 'slots': ['10:00'],
+                   'explore_slots': [], 'explore_count': 0}
+        payload.update(extra)
+        write_json(self.data_dir / 'fetch-schedule.json', payload)
+
+    def run_gate(self, now, extra=()):
+        return should_fetch.main([
+            '--data-dir', str(self.data_dir), '--now', now,
+            '--event-name', 'schedule',
+            '--github-output', str(self.data_dir / 'gh_output'), *extra])
+
+    def state(self, last_fetch_at):
+        write_json(self.data_dir / 'fetch-state.json',
+                   {'v': 1, 'last_fetch_at': last_fetch_at, 'fetches': 1})
+
+    def test_load_slots_prefers_the_timetable(self):
+        self.schedule()
+        slots, source, explore, timetable, tz = should_fetch.load_slots(self.data_dir)
+        self.assertEqual(source, 'timetable')
+        self.assertEqual(timetable, ['06:00'])
+        self.assertEqual(tz, LOCAL_TZ)
+        self.assertEqual(slots, ['10:00'])
+
+    def test_the_gate_fires_on_the_local_slot_after_the_switch(self):
+        self.schedule()
+        self.state('2026-11-16T10:30:00Z')
+        # 11:03Z is 06:03 local (EST): the 06:00 local slot just passed.
+        self.run_gate('2026-11-16T11:03:00Z')
+        output = (self.data_dir / 'gh_output').read_text()
+        self.assertIn('due=true', output)
+
+    def test_the_gate_does_not_fire_before_the_local_slot(self):
+        self.schedule()
+        self.state('2026-11-16T09:30:00Z')
+        self.run_gate('2026-11-16T10:03:00Z')
+        output = (self.data_dir / 'gh_output').read_text()
+        self.assertIn('due=false', output)
+
+    def test_a_corrupt_timetable_falls_back_to_the_slots_field(self):
+        self.schedule(timetable=['nonsense'])
+        slots, source, explore, timetable, _tz = should_fetch.load_slots(self.data_dir)
+        self.assertEqual(source, 'learned')
+        self.assertEqual(slots, ['10:00'])
+        self.assertEqual(timetable, [])
+
+    def test_the_gate_still_reads_a_pre_91_schedule(self):
+        write_json(self.data_dir / 'fetch-schedule.json',
+                   {'v': 1, 'budget_per_day': 4,
+                    'slots': ['00:00', '11:00', '12:00', '18:00']})
+        slots, source, _explore, timetable, _tz = should_fetch.load_slots(self.data_dir)
+        self.assertEqual(source, 'learned')
+        self.assertEqual(timetable, [])
+        self.assertIn('11:00', slots)
 
 
 if __name__ == '__main__':
