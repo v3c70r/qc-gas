@@ -27,10 +27,12 @@ from fetch_strategy import (  # noqa: E402
     BUDGET_ENV_VAR,
     DEFAULT_DAILY_BUDGET,
     DEFAULT_MAX_AGE_MINUTES,
+    LOCAL_TZ,
     MAX_AGE_ENV_VAR,
     due_decision,
     env_int,
     parse_iso,
+    parse_timetable,
     plan_slots,
     research_prior_weights,
     slot_labels,
@@ -52,19 +54,31 @@ def load_json(path, fallback=None):
 
 
 def load_slots(data_dir, budget=DEFAULT_DAILY_BUDGET):
-    """Daily "HH:MM" slots plus the exploration subset, from the schedule.
+    """The day's plan: ``(slots, source, explore_slots, timetable, tz)``.
+
+    Since issue #91 the schedule carries an explicit *local* ``timetable``
+    (+ ``timezone``); the gate converts it per calendar day so the plan keeps
+    its local shape across the EDT/EST switch. ``slots`` (UTC labels) is still
+    returned because it is the legacy field, and it is the only plan available
+    for schedules written before #91.
 
     Falls back to the research-prior plan (which has no learned profile yet,
     so no exploration slots) when the schedule is missing or corrupt.
     """
     schedule = load_json(Path(data_dir) / SCHEDULE_FILE)
-    slots = (schedule or {}).get('slots')
+    schedule = schedule if isinstance(schedule, dict) else {}
+    timetable = [str(label) for label in (schedule.get('timetable') or [])
+                 if parse_timetable([label])]
+    tz = str(schedule.get('timezone') or LOCAL_TZ)
+    explore = (schedule.get('explore_slots') or [])
+    explore = [str(s) for s in explore] if isinstance(explore, list) else []
+    slots = schedule.get('slots')
+    if timetable:
+        return ([str(s) for s in (slots or [])], 'timetable', explore, timetable, tz)
     if isinstance(slots, list) and slots:
-        explore = (schedule or {}).get('explore_slots')
-        explore = [str(s) for s in explore] if isinstance(explore, list) else []
-        return [str(s) for s in slots], 'learned', explore
+        return ([str(s) for s in slots], 'learned', explore, [], tz)
     slots = slot_labels(plan_slots(research_prior_weights(), budget=budget))
-    return slots, 'research-prior', []
+    return slots, 'research-prior', [], [], tz
 
 
 def write_output(target, due):
@@ -102,7 +116,8 @@ def main(argv=None):
     if now.tzinfo is None:
         now = now.replace(tzinfo=timezone.utc)
 
-    slots, slots_source, explore_slots = load_slots(data_dir, budget=args.budget)
+    slots, slots_source, explore_slots, timetable, tz = load_slots(
+        data_dir, budget=args.budget)
     state = load_json(data_dir / STATE_FILE, {}) or {}
     last_fetch_at = state.get('last_fetch_at')
 
@@ -116,6 +131,7 @@ def main(argv=None):
             max_age_minutes=args.max_age_minutes,
             grace_minutes=args.grace_minutes,
             explore_slots=explore_slots,
+            timetable=timetable, tz=tz,
         )
 
     if due and not args.dry_run:
@@ -133,7 +149,9 @@ def main(argv=None):
             f.write('\n')
 
     write_output(args.github_output, due)
-    print(f'gate [{slots_source}, {len(slots)} slots/day, '
+    plan_desc = (f'{len(timetable)} local slots/day' if timetable
+                 else f'{len(slots)} slots/day')
+    print(f'gate [{slots_source}, {plan_desc}, '
           f'{len(explore_slots)} explore]: {reason}')
     return 0
 

@@ -9,7 +9,7 @@ hammering the upstream Régie Essence server.
 
 import sys
 import unittest
-from datetime import datetime, timedelta, timezone
+from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
@@ -33,11 +33,16 @@ from fetch_strategy import (  # noqa: E402
     env_float,
     env_int,
     exact_channel_ready,
+    format_timetable,
+    gap_caps,
     hour_rates,
     hour_weights,
     learned_mark_orders,
+    local_zone,
+    max_gap_minutes,
     observed_from_stations,
     observed_hour_totals,
+    parse_timetable,
     plan_schedule,
     plan_slots,
     prices_from_row,
@@ -48,10 +53,15 @@ from fetch_strategy import (  # noqa: E402
     research_prior_weights,
     slot_hour_counts,
     slot_index,
+    slot_indices,
     slot_label,
+    spread_offsets,
     station_coord_key,
     station_prices,
     station_regions,
+    timetable_datetimes,
+    timetable_utc_labels,
+    validate_timetable,
 )
 
 UTC = timezone.utc
@@ -202,15 +212,14 @@ class PlanSlotsTest(unittest.TestCase):
         self.assertTrue(set(in_five).issubset({0, 1, 2, 3}))
         self.assertIn(0, in_five)  # the coarse mark always comes first
 
-    def test_default_budget_uses_one_slot_per_hour(self):
-        """At the default budget (24) the plan uses every hourly wake-up (#77)."""
+    def test_a_hourly_budget_still_uses_one_slot_per_hour(self):
+        """An explicit hourly budget keeps the pre-#91 shape (issue #77)."""
         weights = [1 / 24] * 24
         weights[4], weights[5], weights[11] = 0.5, 0.3, 0.2  # a clear learned peak
         total = sum(weights)
         weights = [w / total for w in weights]
-        slots = plan_slots(weights, budget=DEFAULT_DAILY_BUDGET, min_per_hour=1,
-                           max_per_hour=4)
-        self.assertEqual(len(slots), DEFAULT_DAILY_BUDGET)
+        slots = plan_slots(weights, budget=24, min_per_hour=1, max_per_hour=4)
+        self.assertEqual(len(slots), 24)
         # Budget == the hourly floor, so the learned weights cannot prune any
         # hour: every hour keeps exactly one slot (the coarse :00 mark).
         per_hour = [sum(1 for s in slots if s // SLOTS_PER_HOUR == h)
@@ -378,17 +387,18 @@ class EnvFloatTest(unittest.TestCase):
 
 
 class FetchDefaultsTest(unittest.TestCase):
-    """Issue #77: the shipped rhythm follows the *measured* trigger cadence."""
+    """Issue #77 measured the *old* trigger cadence; #91 spends the budget."""
 
-    def test_default_budget_is_one_poll_per_hourly_wake_up(self):
-        # The fallback cron is hourly (`static.yml`), so the day holds 24
-        # wake-ups and the default budget spends exactly one request each.
-        # Sub-hourly crons are throttled away on this repo (measured p50 ~4.3 h
-        # for `*/15`), which is why the sub-hourly cadence comes from the
-        # external `repository_dispatch` trigger instead.
+    def test_default_budget_buys_the_hybrid_timetable(self):
+        # Issue #91: 4.1 days of 15-minute probe observations (#74) show a 121x
+        # spread between the local midnight batch (486 re-priced stations/day)
+        # and the 01:00-05:00 dead zone (4-23/day). The shipped plan spends 65
+        # requests/day on that histogram: busy 06:00-23:00 every 20 min, local
+        # midnight every 10 min and one fetch per hour at night, which reproduces
+        # p90 18 min / stale share 1.2 % on the measured series (criterion: p90
+        # <= 30 min, share <= 5 %).
         self.assertEqual(SLOTS_PER_DAY, 96)
-        self.assertEqual(DEFAULT_DAILY_BUDGET, SLOTS_PER_DAY // SLOTS_PER_HOUR)
-        self.assertEqual(DEFAULT_DAILY_BUDGET, 24)
+        self.assertEqual(DEFAULT_DAILY_BUDGET, 65)
 
     def test_default_freshness_net_is_two_hourly_wakes(self):
         self.assertEqual(DEFAULT_MAX_AGE_MINUTES, 120)
@@ -1113,6 +1123,116 @@ class DueDecisionTest(unittest.TestCase):
                                    explore_slots=['12:00'])
         self.assertTrue(due)
         self.assertIn('[explore]', reason)
+
+
+class LocalTimetableTest(unittest.TestCase):
+    """Issue #91: the plan is a *local* timetable, not a set of UTC hours."""
+
+    def test_gap_caps_are_ten_sixty_and_twenty_minutes(self):
+        caps = gap_caps()
+        self.assertEqual(caps[0], 10)
+        self.assertEqual([caps[h] for h in range(1, 6)], [60] * 5)
+        self.assertEqual([caps[h] for h in range(6, 24)], [20] * 18)
+        self.assertEqual(max_gap_minutes(0), 10)
+        self.assertEqual(max_gap_minutes(4), 60)
+        self.assertEqual(max_gap_minutes(12), 20)
+
+    def test_spread_offsets_are_unique_five_minute_marks(self):
+        for count in range(1, 13):
+            marks = spread_offsets(count)
+            self.assertEqual(len(marks), count)
+            self.assertEqual(len(set(marks)), count)
+            self.assertTrue(all(mark % 5 == 0 for mark in marks), marks)
+            self.assertTrue(all(0 <= mark < 60 for mark in marks), marks)
+        self.assertEqual(spread_offsets(3), [0, 20, 40])
+        self.assertEqual(spread_offsets(6), [0, 10, 20, 30, 40, 50])
+        self.assertEqual(spread_offsets(0), [])
+
+    def test_parse_timetable_drops_what_it_cannot_use(self):
+        self.assertEqual(parse_timetable(['06:00', 'nonsense', '25:00', '07:03']),
+                         [(6, 0)])
+        self.assertEqual(parse_timetable([None, 7]), [])
+
+    def test_validate_timetable_reports_the_problems(self):
+        self.assertEqual(validate_timetable(['00:00', '00:10', '23:55']), [])
+        self.assertEqual(validate_timetable([]),
+                         ['timetable must be a non-empty list of "HH:MM" labels'])
+        self.assertTrue(validate_timetable(['00:03']))
+        self.assertTrue(validate_timetable(['00:10', '00:00']))
+        self.assertTrue(validate_timetable(['00:00', '00:00']))
+
+    def test_format_timetable_sorts_and_dedupes(self):
+        self.assertEqual(format_timetable([(6, 0), (0, 10), (6, 0)]),
+                         ['00:10', '06:00'])
+
+    def test_a_local_timetable_shifts_with_daylight_saving_time(self):
+        """October is EDT (UTC-4), November is EST (UTC-5): 06:00 stays 06:00."""
+        timetable = ['06:00', '00:00']
+        october = timetable_datetimes(date(2026, 10, 16), timetable)
+        november = timetable_datetimes(date(2026, 11, 16), timetable)
+        self.assertEqual([dt.hour for dt in october], [4, 10])
+        self.assertEqual([dt.hour for dt in november], [5, 11])
+        self.assertEqual(timetable_utc_labels(timetable, day=date(2026, 10, 16)),
+                         ['04:00', '10:00'])
+        self.assertEqual(timetable_utc_labels(timetable, day=date(2026, 11, 16)),
+                         ['05:00', '11:00'])
+
+    def test_a_transition_day_keeps_one_unique_instant_per_slot(self):
+        timetable = [f'{h:02d}:{m:02d}' for h in range(24) for m in (0, 30)]
+        for day in (date(2026, 3, 8), date(2026, 11, 1)):
+            instants = timetable_datetimes(day, timetable)
+            self.assertEqual(len(set(instants)), len(instants))
+        spring = [dt.strftime('%H:%M') for dt in
+                  timetable_datetimes(date(2026, 3, 8), ['01:30', '02:00', '02:30', '03:30'])]
+        # 02:00-02:59 never happens locally: those slots are dropped, and the
+        # neighbours are still one hour apart (06:30Z -> 07:30Z).
+        self.assertEqual(spring, ['06:30', '07:30'])
+        fall = [dt.strftime('%H:%M') for dt in
+                timetable_datetimes(date(2026, 11, 1), ['01:00', '02:00'])]
+        # 01:00 happens twice (EDT then EST), so the night floor keeps its
+        # hourly cadence across the fall-back seam.
+        self.assertEqual(fall, ['05:00', '06:00', '07:00'])
+
+    def test_the_schedule_projection_is_the_utc_grid_the_gate_uses(self):
+        timetable = ['00:00', '06:00', '23:40']
+        labels = timetable_utc_labels(timetable, day=date(2026, 10, 16))
+        self.assertEqual(labels, ['03:40', '04:00', '10:00'])
+        self.assertEqual({i // SLOTS_PER_HOUR for i in slot_indices(labels)},
+                         {3, 4, 10})
+
+    def test_a_gated_slot_fires_at_the_local_time_after_the_switch(self):
+        timetable = ['06:00']
+        # 2026-11-16 11:03Z = 06:03 local (EST) -> the 06:00 slot just passed.
+        now = datetime(2026, 11, 16, 11, 3, tzinfo=UTC)
+        due, reason = due_decision(now, [], datetime(2026, 11, 16, 10, 30, tzinfo=UTC),
+                                   timetable=timetable)
+        self.assertTrue(due, reason)
+        # ...and one hour earlier (05:03 local) it is not due yet.
+        due, reason = due_decision(datetime(2026, 11, 16, 10, 3, tzinfo=UTC), [],
+                                   datetime(2026, 11, 16, 9, 30, tzinfo=UTC),
+                                   timetable=timetable)
+        self.assertFalse(due, reason)
+        self.assertIn('local', reason)
+
+    def test_the_gate_keeps_the_legacy_utc_behaviour_without_a_timetable(self):
+        due, reason = due_decision(at(11, 4), ['11:00'], at(10, 30))
+        self.assertTrue(due, reason)
+        due, reason = due_decision(at(10, 4), ['11:00'], at(9, 30))
+        self.assertFalse(due, reason)
+        self.assertIn('UTC', reason)
+
+    def test_a_local_explore_label_is_tagged(self):
+        due, reason = due_decision(at(11, 4), [], at(10, 30),
+                                   timetable=['06:00', '07:00'],
+                                   explore_slots=['07:00'])
+        self.assertTrue(due, reason)
+        self.assertIn('[explore]', reason)
+
+    def test_an_unknown_timezone_falls_back_to_utc(self):
+        self.assertEqual(str(local_zone('Not/AZone')), 'UTC')
+        self.assertEqual(timetable_utc_labels(['06:00'], tz='Not/AZone',
+                                              day=date(2026, 10, 16)),
+                         ['06:00'])
 
 
 if __name__ == '__main__':

@@ -14,11 +14,13 @@ requests around those windows — without hammering the Régie serveur.
 
 | Piece | File | Role |
 | --- | --- | --- |
-| Pure strategy logic | `scripts/fetch_strategy.py` | weights, slot planning, diffing, gate decision |
+| Pure strategy logic | `scripts/fetch_strategy.py` | weights, local timetable helpers, slot planning, diffing, gate decision |
+| Timetable planner | `scripts/schedule_plan.py` | greedy water-level allocation under the gap caps + the cross-day median E_h |
+| Timetable evaluator | `scripts/schedule_eval.py` | staleness (p50/p90/p99, stale share) of an arbitrary timetable, jitter-corrected |
 | Learner / planner (CLI) | `scripts/update_profile.py` | diff new snapshot → update profile → rewrite schedule |
 | Workflow gate (CLI) | `scripts/should_fetch.py` | decide whether *this* workflow run may download |
 | Learned data | `data/update-profile.json` | per-hour change statistics — global, per region and per quarter-hour mark |
-| Derived plan | `data/fetch-schedule.json` | concrete daily UTC poll slots (+ pinned region hours) |
+| Derived plan | `data/fetch-schedule.json` | explicit local timetable (+ UTC slot projection, pinned region hours) |
 | Gate state | `data/fetch-state.json` | last actual fetch timestamp |
 | Tests | `scripts/test_fetch_strategy.py`, `scripts/test_fetch_pipeline.py` | unit + CLI coverage |
 
@@ -250,6 +252,170 @@ The committed `data/update-profile.json` predates the regional block and has
 exact counters for only part of the day (hours 06/08/15), so the schedule keeps
 using the legacy path until the exact channel covers every observed hour.
 
+## Measured update histogram and the hybrid timetable (issue #91)
+
+#76 answered "how stale is *too* stale"; #74's probe then made the *when*
+measurable: after 4.1 days / 396 rounds of 15-minute observations (419 points,
+~20 400 exact per-station re-prices) the local (America/Toronto) hourly volume
+spans **121x**.
+
+Per-local-hour **median across days** of exact re-priced stations
+(`changed_stations_exact`口径 — one count per pump that really moved):
+
+| local hour | re-prices/day | local hour | re-prices/day | local hour | re-prices/day |
+| --- | --- | --- | --- | --- | --- |
+| **00:00** | **560** | 08:00 | 254 | 16:00 | 290 |
+| 01:00 | **8** | 09:00 | 203 | 17:00 | 190 |
+| 02:00 | **4** | 10:00 | 194 | 18:00 | 96 |
+| 03:00 | **12** | 11:00 | 200 | 19:00 | 85 |
+| 04:00 | **9** | 12:00 | 340 | 20:00 | 67 |
+| 05:00 | **24** | 13:00 | 247 | 21:00 | 36 |
+| 06:00 | 107 | 14:00 | 224 | **22:00** | **193** |
+| 07:00 | 224 | 15:00 | 375 | 23:00 | 70 |
+
+Reproduce it (the cross-day median is what the planner eats):
+
+```bash
+python3 scripts/schedule_plan.py --root . --budget 65 --json   # E_h + plan
+```
+
+**Why the median, not the mean.** 2026-10-15 15:00 saw a brand-wide repricing
+(1859 stations moved, ~5x the usual volume) and 19:00 another one (1510); a mean
+would let one day pull the whole plan. The median is also why the *legacy*
+`changed_stations` counter is banned here: it counts "changes since the previous
+observation", so it inflates as sampling gets sparser — that is where the old
+"1.65x contrast" came from. Only `changed_stations_exact` is used.
+
+### Three measured conclusions that pick the design
+
+1. **"Never fetch overnight" is wrong.** 01:00-05:00 carries ~1.5 % of the day's
+   re-prices, but each one used to go stale for hours, and staleness is
+time-weighted:
+
+   | night policy (01:00-05:00) | fetches/day | p99 stale | stale share |
+   | --- | --- | --- | --- |
+   | all off | 60 | **198.9 min** | **1.81 %** |
+   | 1/hour (shipped) | 65 | **22.6 min** | **1.20 %** |
+
+   Five fetches a day remove a 200-minute worst case and cut the time-weighted
+   staleness by a third — the best value per request in the whole plan.
+2. **Pure intensity weighting is not better at the same budget.** Spending the
+   budget proportionally to `E_h` improves p50 but pushes the night interval to
+   1-3 h, which *worsens* p90/p99: the dominant term of staleness is the
+   **largest gap**, not the average density.
+3. **Hence a hybrid: fixed cadence in the busy window + a night floor.** The
+   measured Pareto table (jitter-corrected, whole 4.7-day window, fixed seed):
+
+   | plan | fetches/day | p50 | p90 | p99 | stale share |
+   | --- | --- | --- | --- | --- | --- |
+   | old production: uniform 60 min | 24 | 33.0 min | 55.4 min | 59.5 min | 3.96 % |
+   | uniform 30 min | 48 | 17.2 min | 27.4 min | 29.7 min | 1.94 % |
+   | busy 30 min + night 1/h + midnight 10 min | 47 | 14.5 min | 27.1 min | 29.9 min | 1.79 % |
+   | **busy 20 min + night 1/h + midnight 10 min** | **65** | **9.4 min** | **18.1 min** | **22.6 min** | **1.20 %** |
+   | busy 15 min + night 1/h + midnight 10 min | 83 | 7.4 min | 13.7 min | 22.6 min | 0.94 % |
+   | uniform 15 min | 96 | 7.5 min | 13.5 min | 14.9 min | 0.92 % |
+   | night blackout (no 01:00-05:00) | 60 | 9.4 min | 18.5 min | **198.9 min** | 1.81 % |
+
+   The shipped 65/day plan reaches the same p90 as a uniform 20-minute grid
+   (72/day) with ~10 % fewer requests, is **three times fresher at p90 than the
+   old 24/day hourly plan**, and meets the #76 criterion (p90 ≤ 30 min,
+   stale share ≤ 5 %). Train (60 %) / test (40 %) splits reproduce the ordering.
+
+   The table is read *under a budget*: a denser uniform grid still wins on raw
+   staleness (96/day uniform 15 min beats everything above), and `--table`
+   prints the ε-Pareto `dominated by ...` marker next to each plan so the
+   comparison stays honest. What the hybrid buys is the **tail at a workable
+   request count** — the night floor keeps p99 at 22.6 min where a blackout
+   leaves 198.9 min, at five requests/day.
+
+```bash
+python3 scripts/schedule_eval.py --table                 # the table above
+python3 scripts/schedule_eval.py --split test --table     # out-of-sample
+python3 scripts/schedule_eval.py --plan busy20+night+midnight --json
+python3 scripts/schedule_eval.py --timetable 06:00,06:20,06:40,... --json
+```
+
+`schedule_eval.py` keeps the #76 metric口径 (`next fetch >= change time`,
+`share = Σ lag / (stations × window seconds)`) and adds the
+detection-quantisation switch: with `--jitter` (default) the analysed change
+time is `detected - U(0, 15 min)` with a fixed seed, because the probe can only
+locate a re-price to the observation that first saw the new price. That
+correction is what makes the 30-minute grid honest (p90 22.6 → 27.4 min, still
+inside the 30-minute criterion but with only 2.6 min of margin), and
+`compare_plans()` / `verdict()` reject a blackout plan automatically (ε-Pareto
+over p90/p99/share, plus the published criterion).
+
+### The timetable
+
+`data/fetch-schedule.json` (v2) now carries the plan explicitly, in local time
+and on a 5-minute grid:
+
+```json
+{
+  "v": 2,
+  "timezone": "America/Toronto",
+  "timetable": ["00:00", "00:10", "...", "05:00", "06:00", "06:20", "...", "23:40"],
+  "timetable_fetches_per_day": 65,
+  "hourly_counts": {"0": 6, "1": 1, "...", "12": 3, "...": "..."},
+  "hourly_gap_minutes": {"0": 10.0, "5": 60.0, "12": 20.0, "...": "..."},
+  "max_gap_minutes": {"0": 10, "1": 60, "...", "12": 20, "...": "..."},
+  "constraints": {"satisfied": true, "budget_per_day": 65, "floor_per_day": 65,
+                  "slack": 0, "shortfall": 0, "min_gap_minutes": 5, "violations": []},
+  "plan_relearn_after_days": 7,
+  "slots": ["00:00", "00:20", "...", "23:40"],
+  "explore_slots": ["08:00", "08:20", "..."]
+}
+```
+
+* **06:00-23:00 every 20 min**, **local 00:00 every 10 min** (the daily batch),
+  **01:00-05:00 hourly** — 65 requests/day, and the largest scheduled gap is
+  60 min.
+* The hard caps are `gap_caps()`: 10 min at local midnight, 60 min at night,
+  20 min otherwise; `hourly_floor()` turns them into at least 1/3/6 fetches per
+  hour, which sums to exactly 65 — the floor *is* the recommendation at the
+  default budget. A larger budget is water-filled into the busiest hours by the
+  marginal gain `E_h / (n_h + 1)`, the discrete form of
+  `E_h·(gap_old - gap_new)/gap_old`; a smaller one keeps the weighted
+  quarter-hour plan and records `constraints.satisfied = false` + the shortfall,
+  because the caps cannot be met at all below 65.
+* **Backward compatibility.** The pre-#91 fields (`slots`, `hour_weights`,
+  `coverage_hours`, `region_coverage`, `explore_*`, `budget_per_day`) are kept:
+  `slots` is now the timetable's **UTC projection** for the day it was written,
+  so anything that only understands the old file keeps working. The gate
+  prefers `timetable` + `timezone` when present, which is also what makes it
+  DST-correct: the plan is local, so the 06:00 slot is still 06:00 after the
+  EDT→EST switch (`timetable_datetimes()` converts per calendar day; the
+  spring-forward hour that never happens is skipped and the fall-back hour is
+  emitted once per offset, so the instants stay unique).
+* **ε-exploration (#69) is kept**, inside the constraints: probes are the plan's
+  slots in the hours whose accumulated `observed_hours` is *below the median*,
+  labelled `explore_slots` so the gate tags them `[explore]`. Because the
+  timetable floor polls every hour at least once, exploration can no longer
+  *reach* an unsampled hour by adding a request; it decides *where* the ε share
+  lands, and it can never break a gap cap.
+* **Re-learning.** `update_profile.py` rewrites the timetable on every fetch from
+  the profile's counted channel (cheap, no git). The measured, cross-day-median
+  version is rebuilt offline:
+
+  ```bash
+  python3 scripts/schedule_plan.py --root . --budget 65 \
+      --schedule-path data/fetch-schedule.json
+  ```
+
+  Run it **weekly** (`plan_relearn_after_days`, default 7), after a reported
+  staleness regression, or whenever `docs/fetch-interval-report.md` is
+  regenerated: a week is ~11 000 exact re-prices here, which is enough to see a
+  seasonal drift while staying robust to one brand-wide repricing day.
+
+> **Activation note.** The *plan* default is 65 requests/day, but the workflow
+> env still pins `FETCH_DAILY_BUDGET: '24'` (issue #77 coupled it to the hourly
+> fallback cron). With that override the planner keeps the sub-floor weighted
+> plan and the timetable is not written. Raising the env to 65 is the external
+> scheduler's call (the `repository_dispatch` cadence is the real executor of a
+> sub-hourly plan) and is tracked outside this issue; the committed
+> `data/fetch-schedule.json` already carries the 65/day timetable, which is what
+> `should_fetch.py` reads.
+
 ## Initial windows (researched, `RESEARCH_PRIOR`)
 
 The issue explicitly allows seeding the first windows with what is publicly
@@ -274,6 +440,14 @@ Real observations replace it automatically — nothing else needs to be edited.
 
 ## From weights to a bounded schedule
 
+The 24 weight slots are the fallback. Since issue #91 the shipped plan is an
+explicit **local timetable** (next section): an hour-by-hour fetch list in
+`America/Toronto` with hard gap caps, allocated by a greedy water-level method
+over the measured per-local-hour change volume. `plan_schedule(...)` below is
+still what a *deliberately reduced* budget produces (below the 65/day gap
+floor, where the hard caps are mathematically unreachable) and keeps its #69/#71
+guarantees.
+
 `plan_schedule(weights, budget, min_per_hour=1, max_per_hour=4,
 observed_hours=<profile>, explore_frac=0.15, coverage_hours=<region peaks>,
 mark_orders=<learned marks>)` picks quarter-hour UTC slots:
@@ -296,21 +470,21 @@ mark_orders=<learned marks>)` picks quarter-hour UTC slots:
    (:func:`learned_mark_orders`) or the coarse-first default `:00`, `:30`,
    `:15`, `:45`;
 5. `budget` is the hard **maximum upstream downloads per day** from the
-   *scheduled plan* (default **24** = one request per hourly wake-up, i.e. the
-   hourly fallback cron's capacity; override with the `FETCH_DAILY_BUDGET` env
-   var or `--budget`). Below 24 the learned weights decide which slots survive;
-   at 24 the budget equals the hourly floor, so the plan is one slot per hour
-   (00:00, 01:00, …) and both the ε share and the pins have no slack left —
-   hour coverage now comes from the uniform external trigger instead (issue
-   #77). `plan_slots(...)` is the exploration-free wrapper
-   used where there is no learned profile yet.
+   *scheduled plan* (default **65**, see the timetable section below; override
+   with the `FETCH_DAILY_BUDGET` env var or `--budget`). Below 24 the learned
+   weights decide which slots survive; at 24 the budget equals the hourly floor,
+   so the plan is one slot per hour (00:00, 01:00, …) and both the ε share and
+   the pins have no slack left — hour coverage then comes from the uniform
+   external trigger instead (issue #77). `plan_slots(...)` is the
+   exploration-free wrapper used where there is no learned profile yet.
 
 Sub-hourly cadence is **not** the plan's job any more: it comes from the
 external `repository_dispatch` trigger, which the gate treats as "fetch
 unconditionally" and which does not consume this budget (see
 [Fetch rhythm](#fetch-rhythm-vs-upstream-regeneration)).
 
-Example output (`data/fetch-schedule.json`):
+Example output of the *sub-floor* fallback (`data/fetch-schedule.json` at
+`--budget 24`):
 
 ```json
 {
@@ -338,8 +512,8 @@ merge fills both, exactly like the exact counters of #68.
 
 `explore_slots` is a subset of `slots` (never a duplicate); `should_fetch.py`
 uses it to tag a due hit with `[explore]` in its output, so each poll is
-attributable to exploration or exploitation (issue #69). At the shipped budget
-of 24 it is empty by design (the budget only covers the hourly floor).
+attributable to exploration or exploitation (issue #69). At a budget of 24 it is
+empty by design (the budget only covers the hourly floor).
 
 The plan is rebuilt on every successful fetch. `hour_weights()` uses cumulative
 counters, so the schedule reflects the whole observed history rather than a
@@ -417,13 +591,29 @@ sparser (one dropped run eats two hours of freshness).
 `python3 -m unittest scripts.test_trigger_interval_report` fails when they
 drift apart.
 
+Since #91 the *constant* fallback differs from the coupled env value: the code
+default is `DEFAULT_DAILY_BUDGET = 65`, the measured hybrid plan
+(`schedule_plan.py`), while `.github/workflows/update-data.yml` still pins 24.
+The timetable is written whenever the effective budget funds the 65/day gap
+floor; raising the workflow env (external scheduler, tracked outside #91) is what
+switches production over from the sub-floor weighted plan.
+
 `data/fetch-schedule.json` is derived state: its `budget_per_day` only follows
 the env var after the **next successful fetch** rewrites it
 (`update_profile.py`). Until then it keeps the old budget — if the file and the
-env disagree, the gate still uses the file's `slots`, so no manual edit is
-needed. To rebuild it immediately from the committed profile (no network, no
-new observation recorded), re-run the planner over the committed profile with
-the new budget, e.g.:
+env disagree, the gate still uses the file's plan (the local `timetable` when
+present, else `slots`), so no manual edit is needed. To rebuild it immediately
+from the committed profile (no network, no new observation recorded), re-run the
+planner over the committed profile with the new budget, e.g.:
+
+```bash
+python3 scripts/schedule_plan.py --root . --budget 65 \
+    --schedule-path data/fetch-schedule.json    # measured, cross-day medians
+python3 scripts/schedule_plan.py --profile data/update-profile.json --budget 65 \
+    --schedule-path data/fetch-schedule.json    # from the live profile instead
+```
+
+The older offline rebuild (sub-floor weighted plan, kept for reproducers):
 
 ```bash
 python3 - <<'PY'
@@ -515,7 +705,8 @@ the minimal PAT scope live in
 
 | Situation | Upstream downloads/day |
 | --- | --- |
-| default plan | ≤ 24 (one per hourly fallback wake-up) |
+| default plan | ≤ 65 (the shipped hybrid timetable, issue #91) |
+| sub-floor env (`FETCH_DAILY_BUDGET=24`, current workflow env) | ≤ 24 (one per hourly fallback wake-up) |
 | external trigger (dispatch) | ≤ 48 at a 30-minute cadence, unbounded by the plan but bounded by the external cron |
 | empty/corrupt schedule | ≤ 12 from the freshness net (one every 120 min) |
 | code pushes (`push` event) | unbounded by the plan, but only as often as humans push |

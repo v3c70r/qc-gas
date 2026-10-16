@@ -36,23 +36,46 @@ The only environment touch is :func:`env_int`, which resolves the shared
 
 import os
 from datetime import datetime, timedelta, timezone
+from zoneinfo import ZoneInfo
 
 SLOT_MINUTES = 15
 SLOTS_PER_HOUR = 60 // SLOT_MINUTES          # 4 quarter-hour marks
 SLOTS_PER_DAY = 24 * SLOTS_PER_HOUR          # 96 slots
 
+# ── Local timetable (issue #91) ──────────────────────────────────────────────
+# The plan used to be a set of *UTC* hours, which quietly moved the local
+# window every time the province switched between EDT and EST. The plan is now
+# an explicit list of *local* times ("HH:MM", 5-minute granularity) in
+# ``LOCAL_TZ``; :func:`due_decision` and the schedule writer convert it per day,
+# so a 06:00 slot stays 06:00 after the November switch.
+LOCAL_TZ = 'America/Toronto'
+TIMETABLE_GRANULARITY_MINUTES = 5
+# Hard per-hour gap caps of the recommended timetable (issue #91): the busy day
+# is polled at most every 20 min, local midnight (where the daily batch lands)
+# every 10 min, and 01:00-05:00 every 60 min. The night floor is *not* optional:
+# switching those five fetches off doubles the time-weighted staleness and puts
+# a ~200 min worst case on a 4 % slice of the day.
+DEFAULT_MAX_GAP_MINUTES = 10
+DEFAULT_NIGHT_GAP_MINUTES = 60
+DEFAULT_DAY_GAP_MINUTES = 20
+MIDNIGHT_HOUR = 0
+NIGHT_FIRST_HOUR = 1
+NIGHT_LAST_HOUR = 5
+
 # Max upstream downloads per day *from the scheduled plan*. The upstream Régie
-# Essence snapshot is regenerated every 5 minutes on the quarter-hour grid
-# (measured on 2026-10-11: metadata.generated_at went 04:45:01 -> 04:50:01 ->
-# 04:55:01), but GitHub throttles our `schedule` so hard that sub-hourly crons
-# buy nothing: measured over 15 days (issue #77) the `*/15` cron actually ran
-# every ~4.3 h (p50) and even the old hourly cron only every ~2 h. The fallback
-# cron is therefore hourly and this budget equals its wake-up count (24), so the
-# plan can never out-run the trigger that executes it (`static.yml`,
-# `update-data.yml`). The sub-hourly cadence comes from the external
-# `repository_dispatch` trigger, which the gate treats as "fetch
-# unconditionally" and which does not consume this budget.
-DEFAULT_DAILY_BUDGET = 24
+# Essence snapshot is regenerated every 5 minutes (measured on 2026-10-11:
+# metadata.generated_at went 04:45:01 -> 04:50:01 -> 04:55:01) and issue #91
+# re-measured the *when*: after 4.1 days / 396 probe rounds the per-local-hour
+# change volume spans 4 (01:00-05:00) to 486 (00:00) re-priced stations per
+# day, i.e. a 121x dynamic range. The recommended hybrid timetable spends 65
+# requests/day (busy 20 min + midnight 10 min + night 1/h) and reaches p90 18
+# min / stale share 1.2 % on the measured series, inside the published
+# criterion (p90 <= 30 min, share <= 5 %) - see docs/fetch-strategy.md.
+# GitHub throttles our `schedule` so hard that sub-hourly crons buy nothing
+# (measured over 15 days, issue #77: `*/15` ran every ~4.3 h), so this budget is
+# only *executed* in full thanks to the external `repository_dispatch` trigger;
+# the hourly fallback cron still catches up through the freshness net below.
+DEFAULT_DAILY_BUDGET = 65
 # Freshness safety net: force a poll when the last one is older than this. Two
 # hourly wake-ups = the net only fires after two consecutive wakes were dropped,
 # so it can neither be denser than the plan nor sparser than it (issue #77).
@@ -210,6 +233,169 @@ def slot_datetimes(day, slots):
             continue
         out.append(start + timedelta(hours=hour, minutes=minute))
     return out
+
+
+# ── Local timetable helpers (issue #91) ──────────────────────────────────────
+
+def local_zone(tz=LOCAL_TZ):
+    """``ZoneInfo`` for ``tz``, falling back to UTC for an unknown name.
+
+    A typo in the schedule must never wedge the gate: an unknown zone degrades
+    to UTC (the pre-#91 behaviour) instead of raising.
+    """
+    if isinstance(tz, ZoneInfo):
+        return tz
+    try:
+        return ZoneInfo(str(tz or LOCAL_TZ))
+    except (ValueError, KeyError, TypeError):
+        return ZoneInfo('UTC')
+
+
+def parse_timetable(labels, granularity=TIMETABLE_GRANULARITY_MINUTES):
+    """``[(hour, minute)]`` for a list of local "HH:MM" labels.
+
+    Tolerant on purpose (the gate reads whatever is committed): malformed
+    entries, out-of-range times and off-granularity marks are dropped rather
+    than raising. Use :func:`validate_timetable` to *report* them.
+    """
+    out = []
+    for label in labels or ():
+        try:
+            hour, minute = (int(part) for part in str(label).split(':'))
+        except (ValueError, AttributeError):
+            continue
+        if not (0 <= hour < 24 and 0 <= minute < 60):
+            continue
+        if granularity and minute % int(granularity):
+            continue
+        out.append((hour, minute))
+    return out
+
+
+def validate_timetable(labels, granularity=TIMETABLE_GRANULARITY_MINUTES):
+    """Problems that make ``labels`` unusable as a timetable (empty = ok)."""
+    problems = []
+    if not isinstance(labels, (list, tuple)) or not labels:
+        return ['timetable must be a non-empty list of "HH:MM" labels']
+    seen = set()
+    for label in labels:
+        marks = parse_timetable([label])
+        if len(marks) != 1:
+            problems.append(f'{label!r} is not an "HH:MM" mark on the '
+                            f'{granularity}-minute grid')
+            continue
+        if marks[0] in seen:
+            problems.append(f'{label!r} is duplicated')
+        seen.add(marks[0])
+    if list(labels) != sorted(labels):
+        problems.append('timetable must be sorted')
+    return problems
+
+
+def format_timetable(marks):
+    """``[(hour, minute)]`` -> sorted unique ``["HH:MM"]`` local labels."""
+    return [f'{int(hour):02d}:{int(minute):02d}'
+            for hour, minute in sorted(set((int(h), int(m)) for h, m in marks))]
+
+
+def spread_offsets(count, granularity=TIMETABLE_GRANULARITY_MINUTES,
+                   hour_minutes=60):
+    """``count`` evenly spread in-hour offsets on the ``granularity`` grid.
+
+    ``count=3`` over an hour gives ``[0, 20, 40]`` (the 20-minute day cadence),
+    ``count=6`` gives ``[0, 10, ..., 50]`` and ``count=1`` gives ``[0]``. With
+    at most ``hour_minutes / granularity`` slots (12) the snapped offsets are
+    always distinct.
+    """
+    count = int(count)
+    if count <= 0:
+        return []
+    step = hour_minutes / count
+    marks = sorted({min(int(round(i * step / granularity) * granularity),
+                        hour_minutes - granularity)
+                    for i in range(count)})
+    return marks
+
+
+def timetable_datetimes(day, timetable, tz=LOCAL_TZ):
+    """UTC datetimes for one *local* calendar day of the timetable.
+
+    ``day`` is a local :class:`datetime.date`; the conversion goes through the
+    IANA database, so the EDT->EST switch shifts the UTC instants by an hour
+    while the local plan stays exactly where it was (issue #91). On the
+    spring-forward day the one hour that never happens locally is skipped (its
+    slot has no instant); on the fall-back day the repeated hour is emitted
+    twice, once per offset, so the night floor keeps its hourly cadence. The
+    returned list is sorted by instant and always duplicate-free.
+    """
+    zone = local_zone(tz)
+    out = []
+    for hour, minute in parse_timetable(timetable):
+        local = datetime(day.year, day.month, day.day, hour, minute, tzinfo=zone)
+        out.extend(_local_instants(local, zone))
+    return sorted(set(out))
+
+
+def _local_instants(local, zone):
+    """UTC instants of a local wall time, handling DST gaps and repetitions."""
+    first = local.replace(fold=0).astimezone(timezone.utc)
+    if local.replace(fold=1).utcoffset() == local.replace(fold=0).utcoffset():
+        return [first]
+    if first.astimezone(zone).replace(tzinfo=None) != local.replace(tzinfo=None):
+        # The wall time never happened (spring forward): no instant to schedule.
+        return []
+    return [first, local.replace(fold=1).astimezone(timezone.utc)]
+
+
+def timetable_utc_labels(timetable, tz=LOCAL_TZ, day=None):
+    """The timetable's UTC "HH:MM" projection for one local day.
+
+    Kept for the legacy consumers (and for eyeballing the plan in the audit
+    JSON); the gate itself uses :func:`timetable_datetimes` so it stays correct
+    across a DST switch, where this fixed-label projection does not.
+    """
+    zone = local_zone(tz)
+    if day is None:
+        day = datetime.now(timezone.utc).astimezone(zone).date()
+    if isinstance(day, datetime):
+        day = day.date()
+    # Sorted as labels, not as instants: the schedule's ``slots`` field is the
+    # legacy, lexicographically-ordered projection the gate used to read.
+    return sorted(dt.strftime('%H:%M')
+                  for dt in timetable_datetimes(day, timetable, tz))
+
+
+def local_label(dt, tz=LOCAL_TZ):
+    """"HH:MM" label of an instant in the plan's local timezone."""
+    return dt.astimezone(local_zone(tz)).strftime('%H:%M')
+
+
+def gap_caps(midnight=DEFAULT_MAX_GAP_MINUTES, night=DEFAULT_NIGHT_GAP_MINUTES,
+             day=DEFAULT_DAY_GAP_MINUTES):
+    """``{local hour: hard max gap in minutes}`` for the whole day."""
+    caps = {hour: int(day) for hour in range(24)}
+    caps[MIDNIGHT_HOUR] = int(midnight)
+    for hour in range(NIGHT_FIRST_HOUR, NIGHT_LAST_HOUR + 1):
+        caps[hour] = int(night)
+    return caps
+
+
+def max_gap_minutes(hour, midnight=DEFAULT_MAX_GAP_MINUTES,
+                    night=DEFAULT_NIGHT_GAP_MINUTES,
+                    day=DEFAULT_DAY_GAP_MINUTES):
+    """Hard max gap (minutes) allowed *inside* local ``hour``."""
+    return gap_caps(midnight, night, day)[int(hour) % 24]
+
+
+def slot_indices(labels):
+    """UTC "HH:MM" labels -> their 0..95 quarter-hour slot indices.
+
+    Lossy on purpose: it exists for the legacy per-hour consumers (region
+    coverage, audit) that think in quarter-hour UTC slots, so a 5-minute mark
+    collapses onto its quarter hour.
+    """
+    return sorted({int(hour) * SLOTS_PER_HOUR + int(minute) // SLOT_MINUTES
+                   for hour, minute in parse_timetable(labels)})
 
 
 # ── Observation / diffing ────────────────────────────────────────────────────
@@ -945,10 +1131,15 @@ def slot_labels(slots):
 
 def due_decision(now, slots, last_fetch_at, *, min_gap_minutes=10,
                  max_age_minutes=DEFAULT_MAX_AGE_MINUTES, grace_minutes=45,
-                 explore_slots=None):
+                 explore_slots=None, timetable=None, tz=LOCAL_TZ):
     """Should this workflow run poll upstream right now?
 
-    ``slots`` is a daily list of "HH:MM" UTC labels. The decision:
+    ``slots`` is a daily list of "HH:MM" UTC labels (the legacy plan). When
+    ``timetable`` is given (issue #91) the plan is read as *local* times in
+    ``tz`` instead, converted per calendar day, so the scheduled window does not
+    drift when the province switches between EDT and EST.
+
+    The decision:
 
     1. no previous fetch            -> fetch (bootstrap)
     2. fetched less than min_gap ago -> skip (overlapping triggers)
@@ -975,9 +1166,16 @@ def due_decision(now, slots, last_fetch_at, *, min_gap_minutes=10,
         return False, (f'min gap: fetched {age_minutes:.0f} min ago '
                        f'(< {min_gap_minutes} min)')
 
+    local_plan = bool(parse_timetable(timetable or ()))
     candidates = []
-    for day_offset in (0, -1):
-        candidates.extend(slot_datetimes((now + timedelta(days=day_offset)).date(), slots))
+    if local_plan:
+        today = now.astimezone(local_zone(tz)).date()
+        for day_offset in (0, -1):
+            candidates.extend(timetable_datetimes(today + timedelta(days=day_offset),
+                                                  timetable, tz))
+    else:
+        for day_offset in (0, -1):
+            candidates.extend(slot_datetimes((now + timedelta(days=day_offset)).date(), slots))
 
     served = [t for t in candidates
               if last_fetch_at < t <= now and (now - t).total_seconds() / 60.0 <= grace_minutes]
@@ -986,7 +1184,11 @@ def due_decision(now, slots, last_fetch_at, *, min_gap_minutes=10,
         lag = (now - latest).total_seconds() / 60.0
         label = latest.strftime('%H:%M')
         probes = {str(s) for s in (explore_slots or ())}
-        tag = ' [explore]' if label in probes else ''
+        tag = ''
+        if label in probes or (local_plan and local_label(latest, tz) in probes):
+            # The timetable's probes are local labels; the UTC projection moves
+            # them by an hour twice a year, so match on either spelling.
+            tag = ' [explore]'
         return True, f'slot {label}{tag} due ({lag:.0f} min ago)'
 
     if age_minutes > max_age_minutes:
@@ -995,5 +1197,6 @@ def due_decision(now, slots, last_fetch_at, *, min_gap_minutes=10,
 
     nxt = sorted(t for t in candidates if t > now)
     if nxt:
-        return False, f'not due: next slot {nxt[0].strftime("%H:%M")} UTC'
+        zone_name = ' local' if local_plan else ' UTC'
+        return False, f'not due: next slot {nxt[0].strftime("%H:%M")}{zone_name}'
     return False, 'not due: no slots scheduled'
