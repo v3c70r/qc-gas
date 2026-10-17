@@ -239,6 +239,59 @@ class ProbeEventLogTest(unittest.TestCase):
         self.assertEqual(metrics['events'], 1)
         self.assertEqual(metrics['p90'], 1800.0)
 
+    def test_a_split_window_partitions_the_explicit_events_by_time(self):
+        """Review #101: `--events-file` + `--split` must not double-count events.
+
+        The explicit event list is one flat series; each half of the split may
+        only see the events that fall inside its own [window_start, window_end],
+        exactly as the git path re-derives them from its observation slice.
+        Sharing the boundary snapshot is intentional (both halves keep it), so an
+        event stamped exactly at the cut instant belongs to both.
+        """
+        observations = [{'at': at(0) + timedelta(minutes=15 * i),
+                         'prices': {'1.00000,1.00000': {'g': 150.0}}}
+                        for i in range(6)]  # 00:00 -> 01:15
+        events = [
+            {'at': at(0) + timedelta(minutes=16), 'key': 'early', 'fuels': ['g'],
+             'region': 'Montréal', 'brand': 'Test'},
+            {'at': at(1) + timedelta(minutes=16), 'key': 'late', 'fuels': ['g'],
+             'region': 'Montréal', 'brand': 'Test'},
+        ]
+        full = schedule_eval.build_window(observations, events=events)
+        self.assertEqual([event['key'] for event in full['events']],
+                         ['early', 'late'])
+
+        train, test = schedule_eval.split_window(full, fraction=0.6)
+        self.assertEqual(train['split'], 'train')
+        self.assertEqual(test['split'], 'test')
+        # train ends at the shared boundary snapshot (01:00), test starts there.
+        self.assertEqual([event['key'] for event in train['events']], ['early'])
+        self.assertEqual([event['key'] for event in test['events']], ['late'])
+        # ...so the per-window metric counts are the partitioned ones.
+        self.assertEqual(schedule_eval.simulate_timetable(
+            ['00:30', '01:30'], train, tz=ZoneInfo('UTC'))['events'], 1)
+        self.assertEqual(schedule_eval.simulate_timetable(
+            ['00:30', '01:30'], test, tz=ZoneInfo('UTC'))['events'], 1)
+
+    def test_a_derived_split_matches_the_explicit_one(self):
+        """Same observations, no event log: the partition must agree."""
+        def row(moment, price):
+            return {'at': moment, 'prices': {'1.00000,1.00000': {'g': price}}}
+
+        observations = [row(at(0) + timedelta(minutes=15 * i), price)
+                        for i, price in enumerate([150, 150, 151, 151, 151, 152])]
+        derived = schedule_eval.split_window(
+            schedule_eval.build_window(observations), fraction=0.6)
+        explicit = schedule_eval.split_window(
+            schedule_eval.build_window(observations,
+                                       events=schedule_eval.change_events(
+                                           observations)),
+            fraction=0.6)
+        for name, window in (('train', 0), ('test', 1)):
+            self.assertEqual([event['at'] for event in derived[window]['events']],
+                             [event['at'] for event in explicit[window]['events']],
+                             name)
+
     def test_cli_uses_the_events_file_when_it_exists(self):
         import contextlib
         import io

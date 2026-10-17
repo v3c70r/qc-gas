@@ -131,15 +131,22 @@ def split_window(window, fraction=0.6):
     The split is by observation index (so both halves keep real snapshots and
     the boundary snapshot is shared), which is what makes the 2026-10-10..14 /
     2026-10-15..16 train/test comparison of issue #91 possible.
+
+    An explicit event list (issue #92's local log) is one flat series, so each
+    half must be re-filtered to its own ``[start, end]`` — otherwise both halves
+    would count every event and the train/test metrics would silently
+    double-count (review #101). The boundary snapshot is shared, so an event
+    stamped exactly at the cut instant stays visible to both halves.
     """
     observations = window.get('observations') or []
     if len(observations) < 4:
         return window, window
     cut = max(1, min(len(observations) - 2, int(round(len(observations) * fraction))))
     events = window.get('events') if window.get('events_explicit') else None
-    train = build_window(observations[:cut + 1], events=events)
+    boundary = observations[cut]['at']
+    train = build_window(observations[:cut + 1], events=events, end=boundary)
     train['split'] = 'train'
-    test = build_window(observations[cut:], events=events)
+    test = build_window(observations[cut:], events=events, start=boundary)
     test['split'] = 'test'
     return train, test
 

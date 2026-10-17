@@ -358,6 +358,16 @@ elif name == 'fetch_log':
         self.assertNotIn('data/stations.json', staged)
         self.assertNotIn('data/metrics.json', staged)
 
+    def test_a_detached_checkout_is_refused(self):
+        """`git worktree add --detach` / CI checkouts: refuse, do not guess."""
+        self._git('checkout', '-q', '--detach', 'master', cwd=self.clone)
+        result = self._run_probe()
+        self.assertEqual(result.returncode, 2, result.stderr)
+        self.assertIn('detached HEAD', result.stderr)
+        # Nothing was committed or pushed from that tree.
+        log = self._git('log', '--oneline', 'master', cwd=self.remote).stdout
+        self.assertNotIn('local probe', log)
+
     def test_eight_cycles_throttle_to_one_commit_and_log_every_cycle(self):
         """Acceptance #1 (issue #92): <= 1 data commit/hour while the local log grows."""
         import os
@@ -396,7 +406,13 @@ class ProbeBranchGuardTest(unittest.TestCase):
     def setUpClass(cls):
         result = subprocess.run(['git', 'rev-parse', '--abbrev-ref', 'HEAD'],
                                 cwd=ROOT, capture_output=True, text=True)
-        cls.branch = result.stdout.strip() or 'HEAD'
+        branch = result.stdout.strip()
+        # `--abbrev-ref HEAD` prints the literal "HEAD" on a detached checkout
+        # (git worktree review, some CI checkouts). The guard refuses that tree
+        # *by design*, so the "startup checks pass" assertion has to be skipped
+        # there instead of expecting the script to accept "HEAD" as a branch.
+        cls.detached = not branch or branch == 'HEAD'
+        cls.branch = None if cls.detached else branch
 
     def _run(self, **env):
         import os
@@ -405,13 +421,22 @@ class ProbeBranchGuardTest(unittest.TestCase):
                               text=True, env=merged, timeout=120)
 
     def test_refuses_to_run_on_a_branch_that_is_not_the_base(self):
-        result = self._run(PROBE_BASE_BRANCH=f'{self.branch}-not-the-base',
+        result = self._run(PROBE_BASE_BRANCH=f'{self.branch or "master"}-not-the-base',
                            PROBE_MAX_CYCLES='1')
         self.assertNotEqual(result.returncode, 0)
         self.assertIn('PROBE_BASE_BRANCH', result.stderr)
         self.assertIn('refusing', result.stderr)
 
+    def test_refuses_to_run_on_a_detached_head(self):
+        if not self.detached:
+            self.skipTest('this checkout is on a branch; covered by a hermetic test')
+        result = self._run(PROBE_BASE_BRANCH='master', PROBE_CHECK_ONLY='1')
+        self.assertEqual(result.returncode, 2, result.stderr)
+        self.assertIn('detached HEAD', result.stderr)
+
     def test_startup_checks_pass_on_the_base_branch(self):
+        if self.detached:
+            self.skipTest('detached HEAD: the probe refuses such a tree by design')
         result = self._run(PROBE_BASE_BRANCH=self.branch, PROBE_CHECK_ONLY='1')
         self.assertEqual(result.returncode, 0, result.stderr)
 
