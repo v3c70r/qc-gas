@@ -1,26 +1,26 @@
 {
   "min_price": 169.9,
   "max_price": 239.3,
-  "avg_price": 188.818831699353,
+  "avg_price": 188.81441993464054,
   "total_stations": 2463,
   "regions": [
-    "Abitibi-T\u00e9miscamingue",
+    "Chaudi\u00e8re-Appalaches",
     "Lanaudi\u00e8re",
-    "Gasp\u00e9sie-\u00celes-de-la-Madeleine",
+    "C\u00f4te-Nord",
+    "Municipalit\u00e9s hors MRC \\ CMM",
+    "Mont\u00e9r\u00e9gie",
+    "Outaouais",
+    "Bas-Saint-Laurent",
+    "Laurentides",
+    "Abitibi-T\u00e9miscamingue",
     "Montr\u00e9al",
+    "Laval",
     "Nord-du-Qu\u00e9bec",
     "Saguenay-Lac-Saint-Jean",
     "Estrie",
-    "Mauricie",
-    "C\u00f4te-Nord",
+    "Gasp\u00e9sie-\u00celes-de-la-Madeleine",
     "Centre-du-Qu\u00e9bec",
-    "Mont\u00e9r\u00e9gie",
-    "Chaudi\u00e8re-Appalaches",
-    "Bas-Saint-Laurent",
-    "Laval",
     "Capitale-Nationale",
-    "Outaouais",
-    "Laurentides",
-    "Municipalit\u00e9s hors MRC \\ CMM"
+    "Mauricie"
   ]
 }
