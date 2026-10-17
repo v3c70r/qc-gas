@@ -145,17 +145,6 @@ esac
 GH_BIN="${QC_GAS_GH:-$(command -v gh 2>/dev/null || true)}"
 GH_BIN="${GH_BIN:-gh}"
 TOKEN_CMD=''
-<<<<<<< HEAD
-if [ -x "$GH_BIN" ] && "$GH_BIN" auth token --user "$GH_USER" >/dev/null 2>&1; then
-  TOKEN_CMD="$GH_BIN auth token --user $GH_USER"
-  TOKEN_SOURCE="gh auth token（现场取，不落盘）"
-elif [ -f "$TOKEN_FILE" ]; then
-  TOKEN_MODE="$(stat -c '%a' "$TOKEN_FILE" 2>/dev/null \
-    || stat -f '%Lp' "$TOKEN_FILE" 2>/dev/null || true)"
-  [ "$TOKEN_MODE" = '600' ] || die "本地令牌文件 $TOKEN_FILE 的权限是 ${TOKEN_MODE:-未知}，必须是 600（chmod 600 '$TOKEN_FILE'）：否则同一台机器上的其它用户能读到 dispatch 令牌。" 2
-  TOKEN_CMD="cat $TOKEN_FILE"
-  TOKEN_SOURCE="本地令牌文件 $TOKEN_FILE（600）"
-=======
 # 令牌来源优先级：**本地 600 令牌文件（长效 PAT）优先**，其次才是 gh 登录态。
 # 两个坑（2026-10-17 实测）：
 #   ① `gh auth token --user X` 对**已吊销**的令牌照样打印内容、退出码 0 →
@@ -176,7 +165,6 @@ elif [ -x "$GH_BIN" ] && [ -n "$("$GH_BIN" auth token --user "$GH_USER" 2>/dev/n
      && GH_TOKEN="$("$GH_BIN" auth token --user "$GH_USER" 2>/dev/null)" "$GH_BIN" api user >/dev/null 2>&1; then
   TOKEN_CMD="$GH_BIN auth token --user $GH_USER"
   TOKEN_SOURCE="gh auth token（现场取，已校验可用）"
->>>>>>> origin/master
 else
   die "取不到 dispatch 令牌：'$GH_BIN auth token --user $GH_USER' 失败，且本地令牌文件 $TOKEN_FILE 不存在。二选一：用 'gh auth login' 登录（cron 环境需要 keyring 可用），或把 fine-grained PAT（仅本仓库 Contents: Read and write）写进 600 权限的 $TOKEN_FILE。" 2
 fi
