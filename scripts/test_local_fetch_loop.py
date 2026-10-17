@@ -198,15 +198,19 @@ elif name == 'fetch_log':
         self._git('init', '-q', '--bare', '-b', 'master', str(self.remote), cwd=tmp)
         seed = tmp / 'seed'
         self._git('init', '-q', '-b', 'master', str(seed), cwd=tmp)
+        # A tracked, non-`data/` file so the sibling-worktree test can prove the
+        # probe's `reset --hard` never touches somebody else's edit.
+        (seed / 'js').mkdir()
+        (seed / 'js' / 'app.js').write_text('export const version = 1;\n', encoding='utf-8')
+        self._git('add', '-A', cwd=seed)
         self._commit(seed, 'seed')
         self._git('remote', 'add', 'origin', str(self.remote), cwd=seed)
         self._git('push', '-q', '-u', 'origin', 'master', cwd=seed)
         self._git('clone', '-q', str(self.remote), str(self.clone), cwd=tmp)
         self._git('config', 'user.email', 'probe@example.com', cwd=self.clone)
         self._git('config', 'user.name', 'probe', cwd=self.clone)
-        # An agent implementing an issue: `agent/92` exists locally, master stays
-        # the probe's branch.
-        self._git('branch', 'agent/92', cwd=self.clone)
+        # An agent implementing an issue works on `agent/*` in its own worktree
+        # (created by the sibling-worktree test); master stays the probe's branch.
 
         scripts = self.clone / 'scripts'
         scripts.mkdir(parents=True)
@@ -262,6 +266,60 @@ elif name == 'fetch_log':
         for name in committed:
             self.assertIn(name, ('data/update-profile.json', 'data/fetch-log.json',
                                  'data/fetch-schedule.json'))
+
+    def test_a_sibling_agent_worktree_survives_two_probe_cycles(self):
+        """Issue #92 addendum #2/#4: the probe and an agent never share a tree.
+
+        The agent works on `agent/92` in its **own** worktree (shared object
+        store), with an uncommitted edit outside `data/`; the probe keeps its own
+        worktree on `master`. Two probe cycles must both push master without
+        touching the agent's edit, and without the probe ever checking out the
+        agent branch (`reset --hard '@{u}'` protection).
+        """
+        tmp = Path(self._tmp.name)
+        agent_wt = tmp / 'agent-wt'
+        self._git('worktree', 'add', '-q', '-b', 'agent/92', str(agent_wt),
+                  'master', cwd=self.clone)
+        agent_file = agent_wt / 'js' / 'app.js'
+        agent_file.write_text('export const version = 2; // agent in progress\n',
+                              encoding='utf-8')
+        (agent_wt / 'js' / 'new-module.js').write_text('export const x = 1;\n',
+                                                       encoding='utf-8')
+
+        result = self._run_probe()
+        self.assertEqual(result.returncode, 0, result.stderr)
+
+        # Two cycles, two pushes, all on master.
+        log = self._git('log', '--oneline', 'master', cwd=self.remote).stdout.splitlines()
+        self.assertGreaterEqual(len([line for line in log if 'local probe' in line]), 2)
+        self.assertEqual(self._git('symbolic-ref', '--short', 'HEAD',
+                                   cwd=self.clone).stdout.strip(), 'master')
+
+        # The agent's worktree is untouched: same branch, same uncommitted edit.
+        self.assertEqual(self._git('symbolic-ref', '--short', 'HEAD',
+                                   cwd=agent_wt).stdout.strip(), 'agent/92')
+        self.assertIn('agent in progress', agent_file.read_text(encoding='utf-8'))
+        self.assertTrue((agent_wt / 'js' / 'new-module.js').exists())
+        dirty = self._git('status', '--porcelain', cwd=agent_wt).stdout
+        self.assertIn('js/app.js', dirty)
+        self.assertIn('js/new-module.js', dirty)
+        # And still nothing of the agent's edit reached master.
+        pushed = self._git('show', 'master:js/app.js', cwd=self.remote).stdout
+        self.assertIn('version = 1', pushed)
+
+        # The probe refuses to run *inside* that worktree (wrong branch): the
+        # guard reads the branch of the tree the script lives in.
+        import os
+        (agent_wt / 'scripts').mkdir(exist_ok=True)
+        shutil.copy(SCRIPT, agent_wt / 'scripts' / 'local_fetch_loop.sh')
+        refused = subprocess.run(
+            ['bash', 'scripts/local_fetch_loop.sh'], cwd=agent_wt,
+            env=dict(os.environ, PROBE_BASE_BRANCH='master', PROBE_MAX_CYCLES='1'),
+            capture_output=True, text=True, timeout=120)
+        self.assertEqual(refused.returncode, 2, refused.stderr)
+        self.assertIn('refusing', refused.stderr)
+        # The refusal changed nothing: the agent's edit is still there.
+        self.assertIn('agent in progress', agent_file.read_text(encoding='utf-8'))
 
     def test_eight_cycles_throttle_to_one_commit_and_log_every_cycle(self):
         """Acceptance #1 (issue #92): <= 1 data commit/hour while the local log grows."""
