@@ -1,10 +1,11 @@
 #!/usr/bin/env bash
-# 外部触发器：用 GitHub `repository_dispatch` 唤醒数据工作流（issue #77）。
+# 外部触发器：用 GitHub `repository_dispatch` 唤醒数据工作流（issue #77/#93）。
 #
 # 为什么需要它：GitHub Actions 的 `schedule` 会被平台节流，本仓库实测（`data/trigger-interval.json`）
-# 无论 cron 写 15 分钟还是 60 分钟，实际间隔 p50 都在 2-9 小时，达不到 #76 的目标间隔
-# （30 分钟）。外部免费 cron 服务或本机 crontab 每 30 分钟跑一次本脚本，`static.yml`
-# 会立刻醒来并抓取：非 schedule 事件在闸门里是「无条件抓取」，不占计划预算。
+# 无论 cron 写 15 分钟还是 60 分钟，实际间隔 p50 都在 2-9 小时，达不到目标间隔
+# （忙时 20 分钟）。本机 crontab（`scripts/install_dispatch_cron.sh`）每 5 分钟跑一次本脚本，
+# `static.yml` 会立刻醒来；**闸门仍按 #91 时刻表判定**（issue #93）：到点的 dispatch 才抓取
+# 并占位，未到点的唤醒只花一次 checkout + 闸门，不下载、不提交、不部署。
 #
 # 用法（密钥只经环境变量传入，仓库里不存任何令牌）：
 #   export GH_DISPATCH_TOKEN=...        # fine-grained PAT：仅 Contents: Read and write（contents:write）
