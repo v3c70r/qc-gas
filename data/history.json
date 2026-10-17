@@ -14788,7 +14788,7 @@
             "max": 233.9
           },
           "regular": {
-            "avg": 189.4,
+            "avg": 189.3,
             "min": 171.6,
             "max": 209.9
           },
@@ -28122,7 +28122,7 @@
     ]
   },
   "metadata": {
-    "generated_at": "2026-10-17T12:50:00.7677062Z",
+    "generated_at": "2026-10-17T13:00:00.5034829Z",
     "latest": "2026-10-17T12:00:00Z",
     "interval_hours": 6,
     "samples_per_day": 4,
