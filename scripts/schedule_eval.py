@@ -37,6 +37,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 from interval_report import (  # noqa: E402  (metric口径 is reused, not rewritten)
+    MIN_CHANGE_EVENTS,
     change_events,
     load_git_observations,
     normalize_observations,
@@ -107,6 +108,19 @@ def build_window(observations, labels=None, start=None, end=None):
         'window_end': observations[-1]['at'] if observations else None,
         'split': None,
     }
+
+
+def window_is_sufficient(window, min_events=MIN_CHANGE_EVENTS):
+    """``True`` when ``window`` can support a percentile conclusion (issue #98).
+
+    Reuses the published floor of the interval report
+    (``interval_report.MIN_CHANGE_EVENTS``) instead of inventing a second
+    standard: below it p99 is noise, so callers must **skip** rather than tighten
+    their thresholds (which is how a per-day-growing data set used to pass).
+    """
+    return (len(window.get('events') or []) >= int(min_events)
+            and len(window.get('observations') or []) >= 2
+            and float(window.get('window_seconds') or 0.0) > 0)
 
 
 def split_window(window, fraction=0.6):
