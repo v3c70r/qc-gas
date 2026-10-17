@@ -67,8 +67,11 @@ DEFAULT_DATA_DIR = ROOT / 'data'
 STATION_CHANGES_REL = Path('history') / 'station-changes.json'
 STATION_HISTORY_REL = Path('history') / 'station-history.json'
 GIT_CHANGES_PATH = 'data/history/station-changes.json'
+PROBE_EVENTS_REL = Path('probe-local') / 'events.jsonl'
 STATIONS_FILE = 'stations.json'
 PROBE_LOG_FILE = 'fetch-log.json'
+
+GIT_OBSERVATIONS_SOURCE = 'git revision history of data/history/station-changes.json'
 
 REPORT_REL = Path('docs') / 'fetch-interval-report.md'
 JSON_FILE = 'fetch-interval.json'
@@ -121,6 +124,73 @@ def normalize_observations(entries):
             continue
         by_stamp[to_iso(at)] = {'at': at, 'prices': prices}
     return [by_stamp[stamp] for stamp in sorted(by_stamp)]
+
+
+def load_events_file(path):
+    """本地探针事件日志 ``data/probe-local/events.jsonl`` -> ``(observations, events)``。
+
+    #92 之后探针不再提交快照，样本落在本机（gitignore）的事件日志里，每行
+    ``{"t": ISO, "changed": N, "keys": [...], "stations": M}``：
+
+    * 有 ``t`` 的行 = 本周期的一次真实抓取 ⇒ 一个观测点（只带时间戳与站点总数，
+      没有价格，所以站点数由 ``stations`` 自报，见 :func:`observation_stations`）；
+    * ``keys`` 里的每个坐标键 = 该站点在该时刻的一次真实重定价 ⇒ 一个变更事件
+      （与 git 历史路径同口径：变更时刻就是首次看到新价的观测时刻）。
+
+    脏行、缺 ``t`` 的行、文件不存在一律跳过：只有本地日志的环境（无 git 快照历史）
+    必须能算出覆盖天数与事件量级，而不是报错。
+    """
+    path = Path(path)
+    if not path.exists():
+        return [], []
+    try:
+        text = path.read_text(encoding='utf-8')
+    except OSError:
+        return [], []
+
+    by_stamp = {}
+    events = []
+    for line in text.splitlines():
+        line = line.strip()
+        if not line:
+            continue
+        try:
+            entry = json.loads(line)
+        except json.JSONDecodeError:
+            continue
+        if not isinstance(entry, dict):
+            continue
+        at = parse_iso(entry.get('t'))
+        if at is None:
+            continue
+        try:
+            stations = int(entry.get('stations') or 0)
+        except (TypeError, ValueError):
+            stations = 0
+        by_stamp[to_iso(at)] = {'at': at, 'stations': max(0, stations), 'prices': {}}
+        keys = entry.get('keys')
+        for key in (keys if isinstance(keys, list) else []):
+            events.append({'at': at, 'key': str(key), 'fuels': {},
+                           'region': UNKNOWN_REGION, 'brand': UNKNOWN_BRAND})
+
+    # 同一个时间戳只算一次抓取（重复行保留后写的那条），事件按时间排序。
+    observations = [by_stamp[stamp] for stamp in sorted(by_stamp)]
+    events.sort(key=lambda event: event['at'])
+    return observations, events
+
+
+def observation_stations(observations):
+    """观测序列的站点数：价格键的并集；没有价格时用日志自报的 ``stations``。
+
+    站点数只是陈旧站占比的分母；本地事件日志没有价格表，所以 #92 让每行自报
+    ``stations``（= 当轮 ``last.observed``）。
+    """
+    keys = {key for obs in observations or [] for key in (obs.get('prices') or {})}
+    if keys:
+        return len(keys)
+    counts = [int(obs['stations']) for obs in observations or []
+              if isinstance(obs.get('stations'), int)]
+    return max(counts) if counts else 0
 
 
 def station_labels(stations):
@@ -324,7 +394,7 @@ def simulate_interval(events, observations, interval_minutes, stale_seconds=STAL
         fix_offset = min(math.ceil(delta / step - 1e-9) * step, window_seconds)
         lags.append(max(0.0, fix_offset - delta))
 
-    stations = len({key for obs in observations for key in obs['prices']})
+    stations = observation_stations(observations)
     share = None
     if lags and stations and window_seconds > 0:
         share = sum(lags) / (stations * window_seconds)
@@ -436,10 +506,15 @@ def sampling_minutes(observations):
     return round(percentile(gates, 50), 2) if gates else None
 
 
-def build_report(data_dir, root, now, observations=None, probe=None,
-                 grid=INTERVAL_GRID_MINUTES, min_days=MIN_SAMPLE_DAYS,
-                 stale_seconds=STALE_AGE_SECONDS):
-    """读取已提交数据 + 观测序列，装配报告 payload（人类/机器共用一份）。"""
+def build_report(data_dir, root, now, observations=None, events=None,
+                 observations_source=None, probe=None, grid=INTERVAL_GRID_MINUTES,
+                 min_days=MIN_SAMPLE_DAYS, stale_seconds=STALE_AGE_SECONDS):
+    """读取已提交数据 + 观测序列，装配报告 payload（人类/机器共用一份）。
+
+    ``observations`` 缺省时从 git 修订历史重建；``events`` 缺省时由观测序列做
+    站点级 diff 得到（``--events-file`` 走另一条路：本地日志直接给出时间戳 + 变更键，
+    两者都由调用方按同一口径传入）。
+    """
     data_dir = Path(data_dir)
     root = Path(root)
     now = now or datetime.now(timezone.utc)
@@ -448,12 +523,16 @@ def build_report(data_dir, root, now, observations=None, probe=None,
     labels = station_labels(stations)
     change_store = load_json(data_dir / STATION_CHANGES_REL) or {}
     history_store = load_json(data_dir / STATION_HISTORY_REL) or {}
+
     if observations is None:
         observations = load_git_observations(root)
+    if observations_source is None:
+        observations_source = GIT_OBSERVATIONS_SOURCE
     if probe is None:
         probe = probe_summary(load_log(data_dir / PROBE_LOG_FILE), now)
 
-    events = change_events(observations, labels)
+    if events is None:
+        events = change_events(observations, labels)
     coverage_days = 0
     span_hours = 0.0
     if observations:
@@ -461,7 +540,7 @@ def build_report(data_dir, root, now, observations=None, probe=None,
         coverage_days = (last.date() - first.date()).days + 1
         span_hours = round((last - first).total_seconds() / 3600.0, 2)
 
-    stations_observed = len({key for obs in observations for key in obs['prices']})
+    stations_observed = observation_stations(observations)
     missing_days = max(0, int(min_days) - coverage_days)
     sufficient = (coverage_days >= int(min_days) and len(events) >= MIN_CHANGE_EVENTS
                   and len(observations) >= 2)
@@ -488,7 +567,7 @@ def build_report(data_dir, root, now, observations=None, probe=None,
         'status': 'ok' if sufficient else 'insufficient',
         'preliminary': not sufficient,
         'source': {
-            'observations': 'git revision history of data/history/station-changes.json',
+            'observations': observations_source,
             'probe': 'data/fetch-log.json',
             'daily_history': 'data/history/station-history.json',
             'revisions_used': len(observations),
@@ -757,6 +836,9 @@ def main(argv=None):
                         help='仓库根（git 修订历史从这里读）')
     parser.add_argument('--now', help='UTC ISO 时间戳覆盖（测试/复现）')
     parser.add_argument('--observations', help='直接用一份观测序列 JSON 代替 git 历史')
+    parser.add_argument('--events-file',
+                        help='本地探针事件日志 JSONL（`data/probe-local/events.jsonl`）；'
+                             '文件缺失时回退 git 修订历史，不报错')
     parser.add_argument('--report', help=f'Markdown 输出路径（默认 {REPORT_REL}）')
     parser.add_argument('--json-out', help=f'JSON 输出路径（默认 data/{JSON_FILE}）')
     parser.add_argument('--min-days', type=int, default=MIN_SAMPLE_DAYS,
@@ -768,12 +850,24 @@ def main(argv=None):
     args = parser.parse_args(argv)
 
     observations = None
+    events = None
+    observations_source = None
     if args.observations:
         observations = normalize_observations(load_json(args.observations) or [])
+    elif args.events_file:
+        events_path = Path(args.events_file)
+        if events_path.exists():
+            observations, events = load_events_file(events_path)
+            observations_source = f'{args.events_file}（本地探针事件日志）'
+        else:
+            print(f'note: {args.events_file} not found; falling back to the git '
+                  'revision history', file=sys.stderr)
 
     now = parse_iso(args.now) or datetime.now(timezone.utc)
     payload = build_report(args.data_dir, args.root, now,
-                           observations=observations, min_days=args.min_days,
+                           observations=observations, events=events,
+                           observations_source=observations_source,
+                           min_days=args.min_days,
                            stale_seconds=args.stale_minutes * 60)
     markdown = format_report(payload)
 
