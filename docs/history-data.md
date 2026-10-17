@@ -113,11 +113,16 @@ no longer in git history 65 times a day.
   upstream timestamp that triggered it).
 - A non-due wake-up deploys nothing (unchanged), so "no `stations.json` in the
   repository" never means "stale site".
-- Because the snapshot is no longer in git, a failed download can no longer fall
-  back to the committed copy: the data job now fails loudly (`Require the
-  derived snapshot`), which also skips the Pages job, so the **previous**
-  deployment keeps serving the last good snapshot instead of a site without
-  prices.
+- Because the snapshots are no longer in git, a failed step can no longer fall
+  back to the committed copy. The data job fails loudly (`Require the derived
+  snapshots the site awaits`) when `data/stations.json` or `data/history.json`
+  is missing — the two files the frontend awaits without a catch
+  (`js/map.js`, `js/dashboard.js` → `loadHistoryData()`). Failing the job also
+  skips the Pages job, so the **previous** deployment keeps serving the last good
+  snapshot instead of a site whose map/dashboard 404s. `stats.json` and
+  `metrics.json` are *not* required: no frontend code reads them and
+  `metrics.py` is deliberately `continue-on-error` (#70), so a metrics bug must
+  not be able to block every deploy.
 
 ### Adding a new data file
 

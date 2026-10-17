@@ -81,18 +81,26 @@ jobs:
            python scripts/update_profile.py || echo "Fetch profile update failed"
            python scripts/append_history.py || echo "History append failed"
 
-      # The derived snapshot is no longer committed (issue #103), so a failed
-      # download cannot fall back to the committed copy any more: fail loudly
-      # here. The Pages job then stays skipped, so the previous deployment keeps
-      # serving the last good snapshot instead of publishing a site with no
-      # prices.
-      - name: Require the derived snapshot
+      # The derived snapshots are no longer committed (issue #103), so a failed
+      # step can no longer fall back to the committed copy: the run fails here
+      # instead, which also skips the Pages job, so the previous deployment
+      # keeps serving the last good snapshot.
+      #
+      # Only the two snapshots the frontend *awaits unconditionally* are
+      # required (`js/map.js` -> data/stations.json, `js/dashboard.js` ->
+      # loadHistoryData() -> data/history.json, no catch). `stats.json` and
+      # `metrics.json` have no frontend consumer (PM agent evidence only) and
+      # `metrics.py` is deliberately continue-on-error (#70), so requiring them
+      # would let a metrics bug block every deploy.
+      - name: Require the derived snapshots the site awaits
         if: steps.gate.outputs.due == 'true'
         run: |
-          test -s data/stations.json || {
-            echo "data/stations.json missing: refusing to commit/deploy a site without prices (issue #103)" >&2
-            exit 1
-          }
+          for f in data/stations.json data/history.json; do
+            test -s "$f" || {
+              echo "$f missing: refusing to commit/deploy a site whose dashboard/map would 404 (issue #103)" >&2
+              exit 1
+            }
+          done
 
       # Weekly Régie Bulletin: official region-level retail margins. The script
       # makes a conditional request and only rewrites the data file when the

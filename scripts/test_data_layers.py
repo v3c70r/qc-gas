@@ -57,6 +57,34 @@ def git(*args, cwd=ROOT):
     return subprocess.run(['git', *args], cwd=str(cwd), capture_output=True, text=True)
 
 
+def seed_data_dir(data_dir):
+    """A representative `data/` tree: derived + persistent + `.br` + scratch."""
+    files = {
+        'stations.json': '{}',
+        'stations.json.br': 'br',
+        'stats.json': '{}',
+        'stats.json.br': 'br',
+        'metrics.json': '{}',
+        'history.json': '{}',
+        'history.json.br': 'br',
+        'update-profile.json': '{}',
+        'fetch-log.json': '{}',
+        'fetch-schedule.json': '{}',
+        'fetch-state.json': '{}',
+        'history/index.json': '{}',
+        'history/index.json.br': 'br',
+        'history/2026-10.json': '{}',
+        'history/station-changes.json': '{}',
+        'probe-local/events.jsonl': '{}\n',
+    }
+    data_dir = Path(data_dir)
+    for rel, payload in files.items():
+        path = data_dir / rel
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(payload, encoding='utf-8')
+    return data_dir
+
+
 class ClassificationTest(unittest.TestCase):
     def test_snapshots_regenerated_every_fetch_are_derived(self):
         for rel in DERIVED_SNAPSHOTS:
@@ -91,29 +119,52 @@ class ClassificationTest(unittest.TestCase):
         self.assertTrue(data_layers.is_derived('data/stations.json'))
         self.assertTrue(data_layers.is_persistent('data/history/station-changes.json'))
 
-    def test_commit_pathspecs_cover_every_persistent_file_present(self):
-        specs = data_layers.commit_pathspecs(DATA_DIR)
-        for rel in ('update-profile.json', 'fetch-state.json', 'fetch-schedule.json',
-                    'fetch-log.json', 'history/station-changes.json',
-                    'history/2026-10.json', 'history/index.json'):
-            with self.subTest(rel=rel):
-                self.assertIn(f'data/{rel}', specs)
+    def test_commit_pathspecs_cover_exactly_the_persistent_files(self):
+        # Hermetic: a fresh checkout of this branch has *only* the persistent
+        # files in `data/` (the derived snapshots are not committed since #103),
+        # so asserting against the live directory would be a checkout-shape test
+        # instead of a classification test.
+        with tempfile.TemporaryDirectory() as tmp:
+            data = seed_data_dir(Path(tmp) / 'data')
+            specs = data_layers.commit_pathspecs(data)
+        self.assertEqual(sorted(specs), [
+            'data/fetch-log.json',
+            'data/fetch-schedule.json',
+            'data/fetch-state.json',
+            'data/history/2026-10.json',
+            'data/history/index.json',
+            'data/history/station-changes.json',
+            'data/update-profile.json',
+        ])
         # The latency ledger is persistent even when this workspace has not
         # produced one yet (`metrics.py` writes it on the next run).
         self.assertIn('metrics-ledger.json', data_layers.PERSISTENT_FILES)
-        for spec in specs:
-            self.assertFalse(spec.endswith('.br'), spec)
-            self.assertNotIn(spec, {f'data/{rel}' for rel in DERIVED_SNAPSHOTS})
 
     def test_artifact_paths_are_the_derived_snapshot(self):
-        paths = data_layers.artifact_paths(DATA_DIR)
-        for rel in DERIVED_SNAPSHOTS:
-            self.assertIn(f'data/{rel}', paths)
-        # `.br` siblings ship with the artifact (build output), never via git.
-        self.assertIn('data/stations.json.br', paths)
-        # Committed persistent state comes from the checkout, not the artifact.
-        self.assertNotIn('data/history/station-changes.json', paths)
-        self.assertNotIn('data/update-profile.json', paths)
+        with tempfile.TemporaryDirectory() as tmp:
+            data = seed_data_dir(Path(tmp) / 'data')
+            paths = data_layers.artifact_paths(data)
+        # Every derived snapshot plus its `.br` sibling ships with the artifact;
+        # committed persistent state comes from the checkout, not the artifact.
+        self.assertEqual(sorted(paths), sorted([
+            'data/history.json',
+            'data/history.json.br',
+            'data/history/index.json.br',
+            'data/metrics.json',
+            'data/stations.json',
+            'data/stations.json.br',
+            'data/stats.json',
+            'data/stats.json.br',
+        ]))
+
+    def test_live_data_dir_pathspecs_never_include_derived_or_brotli(self):
+        # Fresh-clone safe: asserts invariants only, never that a given file
+        # exists (a new clone legitimately has no `stations.json`).
+        for spec in data_layers.commit_pathspecs(DATA_DIR):
+            self.assertFalse(spec.endswith('.br'), spec)
+            self.assertNotIn(spec, {f'data/{rel}' for rel in DERIVED_SNAPSHOTS})
+        for path in data_layers.artifact_paths(DATA_DIR):
+            self.assertFalse(data_layers.is_persistent(path), path)
 
     def test_unclassified_reports_a_new_data_file(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -172,6 +223,24 @@ class WorkflowWiringTest(unittest.TestCase):
         copy_data = self.static.index('cp -r data dist/')
         self.assertLess(download, copy_data,
                         'the artifact has to be restored before the site copies data/')
+
+    def test_workflow_runs_the_classification_check(self):
+        self.assertIn('data_layers.py --check', self.update)
+
+    def test_workflow_requires_the_frontend_snapshots_before_deploying(self):
+        # Review round 1: the derived snapshots are no longer in git, so a
+        # partially failed pipeline (download/process/append_history) would
+        # upload an artifact without them and deploy a broken site. The two the
+        # frontend awaits unconditionally (`js/dashboard.js` -> loadHistoryData,
+        # `js/map.js` -> stations.json) must be present or the run has to fail
+        # so the previous deployment keeps serving.
+        guard = self.update
+        self.assertIn('Require the derived snapshots the site awaits', guard)
+        step = guard.split('Require the derived snapshots the site awaits', 1)[1].split('- name:', 1)[0]
+        for rel in ('data/stations.json', 'data/history.json'):
+            with self.subTest(rel=rel):
+                self.assertIn(rel, step)
+        self.assertIn('test -s "$f"', step)
 
     def test_workflow_runs_the_classification_check(self):
         self.assertIn('data_layers.py --check', self.update)
