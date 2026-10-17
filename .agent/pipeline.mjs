@@ -30,8 +30,8 @@
 //                                   50 min; 0 = disabled). A hung model API
 //                                   used to block a pass forever (issue #104).
 //                                   Per-phase overrides: AGENT_PI_TIMEOUT_IMPL_MS,
-//                                   AGENT_PI_TIMEOUT_REVIEW_MS,
-//                                   AGENT_PI_TIMEOUT_TESTER_MS.
+//                                   AGENT_PI_TIMEOUT_REVIEW_MS (the tester step
+//                                   runs shell commands via sh(), not pi).
 //    AGENT_PI_HEARTBEAT_MS          heartbeat period logged while pi runs
 //                                   (default 60000, 0 = off)
 // ══════════════════════════════════════════════════════════════════

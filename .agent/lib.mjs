@@ -257,7 +257,7 @@ export function resolvePi(env = process.env) {
 export const DEFAULT_PI_TIMEOUT_MS = 50 * 60_000;   // 50 min (issue asks 45–60)
 export const DEFAULT_PI_HEARTBEAT_MS = 60_000;
 
-// `AGENT_PI_TIMEOUT_<PHASE>_MS` (IMPL/REVIEW/TESTER) wins over AGENT_PI_TIMEOUT_MS;
+// `AGENT_PI_TIMEOUT_<PHASE>_MS` (IMPL/REVIEW) wins over AGENT_PI_TIMEOUT_MS;
 // 0 = timeout disabled (explicit opt-out), invalid/negative = default.
 export function resolvePiTimeoutMs(phase = 'pi', env = process.env) {
   const specific = env[`AGENT_PI_TIMEOUT_${String(phase).toUpperCase()}_MS`];

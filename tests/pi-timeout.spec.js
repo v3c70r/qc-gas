@@ -179,10 +179,19 @@ test.describe('a whole pass dies of the timeout (#104)', () => {
     git('branch', '-M', 'master');
     git('push', '-q', '-u', 'origin', 'master');
 
-    // copy the pipeline + prompts into the throw-away repo
-    cpSync(path.join(process.cwd(), '.agent'), path.join(clone, '.agent'), {
+    // copy the pipeline + prompts into the throw-away repo.
+    // NOTE: filter on the path RELATIVE to .agent. Matching absolute paths
+    // (`!src.includes('/tmp')`) is wrong: when the suite runs from Agent C's
+    // worktree (`.agent/tmp/wt-104`) or any /tmp clone, the SOURCE prefix itself
+    // contains /tmp → everything is filtered out and the run fails with
+    // MODULE_NOT_FOUND (observed as an Agent C red build).
+    const agentSrc = path.join(process.cwd(), '.agent');
+    cpSync(agentSrc, path.join(clone, '.agent'), {
       recursive: true,
-      filter: src => !src.includes(`${path.sep}logs`) && !src.includes(`${path.sep}tmp`),
+      filter: (src) => {
+        const rel = path.relative(agentSrc, src).split(path.sep);
+        return !rel.some(p => p === 'logs' || p === 'tmp' || p === 'state.json' || p === 'watch.lock');
+      },
     });
 
     // gh stub: issue view → minimal issue JSON, comments → recorded, rest → empty
