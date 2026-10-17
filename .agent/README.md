@@ -86,6 +86,26 @@ node .agent/pipeline.mjs review --pr 12 --issue 7     # 单独复审某个 PR（
 
 ## 使用
 
+### 克隆/安装后必做：固定远端 HEAD（issue #99）
+
+`git clone` 会把**源仓库当时的 HEAD** 复制成本地 `refs/remotes/origin/HEAD`。若源仓库
+正停在 `agent/93`，克隆里的 `origin/HEAD` 就指向 `origin/agent/93`，`detectBase()`
+可能据此把 `agent/93` 当基线，导致所有 `gh pr create --base agent/93` 失败。
+创建克隆后显式固定一次（把 `master` 换成你的默认分支）：
+
+```bash
+cd <clone>
+git remote set-head origin master      # 或 main / develop
+```
+
+`detectBase()` 现在也会拒绝 `agent/*`、当前分支等非法基线，并在 pipeline 启动时
+打印 `[base] 使用基线分支: <name>` 且自动重新 `set-head`。也可显式覆盖：
+
+```bash
+AGENT_BASE=develop npm run agent:watch
+# 或 .agent/config.json: { "base": "develop" }
+```
+
 ```bash
 # 1) 确保 Actions workflow 已启用 (push 后自动)
 # 2) 有人创建 issue → Actions 会 @ 你；回复 /approve

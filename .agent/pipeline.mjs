@@ -31,7 +31,7 @@ import { execFileSync } from 'node:child_process';
 import { mkdirSync, readFileSync, writeFileSync, existsSync, copyFileSync, symlinkSync, rmSync } from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { acquireWatchLock, clearBlockedState, detectBase, isRejectedIssue, mergeIssueState, prepareImplementerBranch, releaseWatchLock, resolvePi, resolveTesterCommands, selectPendingIssues, sh } from './lib.mjs';
+import { acquireWatchLock, clearBlockedState, detectBase, isRejectedIssue, mergeIssueState, prepareImplementerBranch, releaseWatchLock, resolvePi, resolveTesterCommands, selectPendingIssues, sh, syncRemoteHead } from './lib.mjs';
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const AGENT = path.join(ROOT, '.agent');
@@ -576,6 +576,12 @@ async function main() {
   const cmd = process.argv[2] || 'watch';
   const once = process.argv.includes('--once');
   mkdirSync(LOG_DIR, { recursive: true });
+
+  // Make the detected base visible (issue #99: a stale `origin/HEAD → agent/N`
+  // used to send `gh pr create --base agent/N` into guaranteed failure) and pin
+  // the local remote-HEAD cache to it so later runs cannot regress.
+  console.log(`[base] 使用基线分支: ${BASE}${process.env.AGENT_BASE ? '（AGENT_BASE 覆盖）' : ''}`);
+  syncRemoteHead(BASE);
 
   if (cmd === 'feedback') {
     // manual gap report: node .agent/pipeline.mjs feedback "<title>" [body]

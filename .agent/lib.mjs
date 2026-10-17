@@ -166,21 +166,64 @@ export function releaseWatchLock(file, { pid = process.pid } = {}) {
   }
 }
 
-// default branch auto-detected (main/master); override with AGENT_BASE.
+// ── base-branch detection (issue #99) ──────────────────────────────
+// `refs/remotes/origin/HEAD` is a LOCAL cache of the remote's default branch.
+// Cloning a host repo that happened to sit on `agent/93` produced
+// `origin/HEAD → origin/agent/93`; trusting it made every `gh pr create --base
+// agent/93` fail ("No commits between agent/93 and agent/N"). So a candidate
+// must look like a real integration branch, never one of our own work branches
+// and never the branch we are currently on.
+export function isUsableBase(candidate, { currentBranch = '' } = {}) {
+  const c = String(candidate || '').trim().replace(/^origin\//, '');
+  if (!c || c === 'HEAD') return false;
+  if (c.startsWith('agent/')) return false;   // this project's own PR branches
+  if (currentBranch && c === currentBranch) return false;
+  return true;
+}
+
+// Explicit `base` in .agent/config.json (optional; AGENT_BASE wins over it).
+function configBase(cwd) {
+  try {
+    const cfg = JSON.parse(readFileSync(path.join(cwd, '.agent', 'config.json'), 'utf8'));
+    return typeof cfg.base === 'string' ? cfg.base.trim() : '';
+  } catch { return ''; }
+}
+
+// default branch auto-detected (main/master); override with AGENT_BASE or
+// `.agent/config.json` {"base": "..."}.
 // NOTE: `refs/remotes/origin/HEAD` is often MISSING on fresh clones (e.g. after
 // `gh repo create --source=. --push`), so never let detection throw at import time.
-export function detectBase(cwd = ROOT) {
-  if (process.env.AGENT_BASE) return process.env.AGENT_BASE;
+export function detectBase(cwd = ROOT, { env = process.env } = {}) {
+  if (env.AGENT_BASE) return env.AGENT_BASE;
+  const configured = configBase(cwd);
+  if (configured) return configured;
   const tryOut = (args) => { try { return sh(args, { cwd }).trim(); } catch { return ''; } };
-  const sym = tryOut(['git', 'symbolic-ref', '--short', 'refs/remotes/origin/HEAD']).replace(/^origin\//, '');
-  if (sym) return sym;
+  const currentBranch = tryOut(['git', 'rev-parse', '--abbrev-ref', 'HEAD']);
+  const usable = (c) => isUsableBase(c, { currentBranch });
+
+  // 1) cached remote HEAD — but only if it points at a plausible base branch.
+  const sym = tryOut(['git', 'symbolic-ref', '--short', 'refs/remotes/origin/HEAD']);
+  if (usable(sym)) return sym.replace(/^origin\//, '');
+
+  // 2) conventional names actually present on the remote.
   for (const cand of ['main', 'master']) {
-    if (tryOut(['git', 'rev-parse', '--verify', `origin/${cand}`])) return cand;
+    if (usable(cand) && tryOut(['git', 'rev-parse', '--verify', `origin/${cand}`])) return cand;
   }
+
+  // 3) ask the remote itself (authoritative, ignores the stale local cache).
   const ls = tryOut(['git', 'ls-remote', '--symref', 'origin', 'HEAD']);
   const m = ls.match(/^ref:\s+refs\/heads\/(\S+)\s+HEAD/m);
-  if (m) return m[1];
+  if (m && usable(m[1])) return m[1];
   return 'master';
+}
+
+// Hardening for clone/install paths: pin the local cache to the branch we
+// actually use, so a source repo parked on `agent/N` cannot poison this clone.
+// Best-effort: detached/no-remote environments must not crash the pipeline.
+export function syncRemoteHead(base, cwd = ROOT) {
+  if (!base) return false;
+  try { sh(['git', 'remote', 'set-head', 'origin', base], { cwd }); return true; }
+  catch { return false; }
 }
 
 // locate the real pi binary.
