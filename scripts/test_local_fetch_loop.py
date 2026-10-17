@@ -321,6 +321,43 @@ elif name == 'fetch_log':
         # The refusal changed nothing: the agent's edit is still there.
         self.assertIn('agent in progress', agent_file.read_text(encoding='utf-8'))
 
+    def test_a_leftover_staged_snapshot_never_rides_a_ledger_commit(self):
+        """An interrupted old `git add data/` leaves the index dirty.
+
+        Observed on master (690235f6): the ledger commit carried
+        `data/history/station-changes.json`, `data/metrics.json`, `data/stats.json`
+        and their `.br` because the killed pre-#92 loop had staged them. The
+        probe must commit **only** its three ledger paths whatever the index
+        holds, and leave the snapshots on disk (local analysis still needs them).
+        """
+        (self.clone / 'data' / 'history').mkdir(parents=True, exist_ok=True)
+        (self.clone / 'data' / 'stations.json').write_text('{"features": []}\n',
+                                                          encoding='utf-8')
+        (self.clone / 'data' / 'history' / 'station-changes.json').write_text(
+            '{"v": 1}\n', encoding='utf-8')
+        (self.clone / 'data' / 'metrics.json').write_text('{"v": 0}\n', encoding='utf-8')
+        self._git('add', 'data/stations.json', 'data/history/station-changes.json',
+                  'data/metrics.json', cwd=self.clone)
+        self.assertIn('data/stations.json',
+                      self._git('diff', '--cached', '--name-only',
+                                cwd=self.clone).stdout)
+
+        result = self._run_probe()
+        self.assertEqual(result.returncode, 0, result.stderr)
+
+        pushed = self._git('ls-tree', '-r', '--name-only', 'master',
+                           cwd=self.remote).stdout.split()
+        for snapshot in ('data/stations.json', 'data/history/station-changes.json',
+                         'data/metrics.json'):
+            self.assertNotIn(snapshot, pushed)
+        # The ledger still got through...
+        self.assertIn('data/update-profile.json', pushed)
+        # ...the snapshots stay on disk, and nothing snapshot-shaped stays staged.
+        self.assertTrue((self.clone / 'data' / 'stations.json').exists())
+        staged = self._git('diff', '--cached', '--name-only', cwd=self.clone).stdout
+        self.assertNotIn('data/stations.json', staged)
+        self.assertNotIn('data/metrics.json', staged)
+
     def test_eight_cycles_throttle_to_one_commit_and_log_every_cycle(self):
         """Acceptance #1 (issue #92): <= 1 data commit/hour while the local log grows."""
         import os

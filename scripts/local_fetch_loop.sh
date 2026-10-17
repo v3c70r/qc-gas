@@ -153,6 +153,27 @@ probe_owns_worktree() {
   return 0
 }
 
+# Only the ledger paths may ever be staged in this worktree. A killed pre-#92
+# loop can leave the whole `data/` tree half-staged (observed on master: commit
+# 690235f6 carried station-changes/metrics/stats), and a plain commit would then
+# fold those snapshots into the ledger commit — exactly the ~39 MiB/day this
+# issue removes. Unstage everything that is not the ledger.
+unstage_foreign_paths() {
+  local path keep allowed
+  for path in $(git diff --cached --name-only 2>/dev/null); do
+    keep=0
+    for allowed in "${COMMITTED_FILES[@]}"; do
+      [ "$path" = "$allowed" ] && keep=1 && break
+    done
+    [ "$keep" -eq 1 ] && continue
+    if git restore --staged -- "$path" >>"$LOG_FILE" 2>&1; then
+      log "unstaged non-ledger path $path (samples stay local)"
+    else
+      log "could not unstage non-ledger path $path"
+    fi
+  done
+}
+
 # Start-of-cycle sync: the Actions side keeps pushing data, so rebase first.
 # The remote always wins; a conflicted rebase is aborted and discarded — but
 # only the probe's own uncommitted work may be discarded.
@@ -260,9 +281,15 @@ commit_and_push() {
   for f in "${COMMITTED_FILES[@]}"; do
     [ -f "$f" ] && files+=("$f")
   done
-  if [ "${#files[@]}" -gt 0 ]; then
-    git add "${files[@]}" >>"$LOG_FILE" 2>&1
+  if [ "${#files[@]}" -eq 0 ]; then
+    log "no ledger file on disk; nothing to commit"
+    return 0
   fi
+  # Whatever the index held (see unstage_foreign_paths), by now it can only
+  # carry the ledger entries — the `git commit` below adds no path it did not
+  # choose itself.
+  unstage_foreign_paths
+  git add -- "${files[@]}" >>"$LOG_FILE" 2>&1
   if git diff --cached --quiet; then
     log "no change in the committed ledger files; nothing to commit"
   elif git commit -q -m "$COMMIT_MESSAGE" >>"$LOG_FILE" 2>&1; then
@@ -318,6 +345,9 @@ send_daily_summary() {
 
 cycle() {
   local failed=0 now
+  # A killed pre-#92 loop may have left a half-finished staging of the whole
+  # `data/` tree in the index; drop it first so no snapshot can ride a commit.
+  unstage_foreign_paths
   sync_with_remote || true
 
   run_stage download "$PYTHON" scripts/download_data.py || failed=1
