@@ -132,6 +132,22 @@ MAX_TEST_FIXES=1 npm run agent:watch      # 测试失败修复轮数 (默认2)
 TEST_SKIP=1 npm run agent:watch           # 跳过测试直接合并 (demo)
 TEST_ENV_FILE=$PWD/.env npm run agent:watch  # 注入 Mapbox token 供 Agent C 真实测试
 PI_BIN=/path/to/pi npm run agent:watch    # 显式指定 pi 二进制
+AGENT_PI_TIMEOUT_MS=1800000 npm run agent:watch   # 单次 pi 调用硬超时 (默认 3000000 = 50 分钟；0 = 关闭)
+AGENT_PI_TIMEOUT_IMPL_MS=600000 AGENT_PI_TIMEOUT_REVIEW_MS=300000 npm run agent:watch  # 分阶段覆盖
+AGENT_PI_HEARTBEAT_MS=30000 npm run agent:watch # 心跳日志间隔 (默认 60000；0 = 关闭)
+```
+
+### pi 超时与心跳（issue #104）
+
+单次 pi 调用受硬超时约束（`AGENT_PI_TIMEOUT_MS`，默认 50 分钟），超时后：
+
+- 整个进程组被 SIGTERM/SIGKILL 终止（不止直接子进程——否则孙进程仍握着管道，`close` 永不触发）；
+- `.agent/logs/issue-<N>.md` 记录 `pi 超时（N 分钟）`；
+- 该 issue 置 `needs_human`，并在 issue 上留评论说明「可能是模型 API 挂起，请重试 `/approve` 或人工检查」。
+
+运行期间每 `AGENT_PI_HEARTBEAT_MS`（默认 60s）打印一行
+`pi 心跳：已运行 N 分钟，最近输出 T 秒前`。判读：`T` ≈ 总运行时长 → 大概率在等 API（挂起）；
+`T` 明显小于总时长 → 更像在等子进程（测试）。这条心跳是区分「长测试」与「API 挂起」的唯一线索。
 ```
 
 ### 常驻行为说明

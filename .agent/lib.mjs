@@ -3,7 +3,7 @@
 //   * scripts/doctor.mjs      (the one-shot preflight)
 // Keeping `detectBase()` and `resolvePi()` in ONE place avoids the two drifting
 // apart (lessons #1 PATH pollution, #14 missing origin/HEAD).
-import { execFileSync } from 'node:child_process';
+import { execFileSync, spawn } from 'node:child_process';
 import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -230,9 +230,10 @@ export function syncRemoteHead(base, cwd = ROOT) {
 // `npm run` prepends node_modules/.bin to PATH, and a transitive dep also ships
 // a (much older) `pi` CLI that shadows the real one — skip those dirs.
 let PI_BIN = null;
-export function resolvePi() {
+export function resolvePi(env = process.env) {
+  // explicit override always wins and is never cached: tests swap PI_BIN per case
+  if (env.PI_BIN) return env.PI_BIN;
   if (PI_BIN) return PI_BIN;
-  if (process.env.PI_BIN) { PI_BIN = process.env.PI_BIN; return PI_BIN; }
   const dirs = (process.env.PATH || '').split(path.delimiter)
     .filter(d => d && !d.includes('node_modules'));
   for (const d of dirs) {
@@ -241,4 +242,188 @@ export function resolvePi() {
   }
   PI_BIN = 'pi';
   return PI_BIN;
+}
+
+// ── pi supervisor: timeout + heartbeat (issue #104) ─────────────────
+// `execFileSync(..., { timeout: 0 })` never times out. A hung model API call
+// (half-open TCP, server never replies) then blocked an entire pass forever:
+// no exception, so needs_human / retry could not fire, while the process still
+// looked healthy from the outside (frozen CPU time, open socket). Every pi call
+// now runs under this supervisor:
+//   * timeout  → explicit failure (PiTimeoutError) instead of silence;
+//   * heartbeat → `pi 心跳：已运行 N 分钟，最近输出 T 秒前`, so "pi is waiting
+//     on a long child process (tests)" and "pi is waiting on a dead API" are
+//     distinguishable by eye (both look identical to the process table).
+export const DEFAULT_PI_TIMEOUT_MS = 50 * 60_000;   // 50 min (issue asks 45–60)
+export const DEFAULT_PI_HEARTBEAT_MS = 60_000;
+
+// `AGENT_PI_TIMEOUT_<PHASE>_MS` (IMPL/REVIEW) wins over AGENT_PI_TIMEOUT_MS;
+// 0 = timeout disabled (explicit opt-out), invalid/negative = default.
+export function resolvePiTimeoutMs(phase = 'pi', env = process.env) {
+  const specific = env[`AGENT_PI_TIMEOUT_${String(phase).toUpperCase()}_MS`];
+  const raw = specific ?? env.AGENT_PI_TIMEOUT_MS;
+  const n = parseInt(raw ?? '', 10);
+  if (!Number.isFinite(n) || n < 0) return DEFAULT_PI_TIMEOUT_MS;
+  return n;
+}
+
+export function resolvePiHeartbeatMs(env = process.env) {
+  const n = parseInt(env.AGENT_PI_HEARTBEAT_MS ?? '', 10);
+  if (!Number.isFinite(n) || n < 0) return DEFAULT_PI_HEARTBEAT_MS;
+  return n;
+}
+
+/** Human duration: whole minutes when ≥1 min, otherwise seconds (test-friendly). */
+export function formatDuration(ms) {
+  const min = ms / 60_000;
+  if (min >= 1) return `${Math.round(min)} 分钟`;
+  return `${Math.max(1, Math.round(ms / 1000))} 秒`;
+}
+
+export class PiTimeoutError extends Error {
+  constructor(timeoutMs) {
+    super(`pi 超时（${formatDuration(timeoutMs)}）`);
+    this.name = 'PiTimeoutError';
+    this.code = 'PI_TIMEOUT';
+    this.timeoutMs = timeoutMs;
+  }
+}
+
+/** One heartbeat log line: elapsed runtime + silence since the last output byte. */
+export function formatPiHeartbeat({ elapsedMs, sinceLastOutputMs }) {
+  return `pi 心跳：已运行 ${formatDuration(elapsedMs)}，最近输出 ${formatDuration(sinceLastOutputMs)}前`;
+}
+
+/** Log line written to .agent/logs/issue-<N>.md on timeout (acceptance criterion). */
+export function piTimeoutLogLine(timeoutMs) {
+  return `pi 超时（${formatDuration(timeoutMs)}）：本轮 pass 已终止，issue 置 needs_human（可能是模型 API 挂起或工具调用无限等待）`;
+}
+
+/** Issue comment posted when a pass dies of a pi timeout. */
+export function piTimeoutNote(timeoutMs) {
+  return [
+    `⚠️ **pi 超时（${formatDuration(timeoutMs)}）**：本轮执行已被终止，该 issue 置为 \`needs_human\`。`,
+    '',
+    '**可能是模型 API 挂起**（TCP 半开 / 服务端不回包），也可能是某个工具调用无限等待。',
+    '请重试 `/approve`（重新取活）或人工检查日志 `.agent/logs/issue-<N>.md`。',
+    '',
+    '判读方法：最后一条 `pi 心跳` 行——若「最近输出」≈ 总运行时长，多半在等 API；若明显小于总运行时长，更像在等子进程（测试）。',
+  ].join('\n');
+}
+
+/** Pure state transition: needs_human while keeping round/pr/branch history. */
+export function markPiTimeout(state = {}, issueNumber, err) {
+  const prev = state[issueNumber] || {};
+  return {
+    ...state,
+    [issueNumber]: {
+      ...prev,
+      status: 'needs_human',
+      error: String(err?.message || err),
+      timedOutAt: new Date().toISOString(),
+    },
+  };
+}
+
+/**
+ * Run pi with a hard timeout and a heartbeat. Async (spawn, not spawnSync) on
+ * purpose: a synchronous call cannot report heartbeats while it is blocked —
+ * which is exactly the blindness issue #104 is about.
+ * Resolves `{ stdout, stderr, code, signal }`; rejects with PiTimeoutError on
+ * timeout, or with the child's exit error when it fails without any stdout.
+ * `spawnFn` is injectable for tests.
+ */
+export function runPiWithTimeout({
+  bin,
+  args = [],
+  cwd,
+  env = process.env,
+  timeoutMs = resolvePiTimeoutMs('pi', env),
+  heartbeatMs = resolvePiHeartbeatMs(env),
+  onHeartbeat,
+  killGraceMs = 5_000,
+  spawnFn = spawn,
+} = {}) {
+  return new Promise((resolve, reject) => {
+    const startedAt = Date.now();
+    let lastOutputAt = startedAt;
+    let stdout = '';
+    let stderr = '';
+    let timedOut = false;
+    let settled = false;
+    const timers = [];
+
+    const heartbeat = heartbeatMs > 0
+      ? setInterval(() => {
+        try { onHeartbeat?.({ elapsedMs: Date.now() - startedAt, sinceLastOutputMs: Date.now() - lastOutputAt }); } catch { /* logging must never break the run */ }
+      }, heartbeatMs)
+      : null;
+    heartbeat?.unref?.();
+
+    const cleanup = () => {
+      if (heartbeat) clearInterval(heartbeat);
+      for (const t of timers) clearTimeout(t);
+    };
+    const timeoutError = () => {
+      const e = new PiTimeoutError(timeoutMs);
+      e.stdout = stdout;
+      e.stderr = stderr;
+      return e;
+    };
+    const settle = (fn, value) => {
+      if (settled) return;
+      settled = true;
+      cleanup();
+      fn(value);
+    };
+
+    let child;
+    try {
+      // detached → own process group, so a timeout can signal the WHOLE tree.
+      // `pi` runs tool calls (bash, playwright…) as children; killing only the
+      // direct child leaves grandchildren holding the stdio pipes open, so
+      // 'close' never fires and the "timeout" would still block (observed:
+      // `bash -c 'sleep 9999'` ignored SIGTERM and the pipe stayed open).
+      child = spawnFn(bin, args, { cwd, env, stdio: ['ignore', 'pipe', 'pipe'], detached: process.platform !== 'win32' });
+    } catch (e) {
+      settle(reject, e);
+      return;
+    }
+
+    const killTree = (signal) => {
+      try { if (child.pid) process.kill(-child.pid, signal); return; } catch { /* fall through */ }
+      try { child.kill(signal); } catch { /* already gone */ }
+    };
+
+    child.stdout?.on('data', (d) => { stdout += d; lastOutputAt = Date.now(); });
+    child.stderr?.on('data', (d) => { stderr += d; lastOutputAt = Date.now(); });
+    child.on('error', e => settle(reject, e));
+
+    if (timeoutMs > 0) {
+      timers.push(setTimeout(() => {
+        timedOut = true;
+        killTree('SIGTERM');
+        // SIGTERM may be ignored; SIGKILL cannot. Then a last-resort rejection in
+        // case a detached grandchild keeps the stdio pipes open (so 'close' never fires).
+        timers.push(setTimeout(() => killTree('SIGKILL'), killGraceMs));
+        timers.push(setTimeout(() => settle(reject, timeoutError()), killGraceMs * 2));
+      }, timeoutMs));
+    }
+
+    child.on('close', (code, signal) => {
+      if (timedOut) { settle(reject, timeoutError()); return; }
+      if (code !== 0 && !stdout) {
+        // mirror the old execFileSync behaviour: stdout (when any) wins over the
+        // exit code, but a silent failure must surface as an error
+        const e = new Error(`pi 退出码 ${code ?? signal}${stderr ? `: ${String(stderr).trim().slice(-500)}` : ''}`);
+        e.code = code;
+        e.signal = signal;
+        e.stdout = stdout;
+        e.stderr = stderr;
+        settle(reject, e);
+        return;
+      }
+      settle(resolve, { stdout, stderr, code, signal });
+    });
+  });
 }

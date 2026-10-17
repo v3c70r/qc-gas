@@ -26,12 +26,19 @@
 //                                    empty string = skip that step; non-npm
 //                                    repos MUST set them, e.g. `make build`,
 //                                    `pytest -q`)
+//    AGENT_PI_TIMEOUT_MS            hard timeout per pi invocation (default
+//                                   50 min; 0 = disabled). A hung model API
+//                                   used to block a pass forever (issue #104).
+//                                   Per-phase overrides: AGENT_PI_TIMEOUT_IMPL_MS,
+//                                   AGENT_PI_TIMEOUT_REVIEW_MS (the tester step
+//                                   runs shell commands via sh(), not pi).
+//    AGENT_PI_HEARTBEAT_MS          heartbeat period logged while pi runs
+//                                   (default 60000, 0 = off)
 // ══════════════════════════════════════════════════════════════════
-import { execFileSync } from 'node:child_process';
 import { mkdirSync, readFileSync, writeFileSync, existsSync, copyFileSync, symlinkSync, rmSync } from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { acquireWatchLock, clearBlockedState, detectBase, isRejectedIssue, mergeIssueState, prepareImplementerBranch, releaseWatchLock, resolvePi, resolveTesterCommands, selectPendingIssues, sh, syncRemoteHead } from './lib.mjs';
+import { PiTimeoutError, acquireWatchLock, clearBlockedState, detectBase, formatPiHeartbeat, isRejectedIssue, markPiTimeout, mergeIssueState, piTimeoutLogLine, piTimeoutNote, prepareImplementerBranch, releaseWatchLock, resolvePi, resolvePiHeartbeatMs, resolvePiTimeoutMs, resolveTesterCommands, runPiWithTimeout, selectPendingIssues, sh, syncRemoteHead } from './lib.mjs';
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const AGENT = path.join(ROOT, '.agent');
@@ -165,7 +172,10 @@ async function runImplementer(issue, roundNote = '') {
   // back to base (lesson #18), so branch prep lives in a tested helper.
   const { reused } = prepareImplementerBranch({ branch, base: BASE });
   log(issue.number, `A: 开始实现 (branch=${branch}, ${reused ? `修复轮：基于 PR 现有分支 origin/${branch}` : `首轮：基于 origin/${BASE}`}, model=${describeModel(IMPL)}) ${roundNote ? '——' + roundNote : ''}`);
-  const out = runPi(`agent-issue-${issue.number}`, prompt, branch, IMPL);
+  const out = await runPi(`agent-issue-${issue.number}`, prompt, branch, IMPL, {
+    phase: 'impl',
+    onHeartbeat: hb => log(issue.number, `A: ${formatPiHeartbeat(hb)}`),
+  });
   log(issue.number, `A: pi 输出（尾）:\n${out.split('\n').slice(-40).join('\n')}`);
 
   sh(['git', 'add', '-A']);
@@ -231,9 +241,10 @@ function isModelUnavailable(err) {
 
 async function runReviewRound(issueNum, prNum) {
   const prompt = buildPrompt('reviewer', { issue: { number: issueNum }, pr: prNum });
+  const heartbeatNote = { phase: 'review', onHeartbeat: hb => log(issueNum, `B: ${formatPiHeartbeat(hb)}`) };
   let out;
   try {
-    out = runPi(`agent-review-${prNum}`, prompt, null, REVIEW);
+    out = await runPi(`agent-review-${prNum}`, prompt, null, REVIEW, heartbeatNote);
   } catch (err) {
     if (!isModelUnavailable(err)) throw err;
     const fallback = REVIEW_FALLBACK;
@@ -242,7 +253,7 @@ async function runReviewRound(issueNum, prNum) {
     log(issueNum, `B: 模型不可用（${describeModel(REVIEW)}）→ 回退到 ${describeModel(fallback)}`);
     try { commentOnPr(prNum, `⚠️ **审查模型不可用**（\`${describeModel(REVIEW)}\`）：\`${detail.replace(/\n/g, ' ')}\`\n\n已自动回退到 \`${describeModel(fallback)}\` 完成本轮审查（不影响合并）。\n长期方案：为账户充值，或设置 \`REVIEW_PROVIDER\`/\`REVIEW_MODEL\` 指向可用模型。`); } catch {}
     reportGap(`审查模型不可用（${describeModel(REVIEW)}）`, `## 现象\n审查轮次调用模型失败，错误被判定为额度/限流类。\n\n## 模型\n- 主: ${describeModel(REVIEW)}\n- 回退: ${describeModel(fallback)}\n\n## 错误\n\`\`\`\n${detail}\n\`\`\`\n\n## 建议\n模板已自动回退；可考虑在 doctor 中预检模型额度（\`pi auth check\` 不检测余额），或支持多模型候选列表。`);
-    out = runPi(`agent-review-${prNum}`, prompt, null, fallback);
+    out = await runPi(`agent-review-${prNum}`, prompt, null, fallback, heartbeatNote);
   }
   const { verdict, source } = parseReviewVerdict(out);
   log(issueNum, `B: verdict=${verdict} (${source}, model=${describeModel(REVIEW)})`);
@@ -326,7 +337,7 @@ const IMPL = {
 };
 function describeModel(m) { return m.provider && m.model ? `${m.provider}/${m.model}` : '(pi default)'; }
 
-function runPi(sessionId, prompt, branchHint, model = {}) {
+function runPi(sessionId, prompt, branchHint, model = {}, { phase = 'impl', onHeartbeat } = {}) {
   const cwdNote = branchHint ? `当前分支应为 agent 分支（已在本地 checkout）。` : '';
   const extra = prompt; // full system prompt already assembled by buildPrompt
   mkdirSync(TMP, { recursive: true });
@@ -340,14 +351,15 @@ function runPi(sessionId, prompt, branchHint, model = {}) {
     '--no-approve',
     // positional user message — pi needs an actual message to act on
     '现在执行上面给出的完整任务：读所需上下文，用工具完成所有步骤，然后输出总结并结束。'];
-  try {
-    const bin = resolvePi();
-    return execFileSync(bin, args, { cwd: ROOT, encoding: 'utf8', timeout: 0, stdio: ['ignore', 'pipe', 'pipe'] });
-  } catch (e) {
-    // even on nonzero exit, capture stdout
-    if (e.stdout) return e.stdout.toString();
-    throw e;
-  }
+  const bin = resolvePi();
+  const timeoutMs = resolvePiTimeoutMs(phase);
+  const heartbeatMs = resolvePiHeartbeatMs();
+  // A timeout here throws PiTimeoutError, which `processIssue` turns into
+  // needs_human + an issue comment instead of blocking the whole pass forever
+  // (issue #104). Nonzero exit with stdout still resolves to that stdout, so the
+  // success/failure semantics of the old execFileSync call are unchanged.
+  return runPiWithTimeout({ bin, args, cwd: ROOT, timeoutMs, heartbeatMs, onHeartbeat })
+    .then(res => res.stdout);
 }
 
 // ── prompt builders ──
@@ -371,11 +383,26 @@ async function processIssue(issue, force = false) {
   try { startBranch = sh(['git', 'rev-parse', '--abbrev-ref', 'HEAD']); } catch {}
   try {
     return await processIssueInner(issue, force);
+  } catch (err) {
+    // A hung pi (model API never answers) must END the pass loudly: log the
+    // timeout, mark the issue needs_human, tell the human how to recover.
+    // Previously this path did not exist because the call never returned.
+    if (err instanceof PiTimeoutError || err?.code === 'PI_TIMEOUT') return onPiTimeout(issue, err);
+    throw err;
   } finally {
     if (startBranch && startBranch !== 'HEAD') {
       try { sh(['git', 'checkout', startBranch]); } catch { /* leave as-is */ }
     }
   }
+}
+
+/** Timeout consequences for one issue: needs_human + log + issue comment. */
+function onPiTimeout(issue, err) {
+  log(issue.number, piTimeoutLogLine(err.timeoutMs));
+  state.save(markPiTimeout(state.load(), issue.number, err));
+  try { commentOnIssue(issue.number, piTimeoutNote(err.timeoutMs)); }
+  catch (e) { log(issue.number, `超时通知评论发送失败（不影响 needs_human）: ${e.message}`); }
+  return { skipped: 'needs_human' };
 }
 
 async function processIssueInner(issue, force = false) {
