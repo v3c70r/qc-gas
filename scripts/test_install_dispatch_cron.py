@@ -98,6 +98,21 @@ class InstallDispatchCronTest(unittest.TestCase):
         self.assertIn('--dry-run', text)
         self.assertIn('.agent/dispatch-cron.log', text)
 
+    def test_the_doc_header_has_no_executable_stray_line(self):
+        # The header comment block is what `--help` prints and every line of it
+        # must be inert: a usage line that lost its `#` would be *executed*, and
+        # (same shape) `scripts/install_dispatch_cron.sh --remove` would recurse.
+        lines = SCRIPT.read_text(encoding='utf-8').splitlines()
+        end = next(i for i, line in enumerate(lines) if line.startswith('set -'))
+        stray = [line for line in lines[1:end] if line.strip() and not line.startswith('#')]
+        self.assertEqual(stray, [])
+
+    def test_help_prints_the_usage_block(self):
+        result = self.run_script('--help')
+        self.assertEqual(result.returncode, 0, result.stderr)
+        for flag in ('--dry-run', '--remove', '.agent/dispatch-cron.log'):
+            self.assertIn(flag, result.stdout)
+
     # ── behaviour ───────────────────────────────────────────────────────────
 
     def run_script(self, *args, gh_token='stub-gh-token', token_file=None,
@@ -204,6 +219,27 @@ class InstallDispatchCronTest(unittest.TestCase):
     def test_remove_without_an_installed_line_succeeds(self):
         result = self.run_script('--remove', crontab='17 * * * * /usr/bin/backup.sh\n')
         self.assertEqual(result.returncode, 0, result.stderr)
+
+    def test_remove_works_even_when_no_token_is_available(self):
+        # Uninstalling must never depend on the things installing needs: an
+        # operator whose `gh` login or token file broke has to be able to drop
+        # the entry (that is exactly when the entry is useless).
+        marked = f'*/5 * * * * true {MARKER}'
+        result = self.run_script('--remove', crontab=marked + '\n', gh_token='')
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertEqual(self.marked(), [])
+
+    def test_remove_works_even_when_the_dispatch_script_is_not_executable(self):
+        marked = f'*/5 * * * * true {MARKER}'
+        result = self.run_script('--remove', crontab=marked + '\n', dispatch_mode=0o644)
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertEqual(self.marked(), [])
+
+    def test_dry_run_with_remove_prints_and_leaves_the_crontab_alone(self):
+        marked = f'*/5 * * * * true {MARKER}'
+        result = self.run_script('--remove', '--dry-run', crontab=marked + '\n', gh_token='')
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertEqual(self.crontab_lines(), [marked])
 
     # ── preflight self-checks ───────────────────────────────────────────────
 

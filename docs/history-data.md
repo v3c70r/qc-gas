@@ -182,8 +182,15 @@ one marked line):
 
 ```bash
 crontab -l | grep qc-gas-dispatch            # the installed line (exactly one)
-scripts/install_dispatch_cron.sh --remove    # uninstall
+scripts/install_dispatch_cron.sh --remove    # uninstall (no token needed)
+scripts/install_dispatch_cron.sh --remove --dry-run   # show what would survive
 ```
+
+Uninstalling is deliberately **not** gated by the install preflight: a broken
+`gh` login, a deleted token file or a `dispatch_fetch.sh` without its execute bit
+are exactly the situations in which the installed line is useless and has to go,
+so `--remove` only needs `crontab` itself. `--dry-run --remove` prints the
+surviving crontab and touches nothing.
 
 The installed line (token fetched at run time, never stored in crontab):
 

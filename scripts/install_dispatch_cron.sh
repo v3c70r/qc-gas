@@ -9,7 +9,8 @@
 # 用法：
 #   scripts/install_dispatch_cron.sh                # 安装（幂等：重复执行仍只有一行）
 #   scripts/install_dispatch_cron.sh --dry-run      # 只打印将写入的 crontab 行
-#   scripts/install_dispatch_cron.sh --remove       # 卸载（只移除带标记的行）
+#   scripts/install_dispatch_cron.sh --remove       # 卸载（只移除带标记的行，不需要令牌）
+#   scripts/install_dispatch_cron.sh --remove --dry-run  # 只打印会保留的 crontab
 #
 # 令牌处理（**不落盘进 crontab**）：
 #   crontab 行里写的是 `GH_DISPATCH_TOKEN="$(gh auth token --user <owner>)"`，
@@ -27,6 +28,7 @@
 # 退出码：
 #   0 = 已安装 / 已卸载 / dry-run 成功
 #   2 = 自检失败（crontab 不可用、取不到令牌、dispatch_fetch.sh 不可执行、仓库未知）
+#       —— 但 `--remove` 只要求 `crontab` 可用，令牌/脚本缺失一律不阻碍卸载
 #   3 = crontab 命令本身失败
 #   4 = 用法错误
 set -uo pipefail
@@ -94,6 +96,33 @@ if [ -z "$CRONTAB_BIN" ] || [ ! -x "$CRONTAB_BIN" ]; then
   die "crontab 不可用（PATH 里没有，QC_GAS_CRONTAB 也没有指向可执行文件）：装不了唤醒者。先用系统包管理器装上 cron（含 crontab/cronie），或显式指定 QC_GAS_CRONTAB=/path/to/crontab。" 2
 fi
 
+# ── 卸载：**不依赖安装所需的东西** ──────────────────────────────────────────
+#
+# 卸载先于所有安装自检：`gh` 登录失效、令牌文件丢了、`dispatch_fetch.sh` 被 chmod
+# 掉执行权限——这些正是「条目已经没用」的典型情形，也正是必须能卸载的时候。只有
+# `crontab` 本身是必需的（读/写都靠它），否则无从下手。
+current="$("$CRONTAB_BIN" -l 2>/dev/null || true)"
+filtered="$(printf '%s\n' "$current" | grep -v -F -- "$MARKER" || true)"
+
+if [ "$REMOVE" = 1 ]; then
+  if [ "$DRY_RUN" = 1 ]; then
+    printf 'install_dispatch_cron.sh: dry-run，未修改 crontab；将移除带 %s 标记的行。\n' "$MARKER" >&2
+    printf '  保留：\n'
+    printf '%s\n' "$filtered" | sed '/^$/d'
+    exit 0
+  fi
+  if [ -z "$(printf '%s' "$filtered" | tr -d '[:space:]')" ] \
+     && [ "$(printf '%s' "$current" | grep -c -F -- "$MARKER" || true)" = '0' ]; then
+    printf 'install_dispatch_cron.sh: crontab 里没有 %s 标记的行，无需卸载。\n' "$MARKER"
+    exit 0
+  fi
+  if ! printf '%s\n' "$filtered" | "$CRONTAB_BIN" -; then
+    die "卸载失败：crontab 命令返回非零（crontab 文件未被改动？）。" 3
+  fi
+  printf 'install_dispatch_cron.sh: 已移除带 %s 标记的行。\n' "$MARKER"
+  exit 0
+fi
+
 REPO_ROOT="${QC_GAS_REPO:-$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)}"
 if [ ! -x "$REPO_ROOT/$DISPATCH_REL" ]; then
   if [ -f "$REPO_ROOT/$DISPATCH_REL" ]; then
@@ -141,23 +170,7 @@ if [ "$DRY_RUN" = 1 ]; then
   exit 0
 fi
 
-# ── 读现有 crontab，剥掉已有的标记行 ─────────────────────────────────────────
-
-current="$("$CRONTAB_BIN" -l 2>/dev/null || true)"
-filtered="$(printf '%s\n' "$current" | grep -v -F -- "$MARKER" || true)"
-
-if [ "$REMOVE" = 1 ]; then
-  if [ -z "$(printf '%s' "$filtered" | tr -d '[:space:]')" ] \
-     && [ "$(printf '%s' "$current" | grep -c -F -- "$MARKER" || true)" = '0' ]; then
-    printf 'install_dispatch_cron.sh: crontab 里没有 %s 标记的行，无需卸载。\n' "$MARKER"
-    exit 0
-  fi
-  if ! printf '%s\n' "$filtered" | "$CRONTAB_BIN" -; then
-    die "卸载失败：crontab 命令返回非零（crontab 文件未被改动？）。" 3
-  fi
-  printf 'install_dispatch_cron.sh: 已移除带 %s 标记的行。\n' "$MARKER"
-  exit 0
-fi
+# ── 写入（卸下已有的标记行，再追加新行）─────────────────────────────────────
 
 if [ -n "$(printf '%s' "$filtered" | tr -d '[:space:]')" ]; then
   content="$(printf '%s\n%s' "$filtered" "$LINE")"
