@@ -13,21 +13,24 @@ on:
       - 'package.json'
       - 'package-lock.json'
   workflow_dispatch:
-  # External trigger (issue #77): a free external cron service (or the local
-  # `crontab`, or `scripts/dispatch_fetch.sh`) POSTs to /dispatches with
-  # `event_type: fetch-data` to wake this workflow on the target cadence. The
-  # gate treats non-schedule events as "fetch unconditionally", so a dispatch
-  # is exactly one poll and does not consume the planned budget.
+  # External trigger (issue #77 + #93): a local `crontab` (installed by
+  # `scripts/install_dispatch_cron.sh`) wakes this workflow every 5 minutes, and
+  # POSTs to /dispatches with `event_type: fetch-data`. The gate then decides
+  # against the #91 timetable whether the wake-up may download anything: a
+  # dispatch that is not due costs a checkout + gate only (no download, no
+  # commit, no deploy). A dispatch is not one of the planned slots, so it does
+  # not consume the plan's request budget.
   repository_dispatch:
     types: [fetch-data]
   schedule:
     # Long-interval fallback only. Measured on this repository (issue #77,
     # `data/trigger-interval.json`): GitHub throttles the schedule so hard that
     # a `*/15` cron actually ran every ~4.3 hours (p50), and even the previous
-    # hourly cron only reached ~2 hours. So the sub-hourly cadence bought
-    # nothing and woke 96 (mostly dropped) runs/day; one hourly wake is the
-    # cheapest useful safety net, and it is deliberately off the top of the
-    # hour to dodge the scheduler's busiest minute.
+    # hourly cron only reached ~2 hours. The sub-hourly cadence comes from the
+    # local dispatch trigger (`scripts/install_dispatch_cron.sh`) instead, so
+    # this hourly wake is the cheapest useful safety net against a machine that
+    # is off, and it is deliberately off the top of the hour to dodge the
+    # scheduler's busiest minute.
     # The gate decides whether a wake-up may hit upstream, so a non-due run
     # costs a checkout + gate only (no download, no deploy).
     - cron: '17 * * * *'

@@ -12,6 +12,16 @@ The gate is intentionally fail-open on a scheduled run when its own state looks
 broken: a stale data snapshot is worse than one extra download. When a due hit
 is a reserved exploration slot (issue #69), the reason carries ``[explore]`` so
 the poll can be attributed to exploration vs exploitation after the fact.
+
+Issue #93: the workflow is now woken every 5 minutes by a local `crontab`
+(`scripts/install_dispatch_cron.sh`, `repository_dispatch`). A dispatch is an
+external wake-up, so it is evaluated against the *same* #91 timetable as a
+scheduled run — an off-schedule wake-up must not download upstream, commit or
+deploy. It only differs in accounting: a dispatch is not one of the planned
+slots, so it does not consume the day's request budget (the plan budget is the
+number of slots of the day's timetable, issue #91/#93). Other non-schedule
+events (`push`, ...) keep the pre-#93 behaviour and fetch unconditionally, since
+they are not fetch triggers.
 """
 
 import argparse
@@ -43,6 +53,14 @@ ROOT = Path(__file__).resolve().parent.parent
 DEFAULT_DATA_DIR = ROOT / 'data'
 SCHEDULE_FILE = 'fetch-schedule.json'
 STATE_FILE = 'fetch-state.json'
+
+# Events that are *fetch triggers* the gate has to judge (issue #93). A local
+# `crontab` wakes the workflow through `repository_dispatch` every 5 minutes; a
+# manual `workflow_dispatch` is the same kind of wake-up. Both are evaluated
+# against the timetable, but neither is a planned slot, so neither is charged to
+# the day's request budget. Every other event (`push`, ...) is not a fetch
+# trigger and keeps fetching unconditionally.
+TRIGGER_EVENTS = ('repository_dispatch', 'workflow_dispatch')
 
 
 def load_json(path, fallback=None):
@@ -121,7 +139,7 @@ def main(argv=None):
     state = load_json(data_dir / STATE_FILE, {}) or {}
     last_fetch_at = state.get('last_fetch_at')
 
-    forced = args.event_name not in ('schedule', '')
+    forced = args.event_name not in ('schedule', '') and args.event_name not in TRIGGER_EVENTS
     if forced:
         due, reason = True, f'event "{args.event_name}": fetching unconditionally'
     else:
@@ -133,6 +151,11 @@ def main(argv=None):
             explore_slots=explore_slots,
             timetable=timetable, tz=tz,
         )
+        if args.event_name in TRIGGER_EVENTS:
+            # Same due moment as a scheduled run, but not one of the planned
+            # slots: the day's budget (= the timetable's slot count) is not
+            # charged (issue #93).
+            reason = (f'event "{args.event_name}" (not budget-counted): ' + reason)
 
     if due and not args.dry_run:
         new_state = {

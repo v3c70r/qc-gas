@@ -391,16 +391,22 @@ test.describe('Accessibility Basic Checks', () => {
     await page.goto(BASE_URL);
     await page.waitForLoadState('networkidle', { timeout: 15000 }).catch(() => {});
 
-    const buttons = page.locator('button');
-    const count = await buttons.count();
-    for (let i = 0; i < count; i++) {
-      const btn = buttons.nth(i);
-      const text = await btn.textContent();
-      const title = await btn.getAttribute('title');
-      const aria = await btn.getAttribute('aria-label');
-      // an accessible name may come from text, title, or aria-label
-      expect(text?.trim() || title || aria).toBeTruthy();
-    }
+    // Read every button in ONE `page.evaluate` round trip instead of 3 calls per
+    // button (61 buttons × textContent/title/aria-label ≈ 180 protocol calls).
+    // Each call costs ~150 ms while the map main thread is busy, so the index
+    // walk blew the 30 s test budget (issue #93 CI failure) even though every
+    // button does have a name. The assertion is unchanged: a button's accessible
+    // name may come from its text, its title or its aria-label.
+    const unnamed = await page.evaluate(() =>
+      [...document.querySelectorAll('button')]
+        .map((el, i) => ({
+          i,
+          className: String(el.className),
+          name: (el.textContent || '').trim() || el.getAttribute('title') || el.getAttribute('aria-label') || ''
+        }))
+        .filter((btn) => !btn.name));
+
+    expect(unnamed, `buttons without an accessible name: ${JSON.stringify(unnamed)}`).toEqual([]);
   });
 
   test('images have alt text or title', async ({ page }) => {

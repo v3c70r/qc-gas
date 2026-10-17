@@ -417,13 +417,18 @@ class DSTTimetableTest(unittest.TestCase):
         """2026-11-01 is a 25-hour local day: the repeated 01:00 hour is real."""
         day = date(2026, 11, 1)
         instants = self.instants(day)
+<<<<<<< HEAD
         repeated_hour_slots = len([l for l in self.timetable
                                    if int(l.split(':')[0]) == 1])
+=======
+        repeated_hour_slots = len([l for l in self.timetable if int(l.split(':')[0]) == 1])
+>>>>>>> origin/master
         self.assertEqual(repeated_hour_slots, 1)  # the night floor: one per hour
         # Same slot count as any other day, plus the hour DST hands back.
         self.assertEqual(len(instants), self.expected_per_day + repeated_hour_slots)
         self.assert_one_fetch_per_slot(day, instants)
         # Every plan slot is fetched, once per local occurrence (01:00 twice).
+<<<<<<< HEAD
         local_slots = sorted(dt.astimezone(self.zone).strftime('%H:%M')
                              for dt in instants)
         self.assertEqual(local_slots, sorted(self.timetable + ['01:00']))
@@ -431,6 +436,15 @@ class DSTTimetableTest(unittest.TestCase):
         seam = [dt for dt in instants if dt.astimezone(self.zone).hour == 1]
         self.assertEqual([(b - a).total_seconds() / 60.0
                           for a, b in zip(seam, seam[1:])], [60.0])
+=======
+        local_slots = sorted(dt.astimezone(self.zone).strftime('%H:%M') for dt in instants)
+        self.assertEqual(local_slots, sorted(self.timetable + ['01:00']))
+        # The seam is one real hour wide, not zero and not two.
+        seam = [dt for dt in instants
+                if dt.astimezone(self.zone).hour == 1]
+        self.assertEqual([(b - a).total_seconds() / 60.0 for a, b in zip(seam, seam[1:])],
+                         [60.0])
+>>>>>>> origin/master
 
     def test_the_spring_forward_day_skips_only_the_hour_that_never_happens(self):
         """2026-03-08 is a 23-hour local day: local 02:00 has no instant."""
@@ -440,8 +454,12 @@ class DSTTimetableTest(unittest.TestCase):
         self.assertEqual(missing, ['02:00'])
         self.assertEqual(len(instants), self.expected_per_day - len(missing))
         self.assert_one_fetch_per_slot(day, instants)
+<<<<<<< HEAD
         local_slots = sorted(dt.astimezone(self.zone).strftime('%H:%M')
                              for dt in instants)
+=======
+        local_slots = sorted(dt.astimezone(self.zone).strftime('%H:%M') for dt in instants)
+>>>>>>> origin/master
         self.assertEqual(local_slots,
                          sorted(l for l in self.timetable if l not in missing))
         # The seam is still one real hour (01:00 EST -> 03:00 EDT), not two.
@@ -451,6 +469,7 @@ class DSTTimetableTest(unittest.TestCase):
 
     def test_the_night_and_busy_windows_are_the_same_shape_in_est_and_edt(self):
         """Switching to EST must not move the *local* hour weights by an hour."""
+<<<<<<< HEAD
         caps = gap_caps()
         local_hours = {int(label.split(':')[0]) for label in self.timetable}
         self.assertEqual(local_hours, set(range(24)))
@@ -459,6 +478,16 @@ class DSTTimetableTest(unittest.TestCase):
             spacing = 60.0 / len(labels) if labels else None
             self.assertIsNotNone(spacing, f'local hour {hour} has no fetch')
             self.assertLessEqual(round(spacing, 6), caps[hour] + 1e-9)
+=======
+        october = {int(label.split(':')[0]) for label in self.timetable}
+        for hour in range(24):
+            labels = [l for l in self.timetable if int(l.split(':')[0]) == hour]
+            caps = gap_caps()
+            spacing = 60.0 / len(labels) if labels else None
+            self.assertIsNotNone(spacing, f'local hour {hour} has no fetch')
+            self.assertLessEqual(round(spacing, 6), caps[hour] + 1e-9)
+        self.assertEqual(october, set(range(24)))
+>>>>>>> origin/master
         # November instants sit exactly one hour later in UTC than October's.
         for label in ('00:00', '06:00', '12:00', '23:40'):
             october_dt = timetable_datetimes(date(2026, 10, 16), [label])[0]
