@@ -7,11 +7,13 @@
 
 数据来源（三种，都会用到）：
 
-* **数据提交** —— ``data/stations.json`` 的 git 提交历史。每次抓取只要上游快照
-  有变化就会产生一次提交，提交主题区分来源：
-  ``Update gas prices data [skip ci]`` = GitHub Actions（``static.yml`` 的
-  schedule / repository_dispatch / push），带 ``(local probe)`` 标记的 = 本机探针
-  （``scripts/local_fetch_loop.sh``）。既有的 Agent 提交、文档提交不是抓取，忽略。
+* **数据提交** —— 快照/状态文件的 git 提交历史：``data/stations.json``（#103 之前
+  每次抓取提交一次的位置）**加** ``data/fetch-state.json``（#103 之后 ``stations.json``
+  是派生快照、不再入库，而闸门每次放行都会重写 ``fetch-state``，且本机探针从不写它）。
+  提交主题区分来源：``Update gas prices data [skip ci]`` = GitHub Actions
+  （``static.yml`` 的 schedule / repository_dispatch / push），带 ``(local probe)``
+  标记的 = 本机探针（``scripts/local_fetch_loop.sh``）。既有的 Agent 提交、文档提交
+  不是抓取，忽略；同一次提交同时改到两个文件也只算一次。
 * **探针台账** —— ``data/fetch-log.json``（#74）：每次**完整跑完链路**的时刻，
   不依赖快照是否变化，是比提交历史更精确的探针真值。
 * **已提交时刻表** —— ``data/fetch-schedule.json`` 的 ``timetable``（#91）：本机
@@ -39,7 +41,7 @@
 
 | 来源 | 真值 |
 | --- | --- |
-| `actions` | `data/stations.json` 的提交历史里由 Actions 提交的抓取 |
+| `actions` | `data/stations.json` + `data/fetch-state.json` 的提交历史里由 Actions 提交的抓取 |
 | `local-probe` | 同上带 `(local probe)` 标记的提交，加 `data/fetch-log.json` 台账 |
 | `local-dispatch` | **已提交的时刻表**（`data/fetch-schedule.json` 的 `timetable`）+ `schedule_eval.py` |
 
@@ -74,7 +76,13 @@ from fetch_strategy import LOCAL_TZ, format_timetable, local_zone, parse_timetab
 ROOT = Path(__file__).resolve().parent.parent
 DEFAULT_DATA_DIR = ROOT / 'data'
 
+# Issue #103: the snapshot stopped being committed (derived), so the fetch
+# record is read from the historical snapshot commits *and* from the gate state
+# (`fetch-state.json`, rewritten by every admitted Actions run and never by the
+# local probe). A commit touching both paths is de-duplicated below.
 SNAPSHOT_REL = 'data/stations.json'
+FETCH_STATE_REL = 'data/fetch-state.json'
+FETCH_HISTORY_PATHS = (SNAPSHOT_REL, FETCH_STATE_REL)
 PROBE_LOG_FILE = 'fetch-log.json'
 JSON_FILE = 'trigger-interval.json'
 SCHEDULE_FILE = 'fetch-schedule.json'
@@ -142,20 +150,41 @@ def parse_git_log(output):
     return out
 
 
-def load_git_fetches(root, rel=SNAPSHOT_REL, max_commits=MAX_COMMITS):
-    """从 ``data/stations.json`` 的提交历史重建真实抓取序列。
+def load_git_fetches(root, rel=None, max_commits=MAX_COMMITS):
+    """从快照/闸门状态的提交历史重建真实抓取序列。
+
+    ``rel`` 可以是单个路径、路径列表，缺省用 :data:`FETCH_HISTORY_PATHS`
+    （``stations.json`` + ``fetch-state.json``，见 #103）。同一次提交改到两个
+    文件时只保留一条记录（``(时刻, 来源)`` 去重）。
 
     任何 git 失败（不是仓库、没装 git、文件不在历史里）都退化成空列表 ——
     报告必须能在一个干净 checkout 上跑出「没有证据」，而不是抛异常。
     """
-    try:
-        log = subprocess.run(
-            ['git', '-C', str(root), 'log', f'--format=%cI%x1f%s',
-             f'-{int(max_commits)}', '--', str(rel)],
-            capture_output=True, text=True, check=True)
-    except (OSError, subprocess.CalledProcessError, ValueError):
-        return []
-    return parse_git_log(log.stdout)
+    if rel is None:
+        rels = FETCH_HISTORY_PATHS
+    elif isinstance(rel, (list, tuple, set)):
+        rels = tuple(rel)
+    else:
+        rels = (rel,)
+
+    fetches = []
+    seen = set()
+    for path in rels:
+        try:
+            log = subprocess.run(
+                ['git', '-C', str(root), 'log', f'--format=%cI%x1f%s',
+                 f'-{int(max_commits)}', '--', str(path)],
+                capture_output=True, text=True, check=True)
+        except (OSError, subprocess.CalledProcessError, ValueError):
+            continue
+        for rec in parse_git_log(log.stdout):
+            key = (rec['at'], rec['source'])
+            if key in seen:
+                continue
+            seen.add(key)
+            fetches.append(rec)
+    fetches.sort(key=lambda rec: rec['at'])
+    return fetches
 
 
 def probe_fetch_times(fetch_log):
@@ -592,8 +621,9 @@ def build_payload(data_dir, root, now, target_minutes=BUSY_P90_MAX_MINUTES,
             'min_intervals': MIN_INTERVALS,
         },
         'source': {
-            SOURCE_ACTIONS: f'git commit history of {SNAPSHOT_REL} (subject filter)',
-            SOURCE_PROBE: f'{SNAPSHOT_REL} commits + data/{PROBE_LOG_FILE}',
+            SOURCE_ACTIONS: (f'git commit history of {SNAPSHOT_REL} + '
+                             f'{FETCH_STATE_REL} (subject filter, #103)'),
+            SOURCE_PROBE: f'{SNAPSHOT_REL}/{FETCH_STATE_REL} commits + data/{PROBE_LOG_FILE}',
             SOURCE_DISPATCH: (f'data/{SCHEDULE_FILE} timetable + '
                               'scripts/schedule_eval.py (issues #91/#93)'),
         },

@@ -6,9 +6,11 @@ compare across data-pipeline changes (#67/#68):
 
 1. **end-to-end latency** — ``observation_at - metadata.generated_at``: how long
    after upstream published a snapshot it was fetched and recorded. The current
-   run contributes one sample to a small rolling ledger kept inside
-   ``data/metrics.json`` (the only place a fetch timestamp survives), so the
-   script can report a real p50/p90/p95 instead of a single number.
+   run contributes one sample to a small rolling ledger, so the script can
+   report a real p50/p90/p95 instead of a single number. Since issue #103 the
+   ledger lives in its own tiny committed file (``data/metrics-ledger.json``):
+   ``data/metrics.json`` is a derived snapshot and is no longer committed, so a
+   ledger stored inside it would reset on every run.
 2. **site freshness** — ``now - last_seen_at`` over the per-station change
    store (``data/history/station-changes.json``, issue #68): how far every
    station's on-screen price can be behind upstream.
@@ -31,8 +33,11 @@ ROOT = Path(__file__).resolve().parent.parent
 DEFAULT_DATA_DIR = ROOT / 'data'
 STATION_CHANGES_REL = Path('history') / 'station-changes.json'
 METRICS_FILE = 'metrics.json'
+# Issue #103: metrics.json is derived (not committed), so the rolling latency
+# ledger needs a persistent home of its own. It is tiny and bounded.
+LEDGER_FILE = 'metrics-ledger.json'
 
-# Rolling end-to-end latency ledger. ~48 bytes/sample keeps metrics.json well
+# Rolling end-to-end latency ledger. ~48 bytes/sample keeps the ledger well
 # under the 50 KB budget even at the full 96 fetches/day (three days of history).
 MAX_LATENCY_SAMPLES = 300
 LATENCY_BUDGET_BYTES = 50 * 1024
@@ -202,6 +207,21 @@ def hourly_change_rate(profile):
     }
 
 
+def load_latency_samples(data_dir):
+    """Latency samples from the persistent ledger (fallback: metrics.json).
+
+    The ``metrics.json`` fallback only helps a workspace that still carries the
+    pre-#103 file; in CI the ledger is the source.
+    """
+    data_dir = Path(data_dir)
+    ledger = load_json(data_dir / LEDGER_FILE) or {}
+    samples = ledger.get('samples')
+    if isinstance(samples, list) and samples:
+        return samples
+    previous = load_json(data_dir / METRICS_FILE) or {}
+    return ((previous.get('latency_seconds') or {}).get('samples') or [])
+
+
 def compute_metrics(data_dir, now):
     """Build the full metrics payload from the committed data files."""
     data_dir = Path(data_dir)
@@ -209,13 +229,12 @@ def compute_metrics(data_dir, now):
     station_store = load_json(data_dir / STATION_CHANGES_REL) or {}
     fetch_state = load_json(data_dir / 'fetch-state.json') or {}
     profile = load_json(data_dir / 'update-profile.json') or {}
-    previous = load_json(data_dir / METRICS_FILE) or {}
 
     source_generated_at = (stations.get('metadata') or {}).get('generated_at')
     observed_at = observation_at(station_store, fetch_state)
     latency_stats, samples = build_latency(
         observed_at, parse_iso(source_generated_at),
-        ((previous.get('latency_seconds') or {}).get('samples') or []),
+        load_latency_samples(data_dir),
     )
 
     return {
@@ -293,6 +312,10 @@ def main(argv=None):
 
     if not args.no_write:
         save_json(Path(args.data_dir) / METRICS_FILE, metrics)
+        # Persistent slice of the derived metrics (#103): the latency ledger.
+        save_json(Path(args.data_dir) / LEDGER_FILE,
+                  {'v': 1, 'updated_at': metrics['generated_at'],
+                   'samples': metrics['latency_seconds']['samples']})
 
     if args.json:
         print(json.dumps(metrics, ensure_ascii=False, separators=(',', ':')))

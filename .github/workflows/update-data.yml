@@ -81,6 +81,27 @@ jobs:
            python scripts/update_profile.py || echo "Fetch profile update failed"
            python scripts/append_history.py || echo "History append failed"
 
+      # The derived snapshots are no longer committed (issue #103), so a failed
+      # step can no longer fall back to the committed copy: the run fails here
+      # instead, which also skips the Pages job, so the previous deployment
+      # keeps serving the last good snapshot.
+      #
+      # Only the two snapshots the frontend *awaits unconditionally* are
+      # required (`js/map.js` -> data/stations.json, `js/dashboard.js` ->
+      # loadHistoryData() -> data/history.json, no catch). `stats.json` and
+      # `metrics.json` have no frontend consumer (PM agent evidence only) and
+      # `metrics.py` is deliberately continue-on-error (#70), so requiring them
+      # would let a metrics bug block every deploy.
+      - name: Require the derived snapshots the site awaits
+        if: steps.gate.outputs.due == 'true'
+        run: |
+          for f in data/stations.json data/history.json; do
+            test -s "$f" || {
+              echo "$f missing: refusing to commit/deploy a site whose dashboard/map would 404 (issue #103)" >&2
+              exit 1
+            }
+          done
+
       # Weekly Régie Bulletin: official region-level retail margins. The script
       # makes a conditional request and only rewrites the data file when the
       # bulletin actually changed, so this never produces empty commits.
@@ -106,23 +127,56 @@ jobs:
         run: |
           python scripts/check_data_size.py
 
-      - name: Commit and push if changed
+      # Brotli siblings are build output only (nothing in `js/` reads them and
+      # GitHub Pages does not negotiate precompressed files), so they travel
+      # with the artifact instead of git (issue #103).
+      - name: Compress data files
         if: steps.gate.outputs.due == 'true'
-        continue-on-error: true
         run: |
           sudo apt-get install -y brotli
-          brotli -fZ data/stations.json -o data/stations.json.br
-          brotli -fZ data/stats.json -o data/stats.json.br
-          brotli -fZ data/history.json -o data/history.json.br
-          [ -f data/regie-margin.json ] && brotli -fZ data/regie-margin.json -o data/regie-margin.json.br
-          [ -f data/metrics.json ] && brotli -fZ data/metrics.json -o data/metrics.json.br
+          for f in data/stations.json data/stats.json data/metrics.json data/history.json data/regie-margin.json; do
+            [ -f "$f" ] || continue
+            brotli -fZ "$f" -o "$f.br"
+          done
           for f in data/history/*.json; do
             [ -f "$f" ] || continue
             brotli -fZ "$f" -o "$f.br"
           done
+
+      # Issue #103: `data/` has two layers. Derived snapshots (`stations.json`,
+      # `stats.json`, `metrics.json`, `history.json`) are regenerated on every
+      # fetch, so committing them only grew the pack (~24.5 MiB/day measured);
+      # persistent state (the tier store, the station change store, the learned
+      # profile, the gate/probe ledgers) is what must stay in git. The
+      # classification lives in `scripts/data_layers.py`; `--check` fails the
+      # run when a new data file belongs to neither layer, and the step outputs
+      # are the path lists used by the two steps below.
+      - name: Classify data files (derived vs persistent, issue #103)
+        id: layers
+        if: steps.gate.outputs.due == 'true'
+        run: |
+          python scripts/data_layers.py --check
+          python scripts/data_layers.py --github-output "$GITHUB_OUTPUT"
+          python scripts/data_layers.py --pathspec-file "$RUNNER_TEMP/data-commit-paths.txt"
+
+      # The derived snapshot is what the Pages build consumes. It cannot come
+      # from the checkout any more, so it travels as an artifact (a fresh
+      # download holds no `stations.json`).
+      - name: Upload derived data snapshot (not committed)
+        if: steps.gate.outputs.due == 'true'
+        uses: actions/upload-artifact@v4
+        with:
+          name: data-snapshot
+          path: ${{ steps.layers.outputs.data_artifact_paths }}
+          retention-days: 1
+
+      - name: Commit and push if changed
+        if: steps.gate.outputs.due == 'true'
+        continue-on-error: true
+        run: |
           git config --global user.name 'github-actions[bot]'
           git config --global user.email 'github-actions[bot]@users.noreply.github.com'
-          git add data/
+          git add --pathspec-from-file="$RUNNER_TEMP/data-commit-paths.txt"
           git diff-index --quiet HEAD || git commit -m "Update gas prices data [skip ci]" || echo "Nothing to commit"
           git push https://x-access-token:${GITHUB_TOKEN}@github.com/${GITHUB_REPOSITORY}.git || echo "Push failed or no changes"
         env:

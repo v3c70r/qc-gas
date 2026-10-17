@@ -74,6 +74,18 @@ jobs:
           VITE_MAPBOX_ACCESS_TOKEN: ${{ secrets.VITE_MAPBOX_ACCESS_TOKEN }}
         run: npm run build
 
+      # Issue #103: the derived snapshots (`stations.json`, `stats.json`,
+      # `metrics.json`, `history.json` and the `.br` siblings) are no longer
+      # committed, so a fresh checkout does not contain them. The data job
+      # uploads them as `data-snapshot` on every admitted run; restore them into
+      # `data/` before the site copies that folder. The artifact root is `data/`,
+      # so the files land exactly where the committed ones used to be.
+      - name: Restore derived data snapshot (issue #103)
+        uses: actions/download-artifact@v4
+        with:
+          name: data-snapshot
+          path: data
+
       - name: Copy data folder
         run: cp -r data dist/
 

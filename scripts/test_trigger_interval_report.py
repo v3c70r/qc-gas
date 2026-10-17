@@ -29,6 +29,7 @@ import tempfile
 import unittest
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
+from unittest import mock
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
@@ -89,6 +90,53 @@ class GitLogParsingTest(unittest.TestCase):
 
     def test_empty_input_yields_no_fetches(self):
         self.assertEqual(tir.parse_git_log(''), [])
+
+
+class GitHistorySourceTest(unittest.TestCase):
+    """Issue #103: the derived snapshot stopped being committed.
+
+    ``data/stations.json`` used to be the fetch record: one commit per changed
+    snapshot. It is a derived snapshot now, so the Actions side is read from
+    ``data/fetch-state.json`` (written by the gate on every admitted run, never
+    by the local probe) **in addition to** the historical snapshot commits, so
+    the old era in the report does not disappear.
+    """
+
+    def test_the_fetch_record_spans_the_snapshot_and_the_gate_state(self):
+        self.assertIn(tir.SNAPSHOT_REL, tir.FETCH_HISTORY_PATHS)
+        self.assertIn(tir.FETCH_STATE_REL, tir.FETCH_HISTORY_PATHS)
+
+    def test_git_log_is_read_for_every_history_path(self):
+        calls = []
+
+        class Result:
+            stdout = ''
+
+        def fake_run(cmd, **kwargs):
+            calls.append(cmd)
+            return Result()
+
+        with mock.patch.object(tir.subprocess, 'run', fake_run):
+            tir.load_git_fetches(ROOT)
+
+        paths = [cmd[cmd.index('--') + 1] for cmd in calls if '--' in cmd]
+        for rel in tir.FETCH_HISTORY_PATHS:
+            self.assertIn(rel, paths)
+
+    def test_a_commit_touching_both_files_is_counted_once(self):
+        log = '2026-10-12T08:08:29+00:00\x1fUpdate gas prices data [skip ci]\n'
+
+        class Result:
+            stdout = log
+
+        with mock.patch.object(tir.subprocess, 'run', lambda *a, **k: Result()):
+            fetches = tir.load_git_fetches(ROOT)
+        self.assertEqual(len(fetches), 1)
+        self.assertEqual(fetches[0]['source'], tir.SOURCE_ACTIONS)
+
+    def test_the_report_names_the_new_source(self):
+        payload = tir.build_payload(ROOT / 'data', ROOT, END, with_dispatch=False)
+        self.assertIn(tir.FETCH_STATE_REL, payload['source'][tir.SOURCE_ACTIONS])
 
 
 class IntervalStatsTest(unittest.TestCase):

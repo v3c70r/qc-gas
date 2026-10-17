@@ -2,13 +2,17 @@ import { test, expect } from '@playwright/test';
 import { readFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import path from 'node:path';
+import { derivedDataPath } from './fixtures/data-snapshots.js';
 
 const BASE_URL = process.env.BASE_URL || 'http://localhost:5173';
 const DEPLOY_URL = 'https://qgu.io/qc-gas/';
 
-const stationsFixture = JSON.parse(
-  readFileSync(path.join(path.dirname(fileURLToPath(import.meta.url)), '../data/stations.json'), 'utf8')
-);
+// `data/stations.json` is a derived snapshot (issue #103: not committed), so a
+// fresh clone has none — see tests/fixtures/data-snapshots.js. The dashboard
+// specs need `data/history.json` the same way: the bootstrap restores both
+// before the dev server is asked for them.
+const stationsSource = derivedDataPath('stations.json');
+const stationsFixture = JSON.parse(readFileSync(stationsSource, 'utf8'));
 
 test.describe('QC Gas Price App - Regression Tests', () => {
   test.beforeEach(async ({ page }) => {
