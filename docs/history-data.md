@@ -149,15 +149,23 @@ line). Nothing is committed from a stale snapshot either way.
 
 ### Tests and local development without the snapshot
 
-A fresh clone has no `data/stations.json` (it is derived). The browser tests
-therefore load the snapshot through `tests/fixtures/stations-data.js`: when the
-real file is absent it restores a committed gzip of one snapshot
-(`tests/fixtures/stations.sample.json.gz`, ~100 KB, static) into `data/`, so the
-specs still see the real 2 463-station set (density matters — "≤ 25 km around
-Montréal" needs > 200 stations) and a dev server serves it normally. Local
-development can do the same by running the pipeline once
-(`python3 scripts/download_data.py && python3 scripts/process_data.py`), which is
-what the probe does every 15 minutes anyway.
+A fresh clone or `git worktree` has neither `data/stations.json` nor
+`data/history.json` (both derived). The browser tests therefore go through
+`tests/fixtures/data-snapshots.js`: when a file is absent it restores a committed
+gzip of one real snapshot (`stations.sample.json.gz` ~100 KB,
+`history.sample.json.gz` ~26 KB, both static) into `data/`, so the specs still
+see the real 2 463-station set and all 18 regions — density and breadth matter
+("≤ 25 km around Montréal" needs > 200 stations; the ranking specs need every
+region). `data/history.json` is required for the same reason the deploy guard
+requires it: `js/dashboard.js` awaits `loadHistoryData()` without a catch, so
+without the file the dashboard panel never opens (that was the functional-test
+failure in #103 review round 2). `stats.json` / `metrics.json` are not restored —
+no frontend code reads them.
+
+Local development can regenerate the real files by running the pipeline once
+(`python3 scripts/download_data.py && python3 scripts/process_data.py &&
+python3 scripts/append_history.py`), which is what the probe does every 15
+minutes anyway.
 
 Criterion 2 of #103 (pack growth < 10 MiB/day measured with
 `git count-objects -vH` after `git gc --prune=now`) is a **production**

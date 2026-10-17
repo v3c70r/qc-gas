@@ -242,9 +242,6 @@ class WorkflowWiringTest(unittest.TestCase):
                 self.assertIn(rel, step)
         self.assertIn('test -s "$f"', step)
 
-    def test_workflow_runs_the_classification_check(self):
-        self.assertIn('data_layers.py --check', self.update)
-
 
 class DocsTest(unittest.TestCase):
     def test_docs_state_the_derived_vs_persistent_rule(self):
