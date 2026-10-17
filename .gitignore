@@ -75,6 +75,25 @@ playwright-report/
 # locally instead of being committed (~39 MiB/day of snapshots before #92).
 data/probe-local/
 
+# ==========================================
+# Derived data snapshots (issue #103)
+# ==========================================
+# Regenerated on every admitted fetch and rebuilt from the tier files, so they
+# never enter git history (they cost ~24 MiB of pack growth per day before
+# #103). They still reach the site through the Pages artifact
+# (`actions/upload-artifact` in update-data.yml). Persistent state
+# (`data/history/**`, `data/update-profile.json`, `data/fetch-*.json`,
+# `data/metrics-ledger.json`, ...) stays tracked. Classification lives in
+# `scripts/data_layers.py`; rule for new files: docs/history-data.md.
+data/stations.json
+data/stats.json
+data/metrics.json
+data/history.json
+# Brotli siblings are build output for the artifact only: nothing reads them
+# and each one is a full new blob per commit.
+data/*.json.br
+data/**/*.br
+
 # Agent loop
 .agent/tmp/
 .agent/logs/

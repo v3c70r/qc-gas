@@ -242,6 +242,29 @@ class MetricsCliTest(unittest.TestCase):
         on_disk = read_json(self.data_dir / 'metrics.json')
         self.assertEqual([s['s'] for s in on_disk['latency_seconds']['samples']], [60.0, 72.0])
 
+    def test_latency_ledger_survives_in_its_own_persistent_file(self):
+        # Issue #103 stopped committing data/metrics.json (pure derived snapshot),
+        # so the rolling ledger needs a file of its own or every run would
+        # report a single-sample latency again.
+        self.seed()
+        write_json(self.data_dir / 'metrics-ledger.json',
+                   {'v': 1, 'samples': [{'at': '2026-10-12T10:00:00Z', 's': 60.0}]})
+        self.run_cli('--json')
+        on_disk = read_json(self.data_dir / 'metrics-ledger.json')
+        self.assertEqual([s['s'] for s in on_disk['samples']], [60.0, 72.0])
+        payload = read_json(self.data_dir / 'metrics.json')
+        self.assertEqual(payload['latency_seconds']['count'], 2)
+        self.assertEqual([s['s'] for s in payload['latency_seconds']['samples']], [60.0, 72.0])
+
+    def test_ledger_file_does_not_grow_past_the_sample_cap(self):
+        self.seed()
+        samples = [{'at': f'2026-10-12T{h:02d}:00:00Z', 's': 10.0 + h}
+                   for h in range(metrics.MAX_LATENCY_SAMPLES + 10)]
+        write_json(self.data_dir / 'metrics-ledger.json', {'v': 1, 'samples': samples})
+        self.run_cli('--json')
+        on_disk = read_json(self.data_dir / 'metrics-ledger.json')
+        self.assertEqual(len(on_disk['samples']), metrics.MAX_LATENCY_SAMPLES)
+
     def test_missing_inputs_degrade_without_crashing(self):
         rc, out = self.run_cli('--json')
         self.assertEqual(rc, 0)

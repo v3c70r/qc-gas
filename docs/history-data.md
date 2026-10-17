@@ -26,9 +26,138 @@ everything is committed back into this repository.
 5. `scripts/append_history.py` appends one **region-level** 6h bucket and one
    **station-level daily** snapshot to the history store.
 6. `scripts/metrics.py` folds the station change store, the snapshot and the
-   previous metrics into `data/metrics.json` — the latency / freshness numbers
+   previous ledger into `data/metrics.json` — the latency / freshness numbers
    below.
-7. The workflow commits the new files and pushes them back to the repo.
+7. The workflow commits the **persistent** files and pushes them back to the
+   repo; the **derived** snapshots travel to the Pages build as a workflow
+   artifact instead (issue #103, see [Derived snapshots vs persistent
+   state](#derived-snapshots-vs-persistent-state-issue-103)).
+
+## Derived snapshots vs persistent state (issue #103)
+
+Every file under `data/` belongs to exactly one of **two layers**. Before #103
+the workflow did `git add data/`, so each admitted fetch (~65/day) committed
+**19 files**, and most of them are regenerated from scratch on the next run.
+The measured pack growth was ≈24.5 MiB/day (`git count-objects -vH` after
+`git gc`), i.e. only ~32 days of headroom under the 1 GB soft limit.
+
+| Layer | Files | Fate |
+| --- | --- | --- |
+| **Derived snapshots** | `data/stations.json`, `data/stats.json`, `data/metrics.json`, `data/history.json` | written by the pipeline, uploaded as the `data-snapshot` workflow artifact, restored into `data/` by the Pages build — **never committed** |
+| **Build output** | every `*.json.br` sibling | artifact only, never committed (nothing reads them; see [Storage format](#storage-format--sharding)) |
+| **Persistent state** | `data/history/**` (`YYYY-MM` raw shards, `daily.json`, `monthly.json`, `index.json`, `station-history.json`, `station-changes.json`), `data/update-profile.json`, `data/fetch-log.json`, `data/fetch-schedule.json`, `data/fetch-state.json`, `data/metrics-ledger.json`, `data/regie-margin.json`, `data/fetch-interval.json`, `data/trigger-interval.json` | committed on every fetch — this is the only copy that exists |
+
+Why each derived file is derived:
+
+- `data/stations.json` / `data/stats.json` — rebuilt from the upstream snapshot
+  by `download_data.py` + `process_data.py` on every admitted poll;
+- `data/history.json` — rebuilt on **every** run from the tier files
+  (`append_history.py` → `build_merged`), i.e. a frontend mirror;
+- `data/metrics.json` — recomputed digest; the only state it carried (the
+  rolling latency ledger) moved to the persistent `data/metrics-ledger.json`,
+  otherwise every run would report a single-sample latency again.
+
+The partition itself is code, not prose: `scripts/data_layers.py` holds the two
+lists, the workflow gets its `git add` pathspecs and its artifact paths from it
+(`--pathspec-file`, `--github-output`), `--check` fails the run when a file
+under `data/` belongs to neither layer, and `scripts/test_data_layers.py` pins
+the wiring (no derived file tracked by git, no `.br` tracked by git, artifact
+uploaded in `update-data.yml`, restored in `static.yml` before `cp -r data dist/`).
+
+### Measured effect (per data commit)
+
+Attributed with `git verify-pack -v` (size-in-packfile of the blobs each data
+commit added) over the last Actions data commits before the change:
+
+| File | Pack bytes per commit | Layer |
+| --- | --- | --- |
+| `data/stations.json.br` | 42.0 KiB | build output |
+| `data/history/station-history.json.br` | 38.9 KiB | build output |
+| `data/history/station-history.json` | 18.8 KiB | **persistent** |
+| `data/history/station-changes.json.br` | 13.6 KiB | build output |
+| `data/stations.json` | 12.2 KiB | derived |
+| `data/history/station-changes.json` | 12.0 KiB | **persistent** |
+| `data/history.json.br` | 9.2 KiB | build output |
+| `data/history/2026-10.json.br` | 6.9 KiB | build output |
+| `data/history.json` | 4.2 KiB | derived |
+| `data/history/2026-10.json` | 3.1 KiB | **persistent** |
+| `data/metrics.json` + `.br` | 1.4 KiB | derived |
+| `data/update-profile.json` | 0.9 KiB | **persistent** |
+| `data/stats.json` + `.br`, `data/history/index.json` + `.br` | 0.6 KiB | derived / persistent |
+| `data/fetch-schedule.json`, `data/fetch-state.json` | 0.2 KiB | **persistent** |
+
+Replaying the last **44 data commits** (2026-10-17 12:22Z → 19:40Z, 7.3 h) into
+a scratch repository and measuring `git gc --prune=now` + `git count-objects -v`
+after the first snapshot makes the two layers directly comparable:
+
+| | Before #103 (commit everything) | After #103 (persistent only) |
+| --- | --- | --- |
+| Files per data commit | 19 | **7** (`8` when a month shard or the Régie bulletin rolls over) |
+| Pack growth over the 7.3 h window | 8 257 KiB | **858 KiB** |
+| Extrapolated per day (same commit rate) | ≈26.5 MiB/day (matches the 24.5 MiB/day measured in #103) | **≈2.8 MiB/day** |
+| Pack bytes per commit | ≈225 KiB | **≈35 KiB** |
+
+Half of the old growth was the `.br` siblings, which is why the fix is "stop
+committing them" rather than "compress the text better". `data/stations.json` is
+still ~886 KB per snapshot in the workspace and in the artifact — it is simply
+no longer in git history 65 times a day.
+
+### Why the site still shows the newest snapshot
+
+- The Pages build (`static.yml` → `build-and-deploy`) only runs when the gate
+  said `due=true` (`needs.update-data.outputs.due == 'true'`), i.e. exactly when
+  a fresh snapshot was produced. `update-data.yml` uploads it with
+  `actions/upload-artifact` and the build restores it into `data/` before
+  `cp -r data dist/` (`actions/download-artifact`), so the deployed
+  `data/stations.json` is the one from that run (`metadata.generated_at` = the
+  upstream timestamp that triggered it).
+- A non-due wake-up deploys nothing (unchanged), so "no `stations.json` in the
+  repository" never means "stale site".
+- Because the snapshot is no longer in git, a failed download can no longer fall
+  back to the committed copy: the data job now fails loudly (`Require the
+  derived snapshot`), which also skips the Pages job, so the **previous**
+  deployment keeps serving the last good snapshot instead of a site without
+  prices.
+
+### Adding a new data file
+
+1. Write it inside `data/` from one of the pipeline scripts.
+2. Classify it in `scripts/data_layers.py`: a **derived** snapshot (regenerated
+   every fetch / rebuilt from another committed file) goes into
+   `DERIVED_FILES`; anything that cannot be recomputed goes into
+   `PERSISTENT_FILES` (or `PERSISTENT_DIRS`). Add its `.br` to the workflow's
+   compression list if the frontend should be able to fetch a compressed copy.
+3. Document it in this file (the table above and, if it has a retention rule,
+   the [tiered retention](#tiered-retention) table).
+4. Run `python3 -m unittest scripts.test_data_layers` — an unclassified file
+   fails both the unit test and `python3 scripts/data_layers.py --check` in the
+   workflow.
+
+### Rollout note
+
+The first `git pull` in a long-lived worktree (the probe's `master` worktree, an
+agent checkout) deletes the snapshots that used to be tracked while they carry
+local modifications. The probe recovers on its own: `sync_with_remote()` sees
+only `data/`-local changes, resets to upstream, and regenerates the derived
+files in the next cycle (`.agent/probe.log` shows one `pull --rebase failed`
+line). Nothing is committed from a stale snapshot either way.
+
+### Tests and local development without the snapshot
+
+A fresh clone has no `data/stations.json` (it is derived). The browser tests
+therefore load the snapshot through `tests/fixtures/stations-data.js`: when the
+real file is absent it restores a committed gzip of one snapshot
+(`tests/fixtures/stations.sample.json.gz`, ~100 KB, static) into `data/`, so the
+specs still see the real 2 463-station set (density matters — "≤ 25 km around
+Montréal" needs > 200 stations) and a dev server serves it normally. Local
+development can do the same by running the pipeline once
+(`python3 scripts/download_data.py && python3 scripts/process_data.py`), which is
+what the probe does every 15 minutes anyway.
+
+Criterion 2 of #103 (pack growth < 10 MiB/day measured with
+`git count-objects -vH` after `git gc --prune=now`) is a **production**
+measurement: it needs ≈ a day of real Actions commits on `master` after this
+change, not a scratch replay. The replay above is the pre-merge estimate.
 
 ## Fetch rhythm (final)
 
@@ -58,9 +187,14 @@ The **needed** interval comes from #76's staleness study
 whether the shipped triggers actually deliver #91's timetable.
 
 `scripts/trigger_interval_report.py` reads **only committed records**
-(`data/stations.json`'s commit history, the probe ledger `data/fetch-log.json`,
-and the committed timetable `data/fetch-schedule.json`) and reports the
-*measured* interval distribution per trigger source. Since #93 the criterion is
+(the commit history of `data/stations.json` — historical era — plus
+`data/fetch-state.json`, which the gate rewrites on every admitted run and the
+local probe never touches; the probe ledger `data/fetch-log.json`; and the
+committed timetable `data/fetch-schedule.json`) and reports the *measured*
+interval distribution per trigger source. Issue #103 removed the snapshot from
+git, hence the second path: several days of `fetch-state.json` history is a
+cleaner record than the snapshot ever was (it is written even when the upstream
+snapshot did not change). Since #93 the criterion is
 **busy hours (local 06:00–23:59) p90 ≤ 20 minutes over a window of ≥ 12 hours**,
 plus a **stale share ≤ 5 %** for the timetable source (simulated by #91's
 `scripts/schedule_eval.py` on the measured probe series). The old global
@@ -534,7 +668,8 @@ weighted average (`count` weighted), plus the bucket's `min`/`max` extremes.
 | raw | `data/history/YYYY-MM.json` | 6h bucket | last **14 days** | intraday region dashboard |
 | station daily | `data/history/station-history.json` | 1 day (12:00 UTC) | last **180 days** | station card real history |
 | station changes | `data/history/station-changes.json` | last change / last observation | last **180 days seen** | station freshness (`last_changed_at`) + station card "observed X ago" |
-| metrics | `data/metrics.json` | summary + rolling latency ledger | last **300** latency samples | CI / PM agent freshness evidence |
+| metrics | `data/metrics.json` | summary (derived, not committed since #103) | overwritten on every run | CI / PM agent freshness evidence |
+| latency ledger | `data/metrics-ledger.json` | rolling latency samples (persistent since #103) | last **300** samples | p50/p90/p95 over more than the current run |
 | trigger intervals | `data/trigger-interval.json` | measured interval distribution per trigger | overwritten on every run | evidence that the shipped rhythm reaches the busy-hour criterion (#77 / #93) |
 | probe ledger | `data/fetch-log.json` | per-cycle timestamp + per-day counters | last **2000** cycles ≈ 15 days | local probe ground truth for the necessary-interval evaluation (#74 / #76) |
 | daily | `data/history/daily.json` | 1 day (12:00 UTC) | **12 months** | 30–365 day region trend views |
@@ -587,8 +722,11 @@ The frontend-facing `data/history.json` uses the longer, original field names:
 ```
 
 Every JSON file under `data/` also gets a `.br` (Brotli) sibling during the
-workflow (`data/*.json.br`, `data/history/*.json.br`), reusing the existing
-Brotli step.
+workflow (`data/*.json.br`, `data/history/*.json.br`). Those siblings are
+**build output for the Pages artifact only**: nothing in `js/` fetches a
+`*.json.br`, GitHub Pages does not negotiate precompressed files, and each one
+is a full new blob per commit — so since issue #103 **no** `.br` file is
+committed to git (see below).
 
 ## Station-level history storage
 

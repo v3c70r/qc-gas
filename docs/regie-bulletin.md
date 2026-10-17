@@ -33,7 +33,7 @@ upstream / no incremental value over our own finer per-station snapshot.
 | Fetcher + parser | `scripts/fetch_bulletin.py` | conditional GET, `pdftotext -layout`, parse, write |
 | Offline tests | `scripts/test_fetch_bulletin.py` | parses a committed text fixture |
 | Text fixture | `scripts/fixtures/bulletin-2026-09-28.txt` | real `pdftotext -layout` output |
-| Output | `data/regie-margin.json` (+ `.br`) | consumed by the frontend |
+| Output | `data/regie-margin.json` (committed; its `.br` sibling is build output only since #103) | consumed by the frontend |
 | Workflow | `.github/workflows/update-data.yml` | installs `poppler-utils` if needed, runs the fetcher |
 
 ### Upstream etiquette
@@ -131,4 +131,6 @@ Deliberate UI rules:
 
 The Bulletin is a weekly publication (usually published Friday). Because the
 workflow only rewrites the file when the payload changes, the repository gains
-one tiny commit per week at most, plus a fresh `data/regie-margin.json.br`.
+one tiny commit per week at most (`data/regie-margin.json`; the `.br` sibling
+is regenerated for the Pages artifact and never committed, see
+[`history-data.md` §Derived snapshots vs persistent state](./history-data.md#derived-snapshots-vs-persistent-state-issue-103)).
