@@ -18,6 +18,9 @@ export function sh(cmd, opts = {}) {
     cwd: opts.cwd || ROOT,
     encoding: 'utf8',
     stdio: ['pipe', 'pipe', 'pipe'],
+    // env/timeout 必须转发：丢掉它们会静默破坏「每角色 GH_TOKEN 身份注入」与长任务
+    ...(opts.env ? { env: opts.env } : {}),
+    ...(opts.timeout ? { timeout: opts.timeout } : {}),
   });
   return out.trim();
 }
