@@ -386,7 +386,13 @@ and on a 5-minute grid:
   DST-correct: the plan is local, so the 06:00 slot is still 06:00 after the
   EDT→EST switch (`timetable_datetimes()` converts per calendar day; the
   spring-forward hour that never happens is skipped and the fall-back hour is
-  emitted once per offset, so the instants stay unique).
+  emitted once per offset, so the instants stay unique). Covered by
+  `test_schedule_plan.DSTTimetableTest`, which expands the shipped plan on the
+  transition days themselves: 2026-11-01 (fall back, 25 h: 65 slots → 66 UTC
+  instants, the repeated local 01:00 fetched once per offset) and 2026-03-08
+  (spring forward, 23 h: 65 → 64, because local 02:00 has no instant), and
+  asserts unique + strictly increasing UTC instants whose real spacing stays
+  inside the per-hour gap caps.
 * **ε-exploration (#69) is kept**, inside the constraints: probes are the plan's
   slots in the hours whose accumulated `observed_hours` is *below the median*,
   labelled `explore_slots` so the gate tags them `[explore]`. Because the

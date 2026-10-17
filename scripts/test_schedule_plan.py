@@ -11,7 +11,7 @@ import json
 import sys
 import tempfile
 import unittest
-from datetime import datetime, timedelta, timezone
+from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
@@ -21,7 +21,9 @@ from fetch_strategy import (  # noqa: E402
     DEFAULT_DAILY_BUDGET,
     LOCAL_TZ,
     gap_caps,
+    max_gap_minutes,
     parse_timetable,
+    timetable_datetimes,
     timetable_utc_labels,
 )
 
@@ -335,6 +337,145 @@ class CliTest(unittest.TestCase):
             rc = schedule_plan.main(['--budget', '65', '--no-learn',
                                      '--schedule-path', str(path)])
             self.assertEqual(rc, 1)
+
+
+class DSTTimetableTest(unittest.TestCase):
+    """The plan is a *local* timetable: it must survive the DST switch.
+
+    Issue #91's tests only covered October (EDT, UTC-4). Issue #92 adds the
+    November case (EST, UTC-5) and, crucially, the two transition *days*:
+    2026-11-01 (fall back, a 25-hour local day) and 2026-03-08 (spring forward,
+    a 23-hour local day). Asserted on the UTC expansion of the timetable:
+
+    * the local 06:00 slot is 10:00 UTC in October and 11:00 UTC in November;
+    * the slot count only deviates from ``timetable_fetches_per_day`` by the
+      hours DST adds (the repeated local 01:00 is fetched once per offset, so
+      the night floor keeps its hourly cadence) or removes (02:00 never happens
+      locally in spring, so it cannot be fetched);
+    * no instant is duplicated, the UTC instants are strictly increasing, and
+      both the wall-clock and the *real* (UTC) spacing stay within the hard
+      per-hour caps — nothing is fetched twice, nothing is missed.
+    """
+
+    def setUp(self):
+        self.plan = schedule_plan.plan_timetable(budget=DEFAULT_DAILY_BUDGET)
+        self.timetable = self.plan['timetable']
+        self.expected_per_day = self.plan['timetable_fetches_per_day']
+        self.zone = schedule_plan.ZoneInfo(LOCAL_TZ)
+
+    def instants(self, day):
+        return timetable_datetimes(day, self.timetable, tz=LOCAL_TZ)
+
+    def assert_one_fetch_per_slot(self, day, instants):
+        """Strictly increasing UTC instants, no duplicates, inside the caps."""
+        self.assertEqual(len(instants), len(set(instants)),
+                         f'{day}: a slot was fetched twice')
+        self.assertEqual(instants, sorted(instants), f'{day}: not increasing')
+        for earlier, later in zip(instants, instants[1:]):
+            self.assertLess(earlier, later, f'{day}: instants not strictly increasing')
+            local = earlier.astimezone(self.zone)
+            cap = max_gap_minutes(local.hour)
+            real_minutes = (later - earlier).total_seconds() / 60.0
+            self.assertLessEqual(real_minutes, cap + 1e-9,
+                                 f'{day}: real gap {real_minutes:.0f} min after local '
+                                 f'{local:%H:%M} exceeds the {cap} min cap')
+            if local.utcoffset() != later.astimezone(self.zone).utcoffset():
+                # Across the DST seam the wall clock jumps two hours while only
+                # one real hour elapses (or repeats one); the real gap above is
+                # the one that decides whether a sample was missed.
+                continue
+            wall_minutes = ((later.astimezone(self.zone).replace(tzinfo=None)
+                             - local.replace(tzinfo=None)).total_seconds() / 60.0)
+            self.assertLessEqual(wall_minutes, cap + 1e-9,
+                                 f'{day}: wall gap {wall_minutes:.0f} min after local '
+                                 f'{local:%H:%M} exceeds the {cap} min cap')
+
+    def test_local_0600_is_utc_1000_in_october_and_utc_1100_in_november(self):
+        """EST (UTC-5) shifts the *UTC* instant, never the local slot."""
+        october = timetable_datetimes(date(2026, 10, 16), ['06:00'])
+        november = timetable_datetimes(date(2026, 11, 16), ['06:00'])
+        self.assertEqual([dt.strftime('%H:%M') for dt in october], ['10:00'])
+        self.assertEqual([dt.strftime('%H:%M') for dt in november], ['11:00'])
+        # ...and the switch day itself already runs on EST at 06:00 local.
+        switch_day = timetable_datetimes(date(2026, 11, 1), ['06:00'])
+        self.assertEqual([dt.strftime('%H:%M') for dt in switch_day], ['11:00'])
+        self.assertEqual(timetable_utc_labels(['06:00'], day=date(2026, 10, 16)),
+                         ['10:00'])
+        self.assertEqual(timetable_utc_labels(['06:00'], day=date(2026, 11, 4)),
+                         ['11:00'])
+
+    def test_ordinary_days_fetch_the_plan_once(self):
+        for day in (date(2026, 10, 28), date(2026, 11, 4), date(2026, 12, 15)):
+            instants = self.instants(day)
+            self.assertEqual(len(instants), self.expected_per_day, day)
+            self.assert_one_fetch_per_slot(day, instants)
+            local_slots = sorted(dt.astimezone(self.zone).strftime('%H:%M')
+                                 for dt in instants)
+            self.assertEqual(local_slots, sorted(self.timetable), day)
+
+    def test_the_fall_back_day_fetches_every_slot_once_without_double_fetching(self):
+        """2026-11-01 is a 25-hour local day: the repeated 01:00 hour is real."""
+        day = date(2026, 11, 1)
+        instants = self.instants(day)
+        repeated_hour_slots = len([l for l in self.timetable
+                                   if int(l.split(':')[0]) == 1])
+        self.assertEqual(repeated_hour_slots, 1)  # the night floor: one per hour
+        # Same slot count as any other day, plus the hour DST hands back.
+        self.assertEqual(len(instants), self.expected_per_day + repeated_hour_slots)
+        self.assert_one_fetch_per_slot(day, instants)
+        # Every plan slot is fetched, once per local occurrence (01:00 twice).
+        local_slots = sorted(dt.astimezone(self.zone).strftime('%H:%M')
+                             for dt in instants)
+        self.assertEqual(local_slots, sorted(self.timetable + ['01:00']))
+        # The seam is one real hour wide, not zero and not two.
+        seam = [dt for dt in instants if dt.astimezone(self.zone).hour == 1]
+        self.assertEqual([(b - a).total_seconds() / 60.0
+                          for a, b in zip(seam, seam[1:])], [60.0])
+
+    def test_the_spring_forward_day_skips_only_the_hour_that_never_happens(self):
+        """2026-03-08 is a 23-hour local day: local 02:00 has no instant."""
+        day = date(2026, 3, 8)
+        instants = self.instants(day)
+        missing = [l for l in self.timetable if int(l.split(':')[0]) == 2]
+        self.assertEqual(missing, ['02:00'])
+        self.assertEqual(len(instants), self.expected_per_day - len(missing))
+        self.assert_one_fetch_per_slot(day, instants)
+        local_slots = sorted(dt.astimezone(self.zone).strftime('%H:%M')
+                             for dt in instants)
+        self.assertEqual(local_slots,
+                         sorted(l for l in self.timetable if l not in missing))
+        # The seam is still one real hour (01:00 EST -> 03:00 EDT), not two.
+        seam = [dt for dt in instants if dt.astimezone(self.zone).hour in (1, 3)]
+        self.assertIn(60.0, [(b - a).total_seconds() / 60.0
+                             for a, b in zip(seam, seam[1:])])
+
+    def test_the_night_and_busy_windows_are_the_same_shape_in_est_and_edt(self):
+        """Switching to EST must not move the *local* hour weights by an hour."""
+        caps = gap_caps()
+        local_hours = {int(label.split(':')[0]) for label in self.timetable}
+        self.assertEqual(local_hours, set(range(24)))
+        for hour in range(24):
+            labels = [l for l in self.timetable if int(l.split(':')[0]) == hour]
+            spacing = 60.0 / len(labels) if labels else None
+            self.assertIsNotNone(spacing, f'local hour {hour} has no fetch')
+            self.assertLessEqual(round(spacing, 6), caps[hour] + 1e-9)
+        # November instants sit exactly one hour later in UTC than October's.
+        for label in ('00:00', '06:00', '12:00', '23:40'):
+            october_dt = timetable_datetimes(date(2026, 10, 16), [label])[0]
+            november_dt = timetable_datetimes(date(2026, 11, 16), [label])[0]
+            self.assertEqual(november_dt.hour, (october_dt.hour + 1) % 24, label)
+            self.assertEqual(november_dt.minute, october_dt.minute, label)
+
+    def test_the_schedule_code_uses_zoneinfo_not_a_fixed_offset(self):
+        """A fixed offset (``timedelta(hours=-4)``) would misfire all winter."""
+        import re
+        pattern = re.compile(r'timedelta\(hours\s*=\s*-?[45]|'
+                             r'timezone\(timedelta\(hours')
+        for name in ('fetch_strategy.py', 'schedule_plan.py', 'schedule_eval.py',
+                     'should_fetch.py', 'update_profile.py'):
+            source = (Path(__file__).resolve().parent / name).read_text(encoding='utf-8')
+            self.assertIsNone(pattern.search(source),
+                              f'{name} hard-codes a UTC offset; use ZoneInfo')
 
 
 if __name__ == '__main__':
