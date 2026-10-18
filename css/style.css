@@ -525,6 +525,11 @@ body {
   gap: 4px;
 }
 
+/* `hidden` must win over the flex rule above: an author `display` beats the UA
+   `[hidden] { display: none }` sheet, which would leave the sort buttons
+   visible (and meaningless) in the per-region view. */
+.sort-switch[hidden] { display: none; }
+
 .sort-btn {
   display: inline-flex;
   align-items: center;

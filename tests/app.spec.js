@@ -4362,11 +4362,25 @@ test.describe('Sidebar list — "Par région" summary view (Issue #87)', () => {
       expect(label.length).toBeGreaterThan(0);
     }
 
-    // Keyboard reachable: focusing and pressing Enter selects the view.
-    await page.locator(REGIONS_BTN).focus();
-    await expect(page.locator(REGIONS_BTN)).toBeFocused();
-    await page.keyboard.press('Enter');
+    // Roving tabindex: only the checked radio is in the tab order.
+    await expect(page.locator(STATIONS_BTN)).toHaveAttribute('tabindex', '0');
+    await expect(page.locator(REGIONS_BTN)).toHaveAttribute('tabindex', '-1');
+
+    // Keyboard contract of a radiogroup: Tab reaches the checked radio, arrow
+    // keys move the selection (and the focus) without leaving the group.
+    await page.locator(STATIONS_BTN).focus();
+    await expect(page.locator(STATIONS_BTN)).toBeFocused();
+    await page.keyboard.press('ArrowRight');
     await expect(page.locator(REGIONS_BTN)).toHaveAttribute('aria-checked', 'true');
+    await expect(page.locator(REGIONS_BTN)).toBeFocused();
+    await expect(page.locator(STATIONS_BTN)).toHaveAttribute('aria-checked', 'false');
+    await expect(page.locator(REGIONS_BTN)).toHaveAttribute('tabindex', '0');
+    await expect(page.locator(STATIONS_BTN)).toHaveAttribute('tabindex', '-1');
+
+    // And back, without leaving the group.
+    await page.keyboard.press('ArrowLeft');
+    await expect(page.locator(STATIONS_BTN)).toHaveAttribute('aria-checked', 'true');
+    await expect(page.locator(STATIONS_BTN)).toBeFocused();
   });
 
   test('one row per region with min price, station count and median (computed from the snapshot)', async ({ page }) => {
@@ -4384,6 +4398,9 @@ test.describe('Sidebar list — "Par région" summary view (Issue #87)', () => {
     // Station rows are replaced, not appended: the view is a different listing.
     await expect(page.locator(LIST_ITEM)).toHaveCount(0);
     await expect(page.locator('#show-more-stations')).toBeHidden();
+    // Sorting a region summary by price/distance is meaningless: the control
+    // (and its hint) must really be gone, not just marked unavailable.
+    await expect(page.locator('#list-sort')).toBeHidden();
 
     const rows = await domRegionRows(page);
     expect(rows.map((r) => r.region)).toEqual(expected.map((r) => r.region));
@@ -4403,6 +4420,41 @@ test.describe('Sidebar list — "Par région" summary view (Issue #87)', () => {
     // Ascending by cheapest price.
     const mins = rows.map((r) => r.min);
     expect(mins).toEqual([...mins].sort((a, b) => a - b));
+  });
+
+  test('region view hides the distance-sort hint and counts rows as regions, not stations', async ({ page }) => {
+    // A persisted distance sort without a reference point normally explains
+    // itself under the list header — that hint is meaningless in the summary.
+    await page.addInitScript(() => {
+      if (localStorage.getItem('qc-gas-test-seeded')) return;
+      localStorage.clear();
+      localStorage.setItem('qc-gas-list', JSON.stringify({ sort: 'distance' }));
+      localStorage.setItem('qc-gas-test-seeded', '1');
+    });
+    await page.goto(BASE_URL);
+    await waitForStations(page);
+
+    await expect(page.locator('#sort-distance-hint')).toBeVisible();
+
+    await page.locator(REGIONS_BTN).click();
+    const total = await page.locator(REGION_ROW).count();
+    expect(total).toBeGreaterThan(1);
+    await expect(page.locator('#sort-distance-hint')).toBeHidden();
+    await expect(page.locator('#list-sort')).toBeHidden();
+
+    // The header count follows the rendered rows and is worded in regions, so
+    // "18" cannot be read as 18 stations in the province.
+    const shown = page.locator('#stations-shown-count');
+    await expect(shown).toHaveAttribute('data-shown', String(total));
+    await expect(shown).toContainText(String(total));
+    await expect(shown).toContainText(/region|région|地区/i);
+    await expect(shown).not.toContainText(/Showing|Affichées|已显示/i);
+
+    // Back to the station listing: sort control, hint and station wording return.
+    await page.locator(STATIONS_BTN).click();
+    await expect(page.locator('#list-sort')).toBeVisible();
+    await expect(page.locator('#sort-distance-hint')).toBeVisible();
+    await expect(shown).toContainText(/Showing|Affichées|已显示/i);
   });
 
   test('clicking a region row scopes the map and list to it, then returns to Stations', async ({ page }) => {
@@ -4427,6 +4479,11 @@ test.describe('Sidebar list — "Par région" summary view (Issue #87)', () => {
     await expect(page.locator(STATIONS_BTN)).toHaveAttribute('aria-checked', 'true');
     await expect(page.locator(REGION_ROW)).toHaveCount(0);
     await expect(page.locator(LIST_ITEM).first()).toBeVisible();
+
+    // The summary rows were replaced, so focus must land on the new first row
+    // instead of falling back to <body> (keyboard users would restart at the top).
+    const focusedClass = await page.evaluate(() => document.activeElement?.className || '');
+    expect(focusedClass).toContain('list-item');
 
     await page.locator('#filter-toggle').click();
     await expect(page.locator('#region-filter')).toHaveValue(target.region);

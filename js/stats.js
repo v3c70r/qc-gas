@@ -341,12 +341,15 @@ function sortStationList(features, priceKey) {
   return sorted;
 }
 
-function updateListCount(shown, total) {
+function updateListCount(shown, total, key = 'shownCount') {
   const el = document.getElementById('stations-shown-count');
   if (!el) return;
   el.dataset.shown = String(shown);
   el.dataset.total = String(total);
-  el.textContent = tf('shownCount', { shown, total });
+  // Remembered so a language switch re-renders the same wording (stations vs
+  // regions) instead of silently reverting to the station count.
+  el.dataset.countKey = key;
+  el.textContent = tf(key, { shown, total, n: shown });
 }
 
 function updateShowMoreButton() {
@@ -385,7 +388,9 @@ function renderSortControls() {
 
   const hint = document.getElementById('sort-distance-hint');
   if (!hint) return;
-  const show = !available && (distanceHintVisible || sortMode === 'distance');
+  // The per-region summary has no station ordering at all, so the "enable
+  // location to sort by distance" explanation would be misleading there.
+  const show = listView !== 'regions' && !available && (distanceHintVisible || sortMode === 'distance');
   hint.hidden = !show;
   if (show) hint.textContent = t('distanceSortNeedsLocation');
 }
@@ -573,6 +578,9 @@ function renderViewControls() {
       const active = btn.dataset.view === listView;
       btn.classList.toggle('active', active);
       btn.setAttribute('aria-checked', String(active));
+      // Roving tabindex: a radiogroup is a single tab stop, so Tab lands on the
+      // checked radio and the arrows move inside the group (WCAG 2.1 A: 4.1.2).
+      btn.tabIndex = active ? 0 : -1;
     });
   }
 
@@ -619,6 +627,10 @@ function enterRegion(region) {
   listView = 'stations';
   persistListPreferences();
   updateStats();
+  // The summary rows were just replaced by station rows, so focus would fall
+  // back to <body> and the keyboard user would restart at the top of the page.
+  // Land on the first station of the region they just entered (WCAG 2.4.3).
+  document.querySelector('#station-list .list-item')?.focus();
 }
 
 function createRegionRow(summary) {
@@ -669,8 +681,9 @@ function renderRegionView(priceKey) {
     return;
   }
   summaries.forEach(summary => list.appendChild(createRegionRow(summary)));
-  // The header count describes rows in the list, so it follows the view.
-  updateListCount(summaries.length, summaries.length);
+  // The header count describes rendered rows, and these rows are regions, not
+  // stations — reusing the station wording would read "18" as 18 stations.
+  updateListCount(summaries.length, summaries.length, 'shownRegions');
   updateShowMoreButton();
 }
 
@@ -760,6 +773,26 @@ export function initStationListControls() {
       listView = view;
       persistListPreferences();
       updateStationList();
+    });
+
+    // Arrow keys move the selection inside the radiogroup (roving tabindex is
+    // set by renderViewControls); Home/End jump to the ends.
+    viewSwitch.addEventListener('keydown', (e) => {
+      const btn = e.target.closest('.view-btn');
+      if (!btn) return;
+      const buttons = [...viewSwitch.querySelectorAll('.view-btn')];
+      const index = buttons.indexOf(btn);
+      if (index < 0) return;
+      let next;
+      if (e.key === 'Home') next = 0;
+      else if (e.key === 'End') next = buttons.length - 1;
+      else if (e.key === 'ArrowLeft' || e.key === 'ArrowUp') next = (index - 1 + buttons.length) % buttons.length;
+      else if (e.key === 'ArrowRight' || e.key === 'ArrowDown') next = (index + 1) % buttons.length;
+      else return;
+      e.preventDefault();
+      // Same activation path as a click, so availability is honoured too.
+      buttons[next].focus();
+      buttons[next].click();
     });
   }
 }

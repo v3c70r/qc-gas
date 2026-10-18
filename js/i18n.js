@@ -26,6 +26,7 @@ export const translations = {
     openRegionAria: '查看 {region} 的加油站（{n} 个，最低 {price}）',
     showMoreStations: '加载更多 ({n})',
     shownCount: '已显示 {shown} / 共 {total} 条',
+    shownRegions: '{n} 个地区',
     distanceSortNeedsLocation: '请启用定位或选择半径后，才能按距离排序',
     noStations: '未找到加油站',
     noStationsRadiusRegion: '该区域在您的半径范围内没有加油站。',
@@ -217,6 +218,7 @@ export const translations = {
     openRegionAria: 'Show {region} stations ({n} stations, from {price})',
     showMoreStations: 'Show more ({n})',
     shownCount: 'Showing {shown} of {total}',
+    shownRegions: '{n} regions',
     distanceSortNeedsLocation: 'Enable location or pick a radius to sort by distance',
     noStations: 'No stations found',
     noStationsRadiusRegion: 'No stations in your radius for this region.',
@@ -408,6 +410,7 @@ export const translations = {
     openRegionAria: 'Voir les stations de {region} ({n} stations, à partir de {price})',
     showMoreStations: 'Voir plus ({n})',
     shownCount: 'Affichées {shown} / {total}',
+    shownRegions: '{n} régions',
     distanceSortNeedsLocation: 'Activez la localisation ou choisissez un rayon pour trier par distance',
     noStations: 'Aucune station trouvée',
     noStationsRadiusRegion: 'Aucune station dans votre rayon pour cette région.',
@@ -665,9 +668,12 @@ export function applyTranslations(code) {
 
   const shownEl = document.getElementById('stations-shown-count');
   if (shownEl && shownEl.dataset.total !== undefined) {
-    shownEl.textContent = tf('shownCount', {
+    // The per-region view counts rows, not stations: honour the wording the
+    // list last used instead of always re-saying "stations".
+    shownEl.textContent = tf(shownEl.dataset.countKey || 'shownCount', {
       shown: shownEl.dataset.shown,
-      total: shownEl.dataset.total
+      total: shownEl.dataset.total,
+      n: shownEl.dataset.shown
     });
   }
 
