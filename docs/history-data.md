@@ -680,7 +680,7 @@ weighted average (`count` weighted), plus the bucket's `min`/`max` extremes.
 | --- | --- | --- | --- | --- |
 | raw | `data/history/YYYY-MM.json` | 6h bucket | last **14 days** | intraday region dashboard |
 | station daily | `data/history/station-history.json` | 1 day (12:00 UTC) | last **180 days** | station card real history |
-| station changes | `data/history/station-changes.json` | last change / last observation | last **180 days seen** | station freshness (`last_changed_at`) + station card "observed X ago" |
+| station changes | `data/history/station-changes.json` | last change / last observation | last **180 days seen** | station freshness (`last_changed_at`) + station card "observed X ago" / "price changed X ago" (#70 / #96) |
 | metrics | `data/metrics.json` | summary (derived, not committed since #103) | overwritten on every run | CI / PM agent freshness evidence |
 | latency ledger | `data/metrics-ledger.json` | rolling latency samples (persistent since #103) | last **300** samples | p50/p90/p95 over more than the current run |
 | trigger intervals | `data/trigger-interval.json` | measured interval distribution per trigger | overwritten on every run | evidence that the shipped rhythm reaches the busy-hour criterion (#77 / #93) |

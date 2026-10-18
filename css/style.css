@@ -1727,6 +1727,8 @@ select:focus-visible {
 .sc-updated { margin-top: 8px; font-size: 9px; color: #cbd5e1; text-align: center; }
 /* Station-level observation age (issue #70): honest, low-key. */
 .sc-observed { margin-top: 6px; font-size: 10px; color: #94a3b8; text-align: center; }
+/* When this price last moved, per our own ledger (issue #96). */
+.sc-changed { margin-top: 2px; font-size: 10px; color: #94a3b8; text-align: center; }
 .sc-stale { margin-top: 2px; font-size: 9px; color: #b45309; text-align: center; opacity: 0.85; }
 
 /* ══════════════════════════════════════
@@ -2018,6 +2020,8 @@ select:focus-visible {
 .sd-updated { font-size: 10px; color: #94a3b8; text-align: center; }
 /* Station-level observation age (issue #70). */
 .sd-observed { margin-top: 2px; font-size: 11px; color: #94a3b8; }
+/* When this price last moved, per our own ledger (issue #96). */
+.sd-changed { margin-top: 1px; font-size: 11px; color: #94a3b8; }
 .sd-stale { margin-top: 1px; font-size: 10px; color: #b45309; opacity: 0.85; }
 
 /* ── Same-day regional benchmark (popup + detail) ── */

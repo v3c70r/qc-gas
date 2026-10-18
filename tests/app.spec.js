@@ -4111,6 +4111,186 @@ test.describe('Station freshness — observed-at label (Issue #70)', () => {
   });
 });
 
+// ── "How long since this price moved?" (Issue #96) ──────────────────────────
+// `data/history/station-changes.json` keeps our own observation ledger per
+// station key: `t` = when we last saw the price actually move (`null` until we
+// observe one), `u` = when we last saw the station. The upstream feed has no
+// per-station timestamp, so the copy must always attribute the fact to our own
+// observation ("observé par Essence Québec"), never to a station declaration,
+// and the line must vanish when the ledger has nothing to say.
+test.describe('Station price change line (Issue #96)', () => {
+  const MIN = 60 * 1000;
+
+  const isoAgo = (ms, now = Date.now()) => new Date(now - ms).toISOString();
+
+  // Same 5-decimal coordinate key as js/history.js stationKey() — the fixture
+  // proves the card matches the ledger with the documented key format.
+  function changesStore({ now = Date.now(), seenAgo = 5 * MIN, changedAgo = 2 * 60 * MIN + 5 * MIN, changed = true } = {}) {
+    const s = {};
+    for (const f of stationsFixture.features) {
+      const [lng, lat] = f.geometry.coordinates;
+      s[`${lng.toFixed(5)},${lat.toFixed(5)}`] = {
+        t: changed ? isoAgo(changedAgo, now) : null,
+        u: isoAgo(seenAgo, now),
+        p: [f.properties.regular_price, f.properties.super_price, f.properties.diesel_price]
+      };
+    }
+    return JSON.stringify({
+      v: 1,
+      generated_at: isoAgo(seenAgo, now),
+      last: { at: isoAgo(seenAgo, now), observed: stationsFixture.features.length, changed: 0 },
+      s
+    });
+  }
+
+  function serveChanges(page, body) {
+    return page.route('**/data/history/station-changes.json', (route) =>
+      route.fulfill({ status: 200, contentType: 'application/json', body }));
+  }
+
+  async function waitForStations(page) {
+    await page.waitForFunction(
+      () => window.__qcGasMap && window.__qcGasMap.getStationFeatureCount() > 0 && window.__qcGasFreshness,
+      null,
+      { timeout: 15000 }
+    );
+  }
+
+  const selectLang = (page, code) =>
+    page.locator(`#lang-selector button[data-lang="${code}"]`).click();
+
+  async function openFirstCard(page) {
+    const item = page.locator('#station-list .list-item').first();
+    await expect(item).toBeVisible();
+    await item.click();
+    await expect(page.locator('.mapboxgl-popup').first()).toBeVisible();
+    return page.locator('.mapboxgl-popup').first();
+  }
+
+  test('card and panel show how long ago this price moved, in three languages', async ({ page }) => {
+    await serveChanges(page, changesStore());
+    await page.goto(BASE_URL);
+    await waitForStations(page);
+    await selectLang(page, 'fr-CA');
+
+    const popup = await openFirstCard(page);
+    await expect(popup.locator('.sc-changed')).toContainText(/Prix modifié il y a 2 h/);
+
+    await popup.locator('[data-expand]').click();
+    const panel = page.locator('#station-panel');
+    await expect(panel).toHaveClass(/open/);
+    await expect(panel.locator('.sd-changed')).toContainText(/Prix modifié il y a 2 h/);
+
+    await selectLang(page, 'en-CA');
+    await expect(panel.locator('.sd-changed')).toContainText(/Price changed 2 hrs ago/);
+
+    await selectLang(page, 'zh-Hans');
+    await expect(panel.locator('.sd-changed')).toContainText(/价格变动2小时前/);
+  });
+
+  test('a never-changed price says so honestly and credits our own observation', async ({ page }) => {
+    await serveChanges(page, changesStore({ changed: false }));
+    await page.goto(BASE_URL);
+    await waitForStations(page);
+    await selectLang(page, 'fr-CA');
+
+    const popup = await openFirstCard(page);
+    const line = popup.locator('.sc-changed');
+    await expect(line).toContainText(/Aucun changement observé/);
+    // Tooltip states where the fact comes from: our ledger, not the station.
+    await expect(line).toHaveAttribute('title', /Observé par Essence Québec/);
+
+    const cardText = await popup.locator('.sc-card').innerText();
+    expect(cardText).not.toMatch(/déclaré|déclaration de la station|mis à jour par la station/i);
+
+    await selectLang(page, 'zh-Hans');
+    await expect(popup.locator('.sc-changed')).toContainText(/尚未观察到价格变动/);
+  });
+
+  test('missing file or unknown station renders no line and keeps the card usable', async ({ page }) => {
+    let status = 404;
+    let body = 'not found';
+    let contentType = 'text/plain';
+    await page.route('**/data/history/station-changes.json', (route) =>
+      route.fulfill({ status, contentType, body }));
+
+    await page.goto(BASE_URL);
+    await waitForStations(page);
+    await selectLang(page, 'fr-CA');
+    const popup = await openFirstCard(page);
+    await expect(popup.locator('.sc-price')).toBeVisible();
+    await expect(popup.locator('.sc-changed')).toHaveCount(0);
+
+    // An empty ledger (no entry for the station on screen) degrades the same way.
+    status = 200;
+    contentType = 'application/json';
+    body = JSON.stringify({ v: 1, generated_at: isoAgo(MIN), last: null, s: {} });
+    await page.reload();
+    await waitForStations(page);
+    const popup2 = await openFirstCard(page);
+    await expect(popup2.locator('.sc-price')).toBeVisible();
+    await expect(popup2.locator('.sc-changed')).toHaveCount(0);
+  });
+
+  test('the ledger is lazy-loaded once, on the first card open', async ({ page }) => {
+    let hits = 0;
+    await page.route('**/data/history/station-changes.json', (route) => {
+      hits += 1;
+      route.fulfill({ status: 200, contentType: 'application/json', body: changesStore() });
+    });
+    await page.goto(BASE_URL);
+    await waitForStations(page);
+    // Nothing on first paint: the extra 244 KB never competes with the map.
+    expect(hits).toBe(0);
+
+    const popup = await openFirstCard(page);
+    await expect(popup.locator('.sc-changed')).toBeVisible();
+    expect(hits).toBe(1);
+
+    // The memoized promise covers the panel and language switches.
+    await popup.locator('[data-expand]').click();
+    await expect(page.locator('#station-panel')).toHaveClass(/open/);
+    await expect(page.locator('#station-panel .sd-changed')).toBeVisible();
+    expect(hits).toBe(1);
+  });
+
+  test('an applied refresh recomputes the label of the still-open card', async ({ page }) => {
+    const NOW = Date.parse('2026-10-18T12:00:00Z');
+    await page.clock.install({ time: NOW });
+
+    let hits = 0;
+    await page.route('**/data/history/station-changes.json', (route) => {
+      hits += 1;
+      route.fulfill({
+        status: 200,
+        contentType: 'application/json',
+        body: changesStore({ now: NOW, changedAgo: 2 * 60 * MIN + 5 * MIN, seenAgo: 5 * MIN })
+      });
+    });
+
+    await page.goto(BASE_URL);
+    await waitForStations(page);
+    await selectLang(page, 'fr-CA');
+    const popup = await openFirstCard(page);
+    await expect(popup.locator('.sc-changed')).toContainText(/il y a 2 h/);
+
+    // Three hours later a newer snapshot is applied in place (#47/#52): map.js
+    // announces it with `stations:loaded` and the open card re-renders from the
+    // same ledger — the age is recomputed, the ledger is not refetched.
+    await page.clock.fastForward(3 * 60 * MIN);
+    await page.evaluate(() => {
+      const features = window.__qcGasMap.getStationFeatures();
+      window.dispatchEvent(new CustomEvent('stations:loaded', {
+        detail: { type: 'FeatureCollection', features, metadata: { generated_at: new Date().toISOString() } }
+      }));
+    });
+
+    await expect(popup.locator('.sc-changed')).toContainText(/il y a 5 h/);
+    await expect(popup.locator('.sc-price')).toBeVisible();
+    expect(hits).toBe(1);
+  });
+});
+
 // Rows of the sidebar ranking are the only way to *browse* stations (the search
 // box requires knowing a name first), so they must be reachable and activatable
 // with the keyboard — WCAG 2.1 A: 2.1.1 Keyboard + 4.1.2 Name, Role, Value
