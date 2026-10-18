@@ -4246,3 +4246,410 @@ test.describe('Sidebar list rows are keyboard operable (Issue #88)', () => {
     await expect(page.locator(POPUP).locator('.sc-name').first()).toHaveText(name, { timeout: 10000 });
   });
 });
+
+// The province-wide default list is a "top 30 by price": on any real snapshot
+// 13–16 of the 18 regions have no row at all, so a user has no way to see what
+// their own region costs without trying regions one by one in the dropdown
+// (issue #87). The "Par région" view is an *opt-in* summary, one row per region
+// (minimum price + station count + median), that drills into a region with one
+// click. The default view must stay byte-identical, so every expectation below
+// is derived from the snapshot at run time — never from a hard-coded region table.
+test.describe('Sidebar list — "Par région" summary view (Issue #87)', () => {
+  const VIEW_SWITCH = '#list-view';
+  const REGIONS_BTN = '#list-view [data-view="regions"]';
+  const STATIONS_BTN = '#list-view [data-view="stations"]';
+  const REGION_ROW = '#station-list .region-row';
+  const LIST_ITEM = '#station-list .list-item';
+  const SIDEBAR_COUNT = '#sidebar-station-count';
+
+  const waitForStations = async (page) => {
+    await page.waitForFunction(
+      () => window.__qcGasMap && window.__qcGasMap.getStationFeatureCount() > 0,
+      null,
+      { timeout: 15000 }
+    );
+  };
+
+  const isValidCoord = (f) => {
+    const [lng, lat] = f.geometry.coordinates;
+    return Number.isFinite(lng) && Number.isFinite(lat) &&
+      lng >= -79.5 && lng <= -57.1 && lat >= 44.9 && lat <= 62.4;
+  };
+
+  // Mirrors the default UI filters: every known brand, full price range, the
+  // default "regular" fuel — radius and region deliberately ignored.
+  const knownBrands = new Set(
+    stationsFixture.features.map((f) => f.properties.brand).filter(Boolean)
+  );
+  const isDefaultPrice = (p) => p != null && p >= 150 && p <= 240;
+
+  const regionBounds = (region) => {
+    let minLng = Infinity, minLat = Infinity, maxLng = -Infinity, maxLat = -Infinity;
+    stationsFixture.features.forEach((f) => {
+      if (!isValidCoord(f) || f.properties.region !== region) return;
+      const [lng, lat] = f.geometry.coordinates;
+      if (lng < minLng) minLng = lng;
+      if (lat < minLat) minLat = lat;
+      if (lng > maxLng) maxLng = lng;
+      if (lat > maxLat) maxLat = lat;
+    });
+    return { minLng, minLat, maxLng, maxLat };
+  };
+
+  // One expectation row per region that has at least one station surviving the
+  // default filters, sorted ascending by that region's cheapest price.
+  const regionSummary = () => {
+    const byRegion = new Map();
+    stationsFixture.features.forEach((f) => {
+      if (!isValidCoord(f) || !knownBrands.has(f.properties.brand)) return;
+      const price = f.properties.regular_price;
+      if (!isDefaultPrice(price)) return;
+      const region = f.properties.region;
+      if (!region) return;
+      if (!byRegion.has(region)) byRegion.set(region, []);
+      byRegion.get(region).push(price);
+    });
+
+    const rows = [];
+    byRegion.forEach((prices, region) => {
+      const sorted = [...prices].sort((a, b) => a - b);
+      const middle = Math.floor(sorted.length / 2);
+      const median = sorted.length % 2 === 0
+        ? (sorted[middle - 1] + sorted[middle]) / 2
+        : sorted[middle];
+      rows.push({ region, count: sorted.length, min: sorted[0], median });
+    });
+    rows.sort((a, b) => a.min - b.min);
+    return rows;
+  };
+
+  const domRegionRows = (page) => page.evaluate(() => Array.from(
+    document.querySelectorAll('#station-list .region-row')
+  ).map((el) => ({
+    region: el.dataset.region,
+    count: Number(el.dataset.count),
+    min: Number(el.dataset.minPrice),
+    median: Number(el.dataset.medianPrice),
+    name: (el.querySelector('.region-name')?.textContent || '').trim(),
+    price: (el.querySelector('.region-price')?.textContent || '').trim(),
+    meta: (el.querySelector('.region-meta')?.textContent || '').trim()
+  })));
+
+  const sidebarTotal = async (page) =>
+    Number(await page.locator(SIDEBAR_COUNT).getAttribute('data-count'));
+
+  test('default view is unchanged and the switch is offered without a reference point', async ({ page }) => {
+    await page.addInitScript(() => localStorage.clear());
+    await page.goto(BASE_URL);
+    await waitForStations(page);
+
+    // Historical behaviour: 30 station rows, no region rows, price sort active.
+    await expect(page.locator(LIST_ITEM)).toHaveCount(30);
+    await expect(page.locator(REGION_ROW)).toHaveCount(0);
+    await expect(page.locator('#list-sort [data-sort="price"]')).toHaveAttribute('aria-pressed', 'true');
+
+    // Opt-in switch: radiogroup semantics, Stations selected, 44px targets.
+    const switcher = page.locator(VIEW_SWITCH);
+    await expect(switcher).toBeVisible();
+    await expect(switcher).toHaveAttribute('role', 'radiogroup');
+    await expect(page.locator(STATIONS_BTN)).toHaveAttribute('aria-checked', 'true');
+    await expect(page.locator(REGIONS_BTN)).toHaveAttribute('aria-checked', 'false');
+    for (const btn of [STATIONS_BTN, REGIONS_BTN]) {
+      await expect(page.locator(btn)).toHaveAttribute('role', 'radio');
+      const box = await page.locator(btn).boundingBox();
+      expect(box.height).toBeGreaterThanOrEqual(44);
+      const label = (await page.locator(btn).innerText()).trim();
+      expect(label.length).toBeGreaterThan(0);
+    }
+
+    // Roving tabindex: only the checked radio is in the tab order.
+    await expect(page.locator(STATIONS_BTN)).toHaveAttribute('tabindex', '0');
+    await expect(page.locator(REGIONS_BTN)).toHaveAttribute('tabindex', '-1');
+
+    // Keyboard contract of a radiogroup: Tab reaches the checked radio, arrow
+    // keys move the selection (and the focus) without leaving the group.
+    await page.locator(STATIONS_BTN).focus();
+    await expect(page.locator(STATIONS_BTN)).toBeFocused();
+    await page.keyboard.press('ArrowRight');
+    await expect(page.locator(REGIONS_BTN)).toHaveAttribute('aria-checked', 'true');
+    await expect(page.locator(REGIONS_BTN)).toBeFocused();
+    await expect(page.locator(STATIONS_BTN)).toHaveAttribute('aria-checked', 'false');
+    await expect(page.locator(REGIONS_BTN)).toHaveAttribute('tabindex', '0');
+    await expect(page.locator(STATIONS_BTN)).toHaveAttribute('tabindex', '-1');
+
+    // And back, without leaving the group.
+    await page.keyboard.press('ArrowLeft');
+    await expect(page.locator(STATIONS_BTN)).toHaveAttribute('aria-checked', 'true');
+    await expect(page.locator(STATIONS_BTN)).toBeFocused();
+  });
+
+  test('one row per region with min price, station count and median (computed from the snapshot)', async ({ page }) => {
+    await page.addInitScript(() => localStorage.clear());
+    await page.goto(BASE_URL);
+    await waitForStations(page);
+
+    const expected = regionSummary();
+    expect(expected.length).toBeGreaterThan(5);
+
+    await page.locator(REGIONS_BTN).click();
+    await expect(page.locator(REGIONS_BTN)).toHaveAttribute('aria-checked', 'true');
+
+    await expect(page.locator(REGION_ROW)).toHaveCount(expected.length);
+    // Station rows are replaced, not appended: the view is a different listing.
+    await expect(page.locator(LIST_ITEM)).toHaveCount(0);
+    await expect(page.locator('#show-more-stations')).toBeHidden();
+    // Sorting a region summary by price/distance is meaningless: the control
+    // (and its hint) must really be gone, not just marked unavailable.
+    await expect(page.locator('#list-sort')).toBeHidden();
+
+    const rows = await domRegionRows(page);
+    expect(rows.map((r) => r.region)).toEqual(expected.map((r) => r.region));
+    rows.forEach((row, i) => {
+      const want = expected[i];
+      expect(row.name).toBe(want.region);
+      expect(row.count).toBe(want.count);
+      expect(row.min).toBeCloseTo(want.min, 1);
+      expect(row.median).toBeCloseTo(want.median, 1);
+      // The visible price is the region minimum in cents, and the meta line
+      // carries the station count plus the median for comparison.
+      expect(row.price).toContain(want.min.toFixed(1));
+      expect(row.meta).toContain(String(want.count));
+      expect(row.meta).toContain(want.median.toFixed(1));
+    });
+
+    // Ascending by cheapest price.
+    const mins = rows.map((r) => r.min);
+    expect(mins).toEqual([...mins].sort((a, b) => a - b));
+  });
+
+  test('region view hides the distance-sort hint and counts rows as regions, not stations', async ({ page }) => {
+    // A persisted distance sort without a reference point normally explains
+    // itself under the list header — that hint is meaningless in the summary.
+    await page.addInitScript(() => {
+      if (localStorage.getItem('qc-gas-test-seeded')) return;
+      localStorage.clear();
+      localStorage.setItem('qc-gas-list', JSON.stringify({ sort: 'distance' }));
+      localStorage.setItem('qc-gas-test-seeded', '1');
+    });
+    await page.goto(BASE_URL);
+    await waitForStations(page);
+
+    await expect(page.locator('#sort-distance-hint')).toBeVisible();
+
+    await page.locator(REGIONS_BTN).click();
+    const total = await page.locator(REGION_ROW).count();
+    expect(total).toBeGreaterThan(1);
+    await expect(page.locator('#sort-distance-hint')).toBeHidden();
+    await expect(page.locator('#list-sort')).toBeHidden();
+
+    // The header count follows the rendered rows and is worded in regions, so
+    // "18" cannot be read as 18 stations in the province.
+    const shown = page.locator('#stations-shown-count');
+    await expect(shown).toHaveAttribute('data-shown', String(total));
+    await expect(shown).toContainText(String(total));
+    await expect(shown).toContainText(/region|région|地区/i);
+    await expect(shown).not.toContainText(/Showing|Affichées|已显示/i);
+
+    // Back to the station listing: sort control, hint and station wording return.
+    await page.locator(STATIONS_BTN).click();
+    await expect(page.locator('#list-sort')).toBeVisible();
+    await expect(page.locator('#sort-distance-hint')).toBeVisible();
+    await expect(shown).toContainText(/Showing|Affichées|已显示/i);
+  });
+
+  test('clicking a region row scopes the map and list to it, then returns to Stations', async ({ page }) => {
+    await page.addInitScript(() => localStorage.clear());
+    await page.goto(BASE_URL);
+    await waitForStations(page);
+
+    const expected = regionSummary();
+    await page.locator(REGIONS_BTN).click();
+    await expect(page.locator(REGION_ROW)).toHaveCount(expected.length);
+
+    const target = expected[0];
+    const row = page.locator(REGION_ROW).first();
+    await expect(row).toHaveAttribute('role', 'button');
+    await expect(row).toHaveAttribute('tabindex', '0');
+    const box = await row.boundingBox();
+    expect(box.height).toBeGreaterThanOrEqual(44);
+    await row.click();
+
+    // Region filter selected, view back to Stations, station rows rendered.
+    await expect(page.locator(REGIONS_BTN)).toHaveAttribute('aria-checked', 'false');
+    await expect(page.locator(STATIONS_BTN)).toHaveAttribute('aria-checked', 'true');
+    await expect(page.locator(REGION_ROW)).toHaveCount(0);
+    await expect(page.locator(LIST_ITEM).first()).toBeVisible();
+
+    // The summary rows were replaced, so focus must land on the new first row
+    // instead of falling back to <body> (keyboard users would restart at the top).
+    const focusedClass = await page.evaluate(() => document.activeElement?.className || '');
+    expect(focusedClass).toContain('list-item');
+
+    await page.locator('#filter-toggle').click();
+    await expect(page.locator('#region-filter')).toHaveValue(target.region);
+    await page.locator('#filter-toggle').click();
+
+    // Consistency invariant: the count shown in the region row equals the
+    // sidebar count once the region is selected.
+    await expect.poll(() => sidebarTotal(page), { timeout: 10000 }).toBe(target.count);
+    expect(await page.evaluate(() => window.__qcGasMap.getStationFeatureCount())).toBe(target.count);
+
+    // Map fitted to the region (same #60 behaviour as picking it in the dropdown).
+    const b = regionBounds(target.region);
+    const bounds = await page.evaluate(() => window.__qcGasMap.getBounds());
+    const eps = 1e-6;
+    expect(bounds[0][0]).toBeLessThanOrEqual(b.minLng + eps);
+    expect(bounds[0][1]).toBeLessThanOrEqual(b.minLat + eps);
+    expect(bounds[1][0]).toBeGreaterThanOrEqual(b.maxLng - eps);
+    expect(bounds[1][1]).toBeGreaterThanOrEqual(b.maxLat - eps);
+
+    // Clearing the region makes the switch available again and the region
+    // listing can be reopened.
+    await page.locator('#filter-toggle').click();
+    await page.locator('#region-filter').selectOption('');
+    await page.locator('#filter-toggle').click();
+    await expect(page.locator(VIEW_SWITCH)).toBeVisible();
+    await page.locator(REGIONS_BTN).click();
+    await expect(page.locator(REGION_ROW)).toHaveCount(expected.length);
+  });
+
+  test('the switch is hidden in radius, region, search and favorites-only contexts', async ({ page }) => {
+    // Radius mode: "around me" already defines the scope.
+    await page.addInitScript(() => {
+      if (localStorage.getItem('qc-gas-test-seeded')) return;
+      localStorage.clear();
+      localStorage.setItem('qc-gas-view', JSON.stringify({
+        mode: 'radius', lng: -73.7, lat: 45.45, radiusKm: 25, zoom: 12
+      }));
+      localStorage.setItem('qc-gas-test-seeded', '1');
+    });
+    await page.goto(BASE_URL);
+    await waitForStations(page);
+    await expect(page.locator(VIEW_SWITCH)).toBeHidden();
+    await expect(page.locator(LIST_ITEM).first()).toBeVisible();
+
+    // A concrete region is a scope too.
+    await page.evaluate(() => localStorage.removeItem('qc-gas-view'));
+    await page.reload();
+    await waitForStations(page);
+    await expect(page.locator(VIEW_SWITCH)).toBeVisible();
+
+    await page.locator('#filter-toggle').click();
+    await page.locator('#region-filter').selectOption('Outaouais');
+    await expect(page.locator(VIEW_SWITCH)).toBeHidden();
+
+    // Clearing the region restores the province-wide scope.
+    await page.locator('#region-filter').selectOption('');
+    await expect(page.locator(VIEW_SWITCH)).toBeVisible();
+    await page.locator('#filter-toggle').click();
+
+    // Active search lifts region/radius filters, so a per-region summary would
+    // silently ignore them.
+    await page.locator('#station-search').fill('Montréal');
+    await expect(page.locator(VIEW_SWITCH)).toBeHidden();
+
+    await page.locator('#station-search').fill('');
+    await expect(page.locator(VIEW_SWITCH)).toBeVisible();
+
+    // Favorites-only listing.
+    await page.locator('#favorites-toggle').click();
+    await expect(page.locator(VIEW_SWITCH)).toBeHidden();
+    await page.locator('#favorites-toggle').click();
+    await expect(page.locator(VIEW_SWITCH)).toBeVisible();
+  });
+
+  test('activating a context that needs stations falls back to the Stations view', async ({ page }) => {
+    await page.addInitScript(() => localStorage.clear());
+    await page.goto(BASE_URL);
+    await waitForStations(page);
+
+    await page.locator(REGIONS_BTN).click();
+    await expect(page.locator(REGION_ROW).first()).toBeVisible();
+
+    await page.locator('#favorites-toggle').click();
+    await expect(page.locator(VIEW_SWITCH)).toBeHidden();
+    await expect(page.locator(REGION_ROW)).toHaveCount(0);
+    await expect(page.locator(STATIONS_BTN)).toHaveAttribute('aria-checked', 'true');
+
+    await page.locator('#favorites-toggle').click();
+    await expect(page.locator(VIEW_SWITCH)).toBeVisible();
+    // The fall back is remembered, so the default listing comes back.
+    await expect(page.locator(LIST_ITEM).first()).toBeVisible();
+    await expect(page.locator(REGION_ROW)).toHaveCount(0);
+  });
+
+  test('the view choice persists in qc-gas-list and an old backup without it falls back to Stations', async ({ page }) => {
+    await page.addInitScript(() => {
+      if (localStorage.getItem('qc-gas-test-seeded')) return;
+      localStorage.clear();
+      localStorage.setItem('qc-gas-list', JSON.stringify({ sort: 'price', view: 'regions' }));
+      localStorage.setItem('qc-gas-test-seeded', '1');
+    });
+    await page.goto(BASE_URL);
+    await waitForStations(page);
+
+    await expect(page.locator(REGIONS_BTN)).toHaveAttribute('aria-checked', 'true');
+    await expect(page.locator(REGION_ROW).first()).toBeVisible();
+
+    await page.locator(STATIONS_BTN).click();
+    const stored = await page.evaluate(() => JSON.parse(localStorage.getItem('qc-gas-list') || 'null'));
+    // The default view is not persisted: an untouched `qc-gas-list` keeps the
+    // pre-#87 shape ({ sort } only), so old builds and old backups still work.
+    expect(stored.view).toBeUndefined();
+    expect(stored.sort).toBe('price');
+
+    // Back to regions, then import a pre-#87 backup (no `view` field): the
+    // sanitizer drops the unknown field, the import succeeds and the list
+    // silently falls back to the default view.
+    await page.locator(REGIONS_BTN).click();
+    await expect(page.locator(REGION_ROW).first()).toBeVisible();
+    const regionsStored = await page.evaluate(() => JSON.parse(localStorage.getItem('qc-gas-list') || 'null'));
+    expect(regionsStored.view).toBe('regions');
+
+    const result = await page.evaluate(() => {
+      const json = JSON.stringify({
+        v: 1,
+        app: 'essence-quebec',
+        exported_at: '2026-10-01T00:00:00.000Z',
+        data: { listPrefs: { sort: 'price' } }
+      });
+      return window.__qcGasBackup.importFromText(json, 'replace');
+    });
+    expect(result.ok).toBe(true);
+
+    await expect(page.locator(STATIONS_BTN)).toHaveAttribute('aria-checked', 'true');
+    await expect(page.locator(REGION_ROW)).toHaveCount(0);
+    await expect(page.locator(LIST_ITEM).first()).toBeVisible();
+  });
+
+  test('the region rows and the switch are translated in all three languages', async ({ page }) => {
+    await page.addInitScript(() => localStorage.clear());
+    await page.goto(BASE_URL);
+    await waitForStations(page);
+
+    const switchLabels = {};
+    const metaLines = {};
+    for (const code of ['fr-CA', 'en-CA', 'zh-Hans']) {
+      await page.locator(`#lang-selector button[data-lang="${code}"]`).click();
+      await expect(page.locator(REGIONS_BTN)).toHaveAttribute('aria-checked', 'false');
+      switchLabels[code] = (await page.locator(REGIONS_BTN).innerText()).trim();
+
+      await page.locator(REGIONS_BTN).click();
+      const rows = await domRegionRows(page);
+      expect(rows.length).toBeGreaterThan(0);
+      expect(rows[0].meta.length).toBeGreaterThan(0);
+      metaLines[code] = rows[0].meta;
+      expect((await page.locator(STATIONS_BTN).innerText()).trim().length).toBeGreaterThan(0);
+      await page.locator(STATIONS_BTN).click();
+    }
+
+    // Every language got its own wording (no untranslated key left in place).
+    ['fr-CA', 'en-CA', 'zh-Hans'].forEach((code) => {
+      expect(switchLabels[code]).not.toBe('viewByRegion');
+      expect(switchLabels[code].length).toBeGreaterThan(0);
+      expect(metaLines[code]).not.toBe('regionRowMeta');
+    });
+    expect(new Set(Object.values(switchLabels)).size).toBe(3);
+    expect(new Set(Object.values(metaLines)).size).toBe(3);
+  });
+});

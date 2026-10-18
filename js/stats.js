@@ -10,9 +10,13 @@ const PAGE_SIZE = 30;
 const LIST_STORAGE_KEY = 'qc-gas-list';
 
 let favoritesOnly = false;
+const storedListPreferences = loadListPreferences();
 // 'price' (default) = favorites pinned first then price ascending;
 // 'distance' = strict nearest-first. Persisted so the choice survives reloads.
-let sortMode = loadListPreferences().sort;
+let sortMode = storedListPreferences.sort;
+// 'stations' (default: the province-wide top 30) or 'regions' (one summary row
+// per region, issue #87). Opt-in only: the default view must not change.
+let listView = storedListPreferences.view;
 // Set when the user asks for the distance sort without a reference point, so
 // the explanation stays visible until the location becomes available.
 let distanceHintVisible = false;
@@ -21,27 +25,38 @@ let renderedCount = 0;
 let cheapestVisiblePrice = Infinity;
 
 function loadListPreferences() {
+  const prefs = { sort: 'price', view: 'stations' };
   try {
     const parsed = JSON.parse(localStorage.getItem(LIST_STORAGE_KEY) || 'null');
-    if (parsed && parsed.sort === 'distance') return { sort: 'distance' };
+    if (parsed && parsed.sort === 'distance') prefs.sort = 'distance';
+    // Unknown / missing values (e.g. a pre-#87 backup, whose sanitizer drops
+    // this field) fall back to the default view instead of failing.
+    if (parsed && parsed.view === 'regions') prefs.view = 'regions';
   } catch {
-    // Storage may be unavailable (private browsing); keep the default.
+    // Storage may be unavailable (private browsing); keep the defaults.
   }
-  return { sort: 'price' };
+  return prefs;
 }
 
 function persistListPreferences() {
   try {
-    localStorage.setItem(LIST_STORAGE_KEY, JSON.stringify({ sort: sortMode }));
+    // Only non-default values are written, so the stored shape stays exactly
+    // what pre-#87 builds produced (and read) — `view` appears only once the
+    // user opts into the region summary.
+    const prefs = { sort: sortMode };
+    if (listView === 'regions') prefs.view = listView;
+    localStorage.setItem(LIST_STORAGE_KEY, JSON.stringify(prefs));
   } catch {
     // Storage may be unavailable (private browsing); the choice still applies in-session.
   }
 }
 
-// Re-read the sort preference from localStorage. Used by the JSON restore flow
+// Re-read the list preferences from localStorage. Used by the JSON restore flow
 // (issue #57) so an import is reflected in the list without a page reload.
 export function reloadListPreferences() {
-  sortMode = loadListPreferences().sort;
+  const prefs = loadListPreferences();
+  sortMode = prefs.sort;
+  listView = prefs.view;
   distanceHintVisible = false;
   renderSortControls();
   updateStationList();
@@ -326,12 +341,15 @@ function sortStationList(features, priceKey) {
   return sorted;
 }
 
-function updateListCount(shown, total) {
+function updateListCount(shown, total, key = 'shownCount') {
   const el = document.getElementById('stations-shown-count');
   if (!el) return;
   el.dataset.shown = String(shown);
   el.dataset.total = String(total);
-  el.textContent = tf('shownCount', { shown, total });
+  // Remembered so a language switch re-renders the same wording (stations vs
+  // regions) instead of silently reverting to the station count.
+  el.dataset.countKey = key;
+  el.textContent = tf(key, { shown, total, n: shown });
 }
 
 function updateShowMoreButton() {
@@ -370,7 +388,9 @@ function renderSortControls() {
 
   const hint = document.getElementById('sort-distance-hint');
   if (!hint) return;
-  const show = !available && (distanceHintVisible || sortMode === 'distance');
+  // The per-region summary has no station ordering at all, so the "enable
+  // location to sort by distance" explanation would be misleading there.
+  const show = listView !== 'regions' && !available && (distanceHintVisible || sortMode === 'distance');
   hint.hidden = !show;
   if (show) hint.textContent = t('distanceSortNeedsLocation');
 }
@@ -449,11 +469,13 @@ function appendStationPage() {
   updateShowMoreButton();
 }
 
-// Stations of a region that survive every filter except the radius: this is the
-// count the "see the whole region" escape hatch reveals.
-function countRegionStationsWithoutRadius(region) {
-  if (!currentStations || !Array.isArray(currentStations.features)) return 0;
-  const criteria = { ...getFilterCriteria(), radiusMode: false, selectedRegion: region };
+// Stations that survive every filter (brand / fuel / price range / favorites),
+// with the location scope made explicit instead of read from the UI. One shared
+// path so the per-region summary row count and the sidebar count obtained after
+// drilling into that region can never disagree (issues #60, #87).
+function stationsMatchingScope({ region = '', radiusMode = false } = {}) {
+  if (!currentStations || !Array.isArray(currentStations.features)) return [];
+  const criteria = { ...getFilterCriteria(), radiusMode, selectedRegion: region };
   const selectedBrands = new Set();
   document.querySelectorAll('.brand-filter:checked').forEach(cb => selectedBrands.add(cb.value));
 
@@ -462,7 +484,13 @@ function countRegionStationsWithoutRadius(region) {
     if (selectedBrands.size === 0 || !selectedBrands.has(feat.properties.brand)) return false;
     if (favoritesOnly && !isFavorite(feat)) return false;
     return true;
-  }).length;
+  });
+}
+
+// Stations of a region that survive every filter except the radius: this is the
+// count the "see the whole region" escape hatch reveals.
+function countRegionStationsWithoutRadius(region) {
+  return stationsMatchingScope({ region }).length;
 }
 
 // Zero results normally mean "nothing matches your filters". But region (a
@@ -511,6 +539,154 @@ function renderEmptyState() {
   list.appendChild(wrap);
 }
 
+// ── "Par région" summary view (issue #87) ──
+// The province-wide default list is a top 30 by price, so on a real snapshot
+// most regions have no row at all. This view answers the one actionable
+// question the sidebar could not: "what does *my* region cost right now?".
+
+function getSelectedRegion() {
+  return document.getElementById('region-filter')?.value || '';
+}
+
+// The summary is only meaningful as a province-wide scope. With a radius, a
+// concrete region, an active search (which lifts the location filters) or the
+// favorites-only listing, "the region minimum" would silently mean something
+// other than the numbers the user sees after drilling in.
+function isRegionViewAvailable() {
+  if (getSelectedRegion()) return false;
+  if (isRadiusMode()) return false;
+  if (isSearchActive()) return false;
+  if (favoritesOnly) return false;
+  return true;
+}
+
+// Keeps the switch's state, visibility and ARIA in sync with the current view.
+// Unavailable contexts fall back to the station listing (never leave the list
+// showing a scope-less region summary).
+function renderViewControls() {
+  const available = isRegionViewAvailable();
+  if (!available && listView === 'regions') {
+    listView = 'stations';
+    persistListPreferences();
+  }
+
+  const container = document.getElementById('list-view');
+  if (container) {
+    container.hidden = !available;
+    container.setAttribute('aria-label', t('listViewLabel'));
+    container.querySelectorAll('.view-btn').forEach(btn => {
+      const active = btn.dataset.view === listView;
+      btn.classList.toggle('active', active);
+      btn.setAttribute('aria-checked', String(active));
+      // Roving tabindex: a radiogroup is a single tab stop, so Tab lands on the
+      // checked radio and the arrows move inside the group (WCAG 2.1 A: 4.1.2).
+      btn.tabIndex = active ? 0 : -1;
+    });
+  }
+
+  // Sorting a per-region summary by "distance" would be meaningless.
+  const sortSwitch = document.getElementById('list-sort');
+  if (sortSwitch) sortSwitch.hidden = listView === 'regions';
+}
+
+// Min / median / count per region, computed from the stations that survive the
+// brand, fuel and price filters — radius and region scopes ignored.
+function computeRegionSummaries(priceKey) {
+  const byRegion = new Map();
+  stationsMatchingScope({}).forEach(feat => {
+    const props = feat.properties;
+    const price = props[priceKey];
+    if (!props.region || price === null || price === undefined) return;
+    if (!byRegion.has(props.region)) byRegion.set(props.region, []);
+    byRegion.get(props.region).push(price);
+  });
+
+  const summaries = [];
+  byRegion.forEach((prices, region) => {
+    const sorted = [...prices].sort((a, b) => a - b);
+    const middle = Math.floor(sorted.length / 2);
+    const median = sorted.length % 2 === 0
+      ? (sorted[middle - 1] + sorted[middle]) / 2
+      : sorted[middle];
+    summaries.push({ region, count: sorted.length, min: sorted[0], median });
+  });
+
+  summaries.sort((a, b) => a.min - b.min || a.region.localeCompare(b.region));
+  return summaries;
+}
+
+// Drilling into a region reuses the #60 semantics exactly: a region is a scope,
+// so the radius is released, the map is fitted to it and the list switches back
+// to the station rows of that region.
+function enterRegion(region) {
+  const select = document.getElementById('region-filter');
+  if (!select) return;
+  select.value = region;
+  if (isRadiusMode()) setRadiusMode(false);
+  fitRegionBounds(region);
+  listView = 'stations';
+  persistListPreferences();
+  updateStats();
+  // The summary rows were just replaced by station rows, so focus would fall
+  // back to <body> and the keyboard user would restart at the top of the page.
+  // Land on the first station of the region they just entered (WCAG 2.4.3).
+  document.querySelector('#station-list .list-item')?.focus();
+}
+
+function createRegionRow(summary) {
+  const priceText = summary.min.toFixed(1) + '¢';
+  const item = document.createElement('div');
+  item.className = 'region-row';
+  item.dataset.region = summary.region;
+  item.dataset.count = String(summary.count);
+  item.dataset.minPrice = String(summary.min);
+  item.dataset.medianPrice = String(summary.median);
+  // The row is an activation target (selects the region), so it needs the same
+  // name / role / keyboard contract as a station row (WCAG 2.1 A: 4.1.2).
+  item.setAttribute('role', 'button');
+  item.setAttribute('tabindex', '0');
+  item.setAttribute('aria-label', tf('openRegionAria', {
+    region: summary.region,
+    n: summary.count,
+    price: priceText
+  }));
+  item.innerHTML = `
+    <div class="info">
+      <div class="region-name">${summary.region}</div>
+      <div class="region-meta">${tf('regionRowMeta', { n: summary.count, m: summary.median.toFixed(1) })}</div>
+    </div>
+    <div class="price-block">
+      <div class="region-price">${priceText}</div>
+    </div>`;
+
+  const activate = () => enterRegion(summary.region);
+  item.addEventListener('click', activate);
+  item.addEventListener('keydown', (e) => {
+    if (e.target !== item) return;
+    if (e.key !== 'Enter' && e.key !== ' ' && e.key !== 'Spacebar') return;
+    // Space would otherwise scroll the sidebar while the row is focused.
+    e.preventDefault();
+    activate();
+  });
+  return item;
+}
+
+function renderRegionView(priceKey) {
+  const list = document.getElementById('station-list');
+  const summaries = computeRegionSummaries(priceKey);
+  if (summaries.length === 0) {
+    renderEmptyState();
+    updateListCount(0, 0);
+    updateShowMoreButton();
+    return;
+  }
+  summaries.forEach(summary => list.appendChild(createRegionRow(summary)));
+  // The header count describes rendered rows, and these rows are regions, not
+  // stations — reusing the station wording would read "18" as 18 stations.
+  updateListCount(summaries.length, summaries.length, 'shownRegions');
+  updateShowMoreButton();
+}
+
 function updateStationList(filteredStations = null) {
   if (filteredStations === null) filteredStations = getVisibleStations();
   const list = document.getElementById('station-list');
@@ -518,6 +694,15 @@ function updateStationList(filteredStations = null) {
   renderedStations = [];
   renderedCount = 0;
   cheapestVisiblePrice = Infinity;
+
+  renderViewControls();
+
+  const priceKey = getActiveFuelPriceKey();
+  if (listView === 'regions') {
+    renderRegionView(priceKey);
+    renderSortControls();
+    return;
+  }
 
   if (filteredStations.length === 0) {
     renderEmptyState();
@@ -527,7 +712,6 @@ function updateStationList(filteredStations = null) {
     return;
   }
 
-  const priceKey = getActiveFuelPriceKey();
   renderedStations = sortStationList(filteredStations, priceKey);
   // "Best price" must reflect every filtered station, not just the rendered
   // page (the cheapest Montréal station is often far beyond the first 30).
@@ -569,6 +753,48 @@ export function initStationListControls() {
 
   const showMore = document.getElementById('show-more-stations');
   if (showMore) showMore.addEventListener('click', () => appendStationPage());
+
+  const viewSwitch = document.getElementById('list-view');
+  if (viewSwitch) {
+    viewSwitch.addEventListener('click', (e) => {
+      const btn = e.target.closest('.view-btn');
+      if (!btn) return;
+      const view = btn.dataset.view;
+      if (view !== 'stations' && view !== 'regions') return;
+      if (view === listView) {
+        renderViewControls();
+        return;
+      }
+      // Never enter the summary in a context where it would be misleading.
+      if (view === 'regions' && !isRegionViewAvailable()) {
+        renderViewControls();
+        return;
+      }
+      listView = view;
+      persistListPreferences();
+      updateStationList();
+    });
+
+    // Arrow keys move the selection inside the radiogroup (roving tabindex is
+    // set by renderViewControls); Home/End jump to the ends.
+    viewSwitch.addEventListener('keydown', (e) => {
+      const btn = e.target.closest('.view-btn');
+      if (!btn) return;
+      const buttons = [...viewSwitch.querySelectorAll('.view-btn')];
+      const index = buttons.indexOf(btn);
+      if (index < 0) return;
+      let next;
+      if (e.key === 'Home') next = 0;
+      else if (e.key === 'End') next = buttons.length - 1;
+      else if (e.key === 'ArrowLeft' || e.key === 'ArrowUp') next = (index - 1 + buttons.length) % buttons.length;
+      else if (e.key === 'ArrowRight' || e.key === 'ArrowDown') next = (index + 1) % buttons.length;
+      else return;
+      e.preventDefault();
+      // Same activation path as a click, so availability is honoured too.
+      buttons[next].focus();
+      buttons[next].click();
+    });
+  }
 }
 
 export function showPopup(feature) {

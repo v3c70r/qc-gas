@@ -187,6 +187,13 @@
               <button type="button" class="sort-btn active" data-sort="price" data-i18n="sortByPrice" aria-pressed="true">Prix</button>
               <button type="button" class="sort-btn" data-sort="distance" data-i18n="sortByDistance" aria-pressed="false">Distance</button>
             </div>
+            <!-- Opt-in listing view (issue #87): station rows stay the default,
+                 "Par région" is one row per region. Hidden whenever a scope
+                 (radius, region, search, favorites-only) is already active. -->
+            <div class="view-switch" id="list-view" role="radiogroup" aria-label="Vue de la liste">
+              <button type="button" class="view-btn active" role="radio" data-view="stations" aria-checked="true" data-i18n="viewStations">Stations</button>
+              <button type="button" class="view-btn" role="radio" data-view="regions" aria-checked="false" data-i18n="viewByRegion">Par région</button>
+            </div>
           </div>
           <div class="sort-hint-message" id="sort-distance-hint" role="status" hidden></div>
           <div class="favorites-bar">
