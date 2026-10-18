@@ -205,6 +205,10 @@ const STALE_CHANGE_DAYS = 7;
 // in the upstream feed, not just when the whole snapshot was generated. Returns
 // an empty string when no observation record exists, so the card shows nothing
 // rather than a made-up age.
+// Issue #96 adds the fact users actually ask for: how long ago *this price*
+// moved. The upstream feed carries no per-station timestamp, so this comes from
+// our own observation ledger (`t` in data/history/station-changes.json) and the
+// copy/tooltip credit Essence Québec instead of pretending the station said it.
 function stationFreshnessHTML(feature, prefix) {
   const obs = getStationObservations(feature);
   if (!obs || !obs.seenAt) return '';
@@ -213,6 +217,18 @@ function stationFreshnessHTML(feature, prefix) {
   if (!rel) return '';
   const observed = `<div class="${prefix}-observed">${tf('observedAgo', { time: rel })}</div>`;
 
+  const sinceHint = escapeHtml(t('priceChangeSourceHint'));
+  const changedLine = (text) => `<div class="${prefix}-changed" title="${sinceHint}">${escapeHtml(text)}</div>`;
+  // `t === null` means we have never observed a move for this key: say exactly
+  // that instead of inventing "declared by the station" or a made-up age.
+  let changed = '';
+  if (obs.changedAt) {
+    const changedRel = formatRelativeTime(obs.changedAt, Date.now());
+    if (changedRel) changed = changedLine(tf('priceChangedAgo', { time: changedRel }));
+  } else {
+    changed = changedLine(t('priceNeverChanged'));
+  }
+
   let stale = '';
   if (obs.changedAt) {
     const days = Math.floor((Date.now() - obs.changedAt) / 86400000);
@@ -220,7 +236,7 @@ function stationFreshnessHTML(feature, prefix) {
       stale = `<div class="${prefix}-stale">${tf('staleHint', { n: days })}</div>`;
     }
   }
-  return observed + stale;
+  return observed + changed + stale;
 }
 
 function showStationGoneNotice() {
