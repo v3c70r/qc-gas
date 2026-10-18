@@ -1571,6 +1571,215 @@ test.describe('Price watch survives renames (Issue #65)', () => {
   });
 });
 
+// ── Favorites keyed by coordinates (Issue #89 = #59 STEP 2) ──
+// A favorite is now stored as `coord:<lng>,<lat>` (5 decimals — the same
+// convention as history.js) while the legacy text key stays a valid lookup:
+// a station the official data renames or re-addresses (44% of the measured key
+// churn, docs/product-review.md §7) keeps its star, its "Favoris seulement"
+// membership and its pin. The one-shot migration below rewrites every
+// resolvable text key; unresolvable keys are kept verbatim so no data is lost.
+test.describe('Favorites survive renames (Issue #89)', () => {
+  const isoAgo = (ms) => new Date(Date.now() - ms).toISOString();
+
+  const station = stationsFixture.features.find(
+    (f) => f.properties.regular_price != null && Array.isArray(f.geometry?.coordinates)
+  );
+  const textIdOf = (p) => [p.name, p.address, p.postal_code].map((v) => (v ?? '').trim()).join('|');
+  const STATION_ID = textIdOf(station.properties);
+  const [LNG, LAT] = station.geometry.coordinates;
+  const COORD_KEY = `coord:${LNG.toFixed(5)},${LAT.toFixed(5)}`;
+  const UNRESOLVABLE = 'Station Fantome|1 rue Inexistante|H0H 0H0';
+
+  // Snapshot with every regular price forced to `regular`, plus an optional
+  // rename of the target station (coordinates untouched) or its removal.
+  function snapshotBody({ generatedAt, regular = 175.9, rename = null, dropName = null } = {}) {
+    const clone = JSON.parse(JSON.stringify(stationsFixture));
+    clone.metadata = { ...clone.metadata, generated_at: generatedAt };
+    clone.features.forEach((f) => {
+      if (typeof f.properties.regular_price === 'number') f.properties.regular_price = regular;
+    });
+    if (rename) {
+      const f = clone.features.find((x) => x.properties.name === rename.from);
+      if (f) {
+        f.properties.name = rename.to;
+        if (rename.address) f.properties.address = rename.address;
+      }
+    }
+    if (dropName) clone.features = clone.features.filter((f) => f.properties.name !== dropName);
+    return JSON.stringify(clone);
+  }
+
+  function serveSnapshot(page, getBody) {
+    return page.route('**/data/stations.json', (route) =>
+      route.fulfill({ status: 200, contentType: 'application/json', body: getBody() }));
+  }
+
+  async function waitForStations(page) {
+    await page.waitForFunction(
+      () => window.__qcGasMap && window.__qcGasMap.getStationFeatureCount() > 0,
+      null,
+      { timeout: 15000 }
+    );
+  }
+
+  // Seeds on first navigation only, so a reload exercises the persisted store
+  // instead of re-seeding it.
+  const seedFavorites = (page, ids) => page.addInitScript((list) => {
+    if (localStorage.getItem('qc-gas-favorites-seeded')) return;
+    localStorage.setItem('qc-gas-favorites', JSON.stringify(list));
+    localStorage.setItem('qc-gas-favorites-seeded', '1');
+  }, ids);
+
+  const storedFavorites = (page) =>
+    page.evaluate(() => JSON.parse(localStorage.getItem('qc-gas-favorites') || '[]'));
+
+  test('a legacy text-key favorite keeps working and is migrated to a coordinate key', async ({ page }) => {
+    const body = snapshotBody({ generatedAt: isoAgo(20 * 60 * 1000) });
+    await serveSnapshot(page, () => body);
+    await seedFavorites(page, [STATION_ID]);
+    await page.goto(BASE_URL);
+    await waitForStations(page);
+
+    // Same star, same count, same pin as before the change.
+    await expect(page.locator('#favorites-count')).toContainText('1');
+    const first = page.locator('#station-list .list-item').first();
+    await expect(first.locator('.name')).toContainText(station.properties.name);
+    await expect(first.locator('.fav-star')).toHaveClass(/on/);
+
+    // …and the stored id is now the coordinate key.
+    expect(await storedFavorites(page)).toEqual([COORD_KEY]);
+  });
+
+  test('the migration is idempotent and never drops an unresolvable key', async ({ page }) => {
+    let body = snapshotBody({ generatedAt: isoAgo(30 * 60 * 1000) });
+    await serveSnapshot(page, () => body);
+    await seedFavorites(page, [STATION_ID, UNRESOLVABLE]);
+    await page.goto(BASE_URL);
+    await waitForStations(page);
+
+    const migrated = await storedFavorites(page);
+    expect(migrated).toEqual([COORD_KEY, UNRESOLVABLE]);
+    await expect(page.locator('#favorites-count')).toContainText('2');
+
+    // A later snapshot re-runs the migration: nothing changes, nothing is lost.
+    body = snapshotBody({ generatedAt: isoAgo(10 * 60 * 1000) });
+    expect(await page.evaluate(() => window.__qcGasFreshness.refreshNow())).toBe(true);
+    expect(await storedFavorites(page)).toEqual(migrated);
+
+    // Same across a reload (the store is read back from localStorage).
+    await page.reload();
+    await waitForStations(page);
+    expect(await storedFavorites(page)).toEqual(migrated);
+  });
+
+  test('a renamed station stays favorited, pinned and in "Favoris seulement"', async ({ page }) => {
+    let body = snapshotBody({ generatedAt: isoAgo(30 * 60 * 1000) });
+    await serveSnapshot(page, () => body);
+    await seedFavorites(page, [STATION_ID]);
+    await page.goto(BASE_URL);
+    await waitForStations(page);
+    // Upgrade path: the legacy text key is migrated on the first snapshot.
+    expect(await storedFavorites(page)).toEqual([COORD_KEY]);
+
+    // The official data renames AND re-addresses that very station; only the
+    // coordinates stay the same (the real-world case measured in
+    // docs/product-review.md §7).
+    body = snapshotBody({
+      generatedAt: isoAgo(10 * 60 * 1000),
+      rename: { from: station.properties.name, to: 'Station Renommee #89', address: '999 rue Neuve, Testville' }
+    });
+    expect(await page.evaluate(() => window.__qcGasFreshness.refreshNow())).toBe(true);
+
+    const first = page.locator('#station-list .list-item').first();
+    await expect(first.locator('.name')).toContainText('Station Renommee #89');
+    await expect(first.locator('.fav-star')).toHaveClass(/on/);
+    await expect(page.locator('#favorites-count')).toContainText('1');
+    expect(await storedFavorites(page)).toEqual([COORD_KEY]);
+
+    await page.locator('#favorites-toggle').click();
+    await expect(page.locator('#favorites-toggle')).toHaveClass(/active/);
+    await expect(page.locator('#station-list .list-item')).toHaveCount(1);
+    await expect(page.locator('#station-list .list-item').first().locator('.fav-star')).toHaveClass(/on/);
+  });
+
+  test('an unresolvable legacy key is kept and matches again when the station returns', async ({ page }) => {
+    let body = snapshotBody({ generatedAt: isoAgo(30 * 60 * 1000), dropName: station.properties.name });
+    await serveSnapshot(page, () => body);
+    await seedFavorites(page, [STATION_ID]);
+    await page.goto(BASE_URL);
+    await waitForStations(page);
+
+    // No station matches this text key → kept verbatim, never dropped.
+    expect(await storedFavorites(page)).toEqual([STATION_ID]);
+    await expect(page.locator('#favorites-count')).toContainText('1');
+
+    // The station is back under its original name/address → the text-key
+    // fallback matches it, and the migration rewrites the entry.
+    body = snapshotBody({ generatedAt: isoAgo(10 * 60 * 1000) });
+    expect(await page.evaluate(() => window.__qcGasFreshness.refreshNow())).toBe(true);
+    const first = page.locator('#station-list .list-item').first();
+    await expect(first.locator('.name')).toContainText(station.properties.name);
+    await expect(first.locator('.fav-star')).toHaveClass(/on/);
+    expect(await storedFavorites(page)).toEqual([COORD_KEY]);
+  });
+
+  test('a new favorite writes the coordinate key and unfavoriting leaves nothing behind', async ({ page }) => {
+    const body = snapshotBody({ generatedAt: isoAgo(20 * 60 * 1000) });
+    await serveSnapshot(page, () => body);
+    await page.goto(BASE_URL);
+    await waitForStations(page);
+
+    const first = page.locator('#station-list .list-item').first();
+    await first.locator('.fav-star').click();
+    await expect(first.locator('.fav-star')).toHaveClass(/on/);
+    const added = await storedFavorites(page);
+    expect(added).toHaveLength(1);
+    expect(added[0]).toMatch(/^coord:-?\d+\.\d{5},-?\d+\.\d{5}$/);
+
+    await first.locator('.fav-star').click();
+    await expect(page.locator('#favorites-count')).toContainText('0');
+    expect(await storedFavorites(page)).toEqual([]);
+  });
+
+  test('cancelling clears every stored form, including a legacy text-key entry', async ({ page }) => {
+    const body = snapshotBody({ generatedAt: isoAgo(20 * 60 * 1000) });
+    await serveSnapshot(page, () => body);
+    // Both forms for the same station (e.g. a stale text key left next to the
+    // coordinate key by an interrupted migration).
+    await seedFavorites(page, [STATION_ID, COORD_KEY]);
+    await page.goto(BASE_URL);
+    await waitForStations(page);
+
+    await expect(page.locator('#favorites-count')).toContainText('1');
+    await page.locator('#station-list .list-item').first().locator('.fav-star').click();
+    await expect(page.locator('#favorites-count')).toContainText('0');
+    expect(await storedFavorites(page)).toEqual([]);
+  });
+
+  test('a v1 backup carrying legacy text keys stays usable after import', async ({ page }) => {
+    const body = snapshotBody({ generatedAt: isoAgo(20 * 60 * 1000) });
+    await serveSnapshot(page, () => body);
+    await page.goto(BASE_URL);
+    await waitForStations(page);
+
+    const backup = JSON.stringify({
+      v: 1,
+      app: 'essence-quebec',
+      exported_at: '2026-10-03T00:00:00.000Z',
+      data: { favorites: [STATION_ID, UNRESOLVABLE], fillups: [], watch: [], tripPrefs: { consumption: 8, roundTrip: false }, listPrefs: { sort: 'price' } }
+    });
+    const result = await page.evaluate((json) => window.__qcGasBackup.importFromText(json, 'replace'), backup);
+    expect(result.ok).toBe(true);
+
+    // reloadFavorites() triggers the migration without a page reload.
+    await expect(page.locator('#favorites-count')).toContainText('2');
+    const first = page.locator('#station-list .list-item').first();
+    await expect(first.locator('.name')).toContainText(station.properties.name);
+    await expect(first.locator('.fav-star')).toHaveClass(/on/);
+    expect(await storedFavorites(page)).toEqual([COORD_KEY, UNRESOLVABLE]);
+  });
+});
+
 test.describe('Same-day regional benchmark', () => {
   test('computes median, gap, percentile and 50 L saving deterministically', async ({ page }) => {
     await page.goto(BASE_URL);
