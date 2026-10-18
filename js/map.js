@@ -1,5 +1,6 @@
 // Mapbox initialization and map configuration
 import { t, onLanguageChange } from './i18n.js';
+import { BASEMAP_STYLE, applyBasemapPalette } from './map-style.js';
 import { brandColor, brandAbbr, isMembershipBrand } from './constants.js';
 import { updateStats } from './stats.js';
 import { setDataSnapshot, isResponseFromCache } from './pwa.js';
@@ -225,9 +226,14 @@ export async function initMap() {
   const initialCenter = radiusMode ? getEffectiveReferencePoint() : [...MONTREAL_CENTER];
   const initialZoom = radiusMode ? (savedView?.zoom ?? 12) : 10;
 
+  // `streets-v12` + the Google/Apple-like palette (issue #109) instead of the
+  // minimal `light-v11`: see js/map-style.js and docs/map-style.md.
+  const styleStart = typeof performance !== 'undefined' ? performance.now() : Date.now();
+  let basemapStyleLoadMs = null;
+
   map = new mapboxgl.Map({
     container: 'map',
-    style: 'mapbox://styles/mapbox/light-v11',
+    style: BASEMAP_STYLE,
     center: initialCenter,
     zoom: initialZoom,
     attributionControl: true,
@@ -235,9 +241,26 @@ export async function initMap() {
     bearing: 0
   });
 
+  // `style.load` fires on the first load *and* after any later `setStyle`, so
+  // the palette survives style swaps. Guarded per layer, hence safe when a
+  // future Mapbox style renames a layer.
+  map.on('style.load', () => {
+    applyBasemapPalette(map);
+    if (basemapStyleLoadMs === null) {
+      const now = typeof performance !== 'undefined' ? performance.now() : Date.now();
+      basemapStyleLoadMs = Math.round(now - styleStart);
+      window.__qcBasemapStyleLoadMs = basemapStyleLoadMs;
+      console.info(`Basemap ${BASEMAP_STYLE} style.load in ${basemapStyleLoadMs} ms`);
+    }
+  });
+
   map.on('load', () => {
     loadStations();
   });
+
+  // Test hook (Playwright): the map instance, so specs can assert the real
+  // rendered style (layers, paint properties, zoom ranges). Not used by the app.
+  window.__qcMap = map;
 
   // Add scale control
   map.addControl(new mapboxgl.ScaleControl({
@@ -857,7 +880,8 @@ window.__qcGasMap = {
     const b = map.getBounds();
     return [[b.getWest(), b.getSouth()], [b.getEast(), b.getNorth()]];
   },
-  getView: () => (map && map.getCenter ? { center: map.getCenter(), zoom: map.getZoom() } : null)
+  getView: () => (map && map.getCenter ? { center: map.getCenter(), zoom: map.getZoom() } : null),
+  getBasemapStyleLoadMs: () => (typeof window !== 'undefined' ? window.__qcBasemapStyleLoadMs ?? null : null)
 };
 
 export { map, currentStations, MONTREAL_CENTER, addRangeCircle };
