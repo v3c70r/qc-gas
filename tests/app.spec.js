@@ -4110,3 +4110,139 @@ test.describe('Station freshness — observed-at label (Issue #70)', () => {
     await expect(popup.locator('.sc-stale')).toHaveCount(0);
   });
 });
+
+// Rows of the sidebar ranking are the only way to *browse* stations (the search
+// box requires knowing a name first), so they must be reachable and activatable
+// with the keyboard — WCAG 2.1 A: 2.1.1 Keyboard + 4.1.2 Name, Role, Value
+// (issue #88). Clicking a row opens its card; Enter/Space must do exactly the
+// same, and the nested favourite star stays an independent button.
+test.describe('Sidebar list rows are keyboard operable (Issue #88)', () => {
+  const LIST_ITEM = '#station-list .list-item';
+  const SHOW_MORE = '#show-more-stations';
+  const POPUP = '.mapboxgl-popup';
+
+  const waitForStations = async (page) => {
+    await page.waitForFunction(
+      () => window.__qcGasMap && window.__qcGasMap.getStationFeatureCount() > 0,
+      null,
+      { timeout: 15000 }
+    );
+  };
+
+  const selectLang = (page, code) =>
+    page.locator(`#lang-selector button[data-lang="${code}"]`).click();
+
+  async function focusRow(page, index = 0) {
+    const row = page.locator(LIST_ITEM).nth(index);
+    await expect(row).toBeVisible();
+    await row.focus();
+    await expect(row).toBeFocused();
+    return row;
+  }
+
+  test('every row exposes role=button, tabindex=0 and a localized name', async ({ page }) => {
+    await page.goto(BASE_URL);
+    await waitForStations(page);
+    await selectLang(page, 'fr-CA');
+
+    const row = page.locator(LIST_ITEM).first();
+    await expect(row).toBeVisible();
+    await expect(row).toHaveAttribute('role', 'button');
+    await expect(row).toHaveAttribute('tabindex', '0');
+    await expect(row).toHaveAttribute('aria-label', /^Ouvrir /);
+
+    // The name carries the station and its current price (the two facts the row
+    // shows), so a screen reader announces something meaningful.
+    const name = (await row.locator('.name').innerText()).trim();
+    const price = (await row.locator('.price').innerText()).trim();
+    const label = await row.getAttribute('aria-label');
+    expect(label).toContain(name);
+    expect(label).toContain(price);
+
+    // The star is still its own button with its own name: no nested-interactive
+    // `role="button"` swallowing it, and focus order stays row → star.
+    const star = row.locator('.fav-star');
+    await expect(star).toHaveAttribute('aria-label', /Favori/);
+    await expect(star).toHaveAttribute('aria-pressed', /^(true|false)$/);
+    const isButtonTag = await star.evaluate((el) => el.tagName.toLowerCase());
+    expect(isButtonTag).toBe('button');
+
+    // Names are translated with the UI, not hard-coded in French.
+    await selectLang(page, 'en-CA');
+    await expect(row).toHaveAttribute('aria-label', /^Open /);
+    await selectLang(page, 'zh-Hans');
+    await expect(row).toHaveAttribute('aria-label', /^打开 /);
+  });
+
+  test('Enter on a focused row opens that station card', async ({ page }) => {
+    await page.goto(BASE_URL);
+    await waitForStations(page);
+
+    const row = page.locator(LIST_ITEM).first();
+    await expect(row).toBeVisible();
+    const name = (await row.locator('.name').innerText()).trim();
+
+    await row.focus();
+    await expect(row).toBeFocused();
+    await page.keyboard.press('Enter');
+
+    const popup = page.locator(POPUP).first();
+    await expect(popup).toBeVisible({ timeout: 10000 });
+    await expect(popup.locator('.sc-name')).toHaveText(name);
+    await expect(popup.locator('.sc-price')).toBeVisible();
+  });
+
+  test('Space on a focused row opens the same card without scrolling', async ({ page }) => {
+    await page.goto(BASE_URL);
+    await waitForStations(page);
+
+    const row = page.locator(LIST_ITEM).first();
+    await expect(row).toBeVisible();
+    const name = (await row.locator('.name').innerText()).trim();
+
+    await row.focus();
+    await expect(row).toBeFocused();
+    const scrollBefore = await page.evaluate(() => ({
+      window: window.scrollY,
+      list: document.getElementById('station-list').scrollTop
+    }));
+    await page.keyboard.press('Space');
+
+    await expect(page.locator(POPUP).locator('.sc-name').first()).toHaveText(name, { timeout: 10000 });
+    const scrollAfter = await page.evaluate(() => ({
+      window: window.scrollY,
+      list: document.getElementById('station-list').scrollTop
+    }));
+    expect(scrollAfter).toEqual(scrollBefore);
+  });
+
+  test('rows appended by "Show more" are keyboard operable too', async ({ page }) => {
+    await page.goto(BASE_URL);
+    await waitForStations(page);
+
+    await expect(page.locator(LIST_ITEM).first()).toBeVisible();
+    const firstPageCount = await page.locator(LIST_ITEM).count();
+    expect(firstPageCount).toBeGreaterThan(0);
+
+    const showMore = page.locator(SHOW_MORE);
+    await expect(showMore).toBeVisible();
+    await showMore.click();
+    await expect
+      .poll(() => page.locator(LIST_ITEM).count(), { timeout: 10000 })
+      .toBeGreaterThan(firstPageCount);
+
+    // A row that only exists after pagination: same semantics, same behaviour.
+    const appended = page.locator(LIST_ITEM).last();
+    await expect(appended).toHaveAttribute('role', 'button');
+    await expect(appended).toHaveAttribute('tabindex', '0');
+    const label = await appended.getAttribute('aria-label');
+    expect((label || '').trim().length).toBeGreaterThan(0);
+    const name = (await appended.locator('.name').innerText()).trim();
+    expect(label).toContain(name);
+
+    await appended.focus();
+    await expect(appended).toBeFocused();
+    await page.keyboard.press('Enter');
+    await expect(page.locator(POPUP).locator('.sc-name').first()).toHaveText(name, { timeout: 10000 });
+  });
+});

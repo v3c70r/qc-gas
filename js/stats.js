@@ -388,8 +388,19 @@ function createStationRow(feat, priceKey) {
   const isBest = stationPrice === cheapestVisiblePrice;
   const isFav = isFavorite(feat);
 
+  const priceText = stationPrice ? stationPrice.toFixed(1) + '¢' : '—';
+
   const item = document.createElement('div');
   item.className = 'list-item' + (isBest ? ' best' : '');
+  // The row opens the station card, so it must announce itself as a button and
+  // be reachable with Tab (WCAG 2.1 A: 2.1.1 / 4.1.2). It stays a div: the
+  // favourite star inside is a real <button>, and nesting buttons is invalid.
+  item.setAttribute('role', 'button');
+  item.setAttribute('tabindex', '0');
+  item.setAttribute('aria-label', tf('openStationAria', {
+    name: props.name || props.brand,
+    price: priceText
+  }));
   item.innerHTML = `
     <div class="brand-icon" style="background:${color}">${abbr}</div>
     <div class="info">
@@ -398,7 +409,7 @@ function createStationRow(feat, priceKey) {
     </div>
     <button class="fav-star ${isFav ? 'on' : ''}" data-fav aria-label="${isFav ? t('unfavorite') : t('favorite')}" aria-pressed="${isFav}">${STAR_ICON}</button>
     <div class="price-block">
-      <div class="price">${stationPrice ? stationPrice.toFixed(1) + '¢' : '—'}</div>
+      <div class="price">${priceText}</div>
       <div class="distance">${distanceText}</div>
     </div>`;
 
@@ -407,9 +418,20 @@ function createStationRow(feat, priceKey) {
     toggleFavorite(feat);
   });
 
-  item.addEventListener('click', () => {
+  // One activation path for pointer and keyboard, so the two can never drift.
+  const activateRow = () => {
     map.flyTo({ center: feat.geometry.coordinates, zoom: 15, duration: 800 });
     updatePopup(feat);
+  };
+
+  item.addEventListener('click', activateRow);
+  item.addEventListener('keydown', (e) => {
+    // Key events bubbling up from the star belong to the star, not the row.
+    if (e.target !== item) return;
+    if (e.key !== 'Enter' && e.key !== ' ' && e.key !== 'Spacebar') return;
+    // Space would otherwise scroll the sidebar while the row is focused.
+    e.preventDefault();
+    activateRow();
   });
   return item;
 }
