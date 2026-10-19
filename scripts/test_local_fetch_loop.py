@@ -11,6 +11,7 @@ make the loop exit on the first error.
 
 import json
 import re
+import shlex
 import shutil
 import subprocess
 import unittest
@@ -133,8 +134,33 @@ class LocalFetchLoopTest(unittest.TestCase):
         self.assertEqual(result.returncode, 0,
                          'data/probe-local/ must stay gitignored (issue #92)')
 
+    # ── issue #113: stop double-writing the Actions-owned data files ────────
 
-class ProbeTwoCyclePushTest(unittest.TestCase):
+    def test_history_stage_is_skipped_by_default(self):
+        # Actions appends `data/history/**` every hour; a second writer is what
+        # made 1 cycle in 4 fail on `pull --rebase` conflicts.
+        self.assertRegex(self.text, r'PROBE_SKIP_STAGES-history')
+        self.assertIn('stage_skipped', self.text)
+        # Every stage is routed through the skip check, so `history` is not a
+        # special case: an empty PROBE_SKIP_STAGES runs the whole chain again.
+        self.assertIn('run_stage history "$PYTHON" scripts/append_history.py', self.text)
+        self.assertIn('PROBE_SKIP_HISTORY', self.text)
+
+    def test_conflicts_resolve_in_favour_of_the_remote_instead_of_aborting(self):
+        self.assertIn('resolve_conflict_path', self.text)
+        self.assertIn('git rebase --continue', self.text)
+        # During a rebase HEAD is the upstream side, so `--ours` *is* the remote.
+        self.assertIn('--ours', self.text)
+        self.assertIn('took the remote', self.text)
+
+    def test_sync_retries_within_the_cycle_before_giving_up(self):
+        self.assertRegex(self.text, r'PROBE_SYNC_ATTEMPTS:-2')
+        self.assertIn('discarded local', self.text)
+
+
+class ProbeRepoTestCase(unittest.TestCase):
+    """Hermetic probe harness: a throwaway bare remote + clone + stubs."""
+
     """Issue #92 addendum: the probe must keep pushing master while an agent
     branch exists, and it must only ever commit the small ledger files.
 
@@ -143,12 +169,20 @@ class ProbeTwoCyclePushTest(unittest.TestCase):
     """
 
     STUB = '''\
-import json, os, sys
+import json, os, subprocess, sys
 from datetime import datetime, timezone
 
 name = os.path.basename(sys.argv[0]).replace('.py', '')
 stamp = datetime.now(timezone.utc).strftime('%Y-%m-%dT%H:%M:%S.%fZ')
 os.makedirs('data/history', exist_ok=True)
+
+# Test-only hook (issue #113): let a spec inject a concurrent Actions commit in
+# the middle of a probe cycle, exactly once per clone.
+hook = os.environ.get('PROBE_TEST_REMOTE_COMMIT')
+if hook and not os.path.exists('.probe-test-injected'):
+    with open('.probe-test-injected', 'w') as marker:
+        marker.write(hook)
+    subprocess.run(hook, shell=True, check=False)
 
 def dump(path, payload):
     with open(path, 'w') as handle:
@@ -220,14 +254,20 @@ elif name == 'fetch_log':
                      'append_history', 'metrics', 'fetch_log', 'check_data_size'):
             (scripts / f'{name}.py').write_text(self.STUB, encoding='utf-8')
 
-    def _run_probe(self):
+    def _run_probe(self, cycles='2', **extra):
         import os
-        env = dict(os.environ, PROBE_BASE_BRANCH='master', PROBE_MAX_CYCLES='2',
+        env = dict(os.environ, PROBE_BASE_BRANCH='master', PROBE_MAX_CYCLES=str(cycles),
                    PROBE_INTERVAL_SECONDS='1', PROBE_COMMIT_INTERVAL_SECONDS='0',
                    PROBE_SKIP_SUMMARY='1', PROBE_LOG_FILE=str(self.clone / '.agent' / 'probe.log'))
+        env.update({key: str(value) for key, value in extra.items()})
         return subprocess.run(['bash', 'scripts/local_fetch_loop.sh'], cwd=self.clone,
                               env=env, capture_output=True, text=True, timeout=180)
 
+    def _probe_log(self):
+        return (self.clone / '.agent' / 'probe.log').read_text(encoding='utf-8')
+
+
+class ProbeTwoCyclePushTest(ProbeRepoTestCase):
     def test_two_cycles_push_master_twice_and_never_the_snapshots(self):
         result = self._run_probe()
         self.assertEqual(result.returncode, 0, result.stderr)
@@ -399,6 +439,150 @@ elif name == 'fetch_log':
             self.assertNotIn(snapshot, pushed)
 
 
+class ProbeConflictResolutionTest(ProbeRepoTestCase):
+    """Issue #113: the probe and Actions write the same `data/` files.
+
+    Acceptance #1/#5: a `pull --rebase` conflict must resolve in favour of the
+    remote (Actions owns `data/`) and the cycle must still commit its ledger —
+    no unmerged index, no failed cycle.
+    """
+
+    def _actions_clone(self):
+        tmp = Path(self._tmp.name)
+        actions = tmp / 'actions'
+        self._git('clone', '-q', str(self.remote), str(actions), cwd=tmp)
+        self._git('config', 'user.email', 'actions@example.com', cwd=actions)
+        self._git('config', 'user.name', 'actions', cwd=actions)
+        return actions
+
+    def test_a_remote_commit_on_the_same_file_keeps_the_cycle_green(self):
+        actions = self._actions_clone()
+        hook = Path(self._tmp.name) / 'inject-actions.sh'
+        hook.write_text(
+            'set -e\n'
+            f'cd {shlex.quote(str(actions))}\n'
+            'git pull -q --rebase\n'
+            'mkdir -p data\n'
+            "cat > data/update-profile.json <<'JSON'\n"
+            '{"v": 1, "last_observed_at": "actions"}\n'
+            'JSON\n'
+            'git add -A\n'
+            'git commit -q -m "Update gas prices data [skip ci]"\n'
+            'git push -q origin master\n',
+            encoding='utf-8')
+
+        result = self._run_probe(cycles='1', PROBE_TEST_REMOTE_COMMIT=f'bash {shlex.quote(str(hook))}')
+        self.assertEqual(result.returncode, 0, result.stderr)
+
+        log = self._probe_log()
+        self.assertIn('conflict data/update-profile.json', log)
+        self.assertIn('took the remote', log)
+        self.assertNotIn('finished with errors', log)
+
+        # The rebase completed and left no unmerged path behind.
+        self.assertEqual(
+            self._git('diff', '--name-only', '--diff-filter=U', cwd=self.clone).stdout.strip(),
+            '')
+        self.assertEqual(self._git('ls-files', '-u', cwd=self.clone).stdout.strip(), '')
+
+        # The remote version won for the Actions-owned file...
+        remote_profile = self._git('show', 'master:data/update-profile.json',
+                                   cwd=self.remote).stdout
+        self.assertEqual(json.loads(remote_profile)['last_observed_at'], 'actions')
+        # ...and the probe's ledger still got through in the same cycle.
+        remote_log = json.loads(self._git('show', 'master:data/fetch-log.json',
+                                          cwd=self.remote).stdout)
+        self.assertEqual(len(remote_log['fetches']), 1, remote_log)
+        pushed = self._git('ls-tree', '-r', '--name-only', 'master',
+                           cwd=self.remote).stdout.split()
+        self.assertIn('data/fetch-log.json', pushed)
+        self.assertNotIn('data/history/station-changes.json', pushed)
+
+    def test_a_dirty_tracked_data_file_does_not_leave_unmerged_files(self):
+        """The reported symptom (issue #113): `Pulling is not possible ... unmerged files`.
+
+        The probe rewrites tracked `data/history/station-changes.json` every
+        cycle and never commits it (#92/#103), so an Actions commit to the same
+        file meets a dirty local copy: `pull --rebase --autostash` either keeps
+        the stash aside (recent git) or leaves an unmerged index behind (the
+        observed failure). Either way the probe must keep going, leave no
+        unmerged path, keep the remote version of the Actions-owned file and
+        still push both cycles' ledger.
+        """
+        # The seed has no `data/`; give the remote one tracked persistent file.
+        seed = Path(self._tmp.name) / 'seed'
+        (seed / 'data' / 'history').mkdir(parents=True)
+        (seed / 'data' / 'history' / 'station-changes.json').write_text(
+            '{"v": 1, "last": {"at": "seed"}, "s": {}}\n', encoding='utf-8')
+        self._git('add', '-A', cwd=seed)
+        self._commit(seed, 'seed persistent data')
+        self._git('push', '-q', 'origin', 'master', cwd=seed)
+        self._git('pull', '-q', '--rebase', 'origin', 'master', cwd=self.clone)
+
+        actions = self._actions_clone()
+        hook = Path(self._tmp.name) / 'inject-actions-dirty.sh'
+        hook.write_text(
+            'set -e\n'
+            f'cd {shlex.quote(str(actions))}\n'
+            'git pull -q --rebase\n'
+            "cat > data/history/station-changes.json <<'JSON'\n"
+            '{"v": 1, "last": {"at": "actions"}, "s": {}}\n'
+            'JSON\n'
+            'git add -A\n'
+            'git commit -q -m "Update gas prices data [skip ci]"\n'
+            'git push -q origin master\n',
+            encoding='utf-8')
+
+        result = self._run_probe(cycles='2', PROBE_TEST_REMOTE_COMMIT=f'bash {shlex.quote(str(hook))}')
+        self.assertEqual(result.returncode, 0, result.stderr)
+
+        log = self._probe_log()
+        self.assertNotIn('finished with errors', log)
+        self.assertNotIn('Pulling is not possible', log)
+
+        # No unmerged path survives the cycle.
+        self.assertEqual(
+            self._git('diff', '--name-only', '--diff-filter=U', cwd=self.clone).stdout.strip(), '')
+        self.assertEqual(self._git('ls-files', '-u', cwd=self.clone).stdout.strip(), '')
+
+        # The Actions version of the persistent store won...
+        remote_store = json.loads(self._git('show', 'master:data/history/station-changes.json',
+                                            cwd=self.remote).stdout)
+        self.assertEqual(remote_store['last']['at'], 'actions')
+        # ...and both cycles pushed their ledger commit to master.
+        commits = self._git('log', '--oneline', 'master', cwd=self.remote).stdout.splitlines()
+        self.assertEqual(len([line for line in commits if 'local probe' in line]), 2, commits)
+        self.assertIn('data/fetch-log.json',
+                      self._git('ls-tree', '-r', '--name-only', 'master',
+                                cwd=self.remote).stdout.split())
+
+    def test_the_history_stage_is_skipped_by_default(self):
+        result = self._run_probe(cycles='1')
+        self.assertEqual(result.returncode, 0, result.stderr)
+        log = self._probe_log()
+        self.assertIn('stage history skipped', log)
+        self.assertNotIn('stage history ok', log)
+        # Only `update_profile.py` wrote the store, not `append_history.py`.
+        store = json.loads((self.clone / 'data' / 'history' / 'station-changes.json')
+                           .read_text(encoding='utf-8'))
+        self.assertEqual(len(store['s']), 2, store)
+
+    def test_an_empty_skip_list_runs_every_stage_again(self):
+        result = self._run_probe(cycles='1', PROBE_SKIP_STAGES='')
+        self.assertEqual(result.returncode, 0, result.stderr)
+        log = self._probe_log()
+        self.assertIn('stage history ok', log)
+        self.assertNotIn('stage history skipped', log)
+        store = json.loads((self.clone / 'data' / 'history' / 'station-changes.json')
+                           .read_text(encoding='utf-8'))
+        self.assertEqual(len(store['s']), 1, store)
+
+    def test_probe_skip_history_shorthand_skips_the_stage(self):
+        result = self._run_probe(cycles='1', PROBE_SKIP_HISTORY='1')
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn('stage history skipped', self._probe_log())
+
+
 class ProbeBranchGuardTest(unittest.TestCase):
     """Issue #92 addendum: never let the probe commit onto a feature branch."""
 
@@ -469,6 +653,15 @@ class ProbeDocsTest(unittest.TestCase):
     def test_documents_the_local_event_log_and_the_commit_throttle(self):
         self.assertIn('data/probe-local/events.jsonl', self.text)
         self.assertIn('PROBE_COMMIT_INTERVAL_SECONDS', self.text)
+
+    def test_documents_the_stage_skips_and_the_data_ownership_table(self):
+        """Issue #113: "who owns which data file" must be written down."""
+        self.assertIn('PROBE_SKIP_STAGES', self.text)
+        self.assertIn('PROBE_SKIP_HISTORY', self.text)
+        # The ownership table (Actions / probe / both) and the conflict rule.
+        self.assertIn('data/fetch-log.json', self.text)
+        self.assertIn('--ours', self.text)
+        self.assertIn('PROBE_SYNC_ATTEMPTS', self.text)
 
 
 if __name__ == '__main__':
