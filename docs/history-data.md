@@ -422,11 +422,20 @@ p50 257 分钟，见 [Fetch rhythm](#fetch-rhythm-final)），而外部触发器
 - `scripts/local_fetch_loop.sh`（tmux 常驻）：每 ~15 分钟跑一遍与
   `update-data.yml` 相同的数据链路 —— `download_data.py` →
   `process_data.py` → `update_profile.py` → `scripts/probe_events.py append` →
-  `append_history.py` → `metrics.py` —— 再跑一次**只报不堵**的
+  `metrics.py` —— 再跑一次**只报不堵**的
   `check_data_size.py`，然后复用工作流**同一组** brotli 文件（`stations` / `stats`
   / `history` / `regie-margin` / `metrics` + `data/history/*.json`，不用通配，
   以免为 `fetch-log` / `fetch-state` / `fetch-schedule` / `update-profile`
   生成永不使用的 `.br`），最后只提交**小账本**（见下）。
+- **`history` stage 默认跳过（issue #113）**：`append_history.py` 改写的
+  `data/history/**` 是 **Actions 的持久层**（`update-data.yml` 每次 admitted run
+  都会 append），探针再写一遍就是双写 tracked 文件 —— 实测约 **25 % 的周期**
+  因此失败（`stage history failed` + 下一轮 `error: Pulling is not possible
+  because you have unmerged files`）。跳过开关是 `PROBE_SKIP_STAGES`
+  （逗号分隔，默认值就是 `history`；也接受 `PROBE_SKIP_HISTORY=1` 这个简写），
+  设为**空值**即可恢复全链路：`PROBE_SKIP_STAGES= bash
+  scripts/local_fetch_loop.sh`。探针的独特价值是 15 分钟观测
+  （`data/probe-local/events.jsonl`）与延迟/新鲜度指标，不是第二个 history 写入者。
 - **样本外置（issue #92）**：探针**不再提交快照** —— `stations.json`(+`.br`)、
   `history.json`、`history/station-changes.json`(+`.br`)、`stats.json`(+`.br`)、
   `metrics.json`(+`.br`) 照旧由链路写盘（本地分析仍可用完整快照），但**永不
@@ -465,6 +474,27 @@ p50 257 分钟，见 [Fetch rhythm](#fetch-rhythm-final)），而外部触发器
 - 探针每天（本地日期）最多发一条健康摘要到跟踪 issue #78
   （`gh issue comment`，字段见下）；发送失败只写日志，不影响抓取循环。
 - 运行日志写在 `.agent/probe.log`（`.gitignore` 已忽略 `.agent/**/*.log`）。
+
+### 数据文件归属（谁拥有哪些文件，issue #113）
+
+探针与 Actions 共用 `data/`，而探针**每轮改写**其中一些 tracked 文件却**从不
+提交**它们（#92/#103）。只要 Actions 提交了同一个文件，`pull --rebase
+--autostash` 就会撞上脏工作区：轻则本周期被记失败，重则留下未合并索引，
+**下一轮**再死于 `Pulling is not possible because you have unmerged files`。
+因此归属规则写死在这里（新增文件必须先归入其中一栏）：
+
+| 文件 | 归属 | 探针提交 | 冲突裁决 |
+| --- | --- | --- | --- |
+| `data/history/**`（`YYYY-MM.json` / `daily` / `monthly` / `station-history` / `station-changes` / `index`） | **Actions**（每次 admitted run 的 `append_history.py`） | 否（`history` stage 默认跳过） | 远端 |
+| derived 快照 `data/stations.json`、`data/stats.json`、`data/metrics.json`、`data/history.json` | **两者都写、都不提交**（#103：只随 Pages artifact 走） | 否 | 远端 |
+| `data/update-profile.json`（学习到的 profile 计数） | **两者都写**（`update_profile.py`），两边都提交 | 是（账本） | 远端 |
+| `data/fetch-schedule.json`（时刻表 / 预算） | **两者都写**（`update_profile.py`），两边都提交 | 是（账本） | 远端 |
+| `data/fetch-log.json`（探针周期台账） | **探针**：Actions 从不写它（`scripts/interval_report.py` / `trigger_interval_report.py` 只读） | 是（账本） | **本地**（保住本周期记录） |
+| `data/fetch-state.json`、`data/metrics-ledger.json`、`data/regie-margin.json`、`data/trigger-interval.json` | **Actions** | 否 | 远端（探针本就不碰） |
+| `data/probe-local/**`（`events.jsonl`、`last-commit.epoch`） | **探针**，gitignored，永不进 git | 否 | 本地文件，不参与合并 |
+
+规则只有一句：**除了探针自己的 `data/fetch-log.json` 与 gitignored 的
+`data/probe-local/`，`data/` 一律归 Actions；冲突时远端赢。**
 
 ### 独立工作树（**必须**，issue #92）
 
@@ -517,21 +547,43 @@ tmux kill-session -t probe    # 停止
 | `PROBE_EVENTS_FILE` | `data/probe-local/events.jsonl` | 本地事件日志（gitignore） |
 | `PROBE_LOG_FILE` | `.agent/probe.log` | 日志文件 |
 | `PROBE_PYTHON` | `python3` | 解释器 |
+| `PROBE_SKIP_STAGES` | `history` | 逗号分隔的跳过 stage（`download` / `process` / `profile` / `probe-events` / `history` / `metrics` / `size-budget`）；设为**空值**恢复全链路（#113） |
+| `PROBE_SKIP_HISTORY` | 未设 | 非空则把 `history` 加进跳过列表（`PROBE_SKIP_STAGES` 的简写） |
+| `PROBE_SYNC_ATTEMPTS` | `2` | 每周期 pull 冲突的有界重试次数；只有连续失败才丢弃本地状态（#113） |
+| `PROBE_SYNC_BACKOFF_SECONDS` | `15` | 两次 sync 尝试之间的退避 |
+| `PROBE_RETRY_BACKOFF_SECONDS` | `15` | 推送被拒后 rebase 重试之间的退避 |
 | `PROBE_CHECK_ONLY` | 未设 | 非空则只跑启动校验后退出（测试用） |
 
 ### 与 Actions 的并发关系
 
-Actions 侧的数据提交仍在继续，所以本机推送必须让远端优先：
+Actions 侧的数据提交仍在继续，所以本机推送必须让远端优先 —— 但**不让冲突直接
+判一个周期失败**（issue #113）：
 
-- 每个周期开始前先 `git pull --rebase`，遇冲突则 `rebase --abort`，并且**只有在
-  未提交改动全部位于 `data/`**（探针自己的足迹）时才 `reset --hard '@{u}'`；
-  否则拒绝回退、把原因写进日志（保护 agent 的在途工作）；
+- 每个周期开始前先 `git pull --rebase --autostash`。冲突**不再 abort**：脚本对
+  每个未合并路径按上面的归属表裁决并 `git add`，然后 `git rebase --continue`，
+  逐条写日志（`conflict <path>: took the remote (Actions) version` /
+  `kept the local probe ledger`）。rebase 视角下 HEAD 就是上游，所以
+  “取远端”= `git checkout --ours`（这一点容易记反，日志里写的是结论而不是
+  参数名）；`--autostash` 弹出冲突（没有 rebase 在进行、只有未合并文件）走同一
+  套裁决。
+- 只有连 `PROBE_SYNC_ATTEMPTS`（默认 2）次尝试都失败时才退回
+  `rebase --abort` + `git fetch`，**并且只有在未提交改动全部位于 `data/`**
+  （探针自己的足迹）时才 `reset --hard '@{u}'`；日志明确区分两种结局：
+  `took the remote (Actions) version`（取了远端）与
+  `discarded local data/ changes, remote wins`（丢弃本地）。出现 `data/` 之外的
+  脏文件（agent 的在途改动）时**拒绝回退**并把原因写进日志。
 - 探针只提交 `data/update-profile.json` / `data/fetch-log.json` /
-  `data/fetch-schedule.json`，每小时最多一次；未推送成功的本地提交在下一轮继续
-  重推（推送被拒时 `pull --rebase` + 重试，最多 `PROBE_MAX_PUSH_RETRIES`，
-  默认 3 次）；仍失败则保留本地提交、记一次失败，循环继续；
+  `data/fetch-schedule.json`，每小时最多一次；推送被拒时同样走上面这条
+  “解析冲突 + rebase” 路径并重试（最多 `PROBE_MAX_PUSH_RETRIES`，默认 3 次，
+  退避 `PROBE_RETRY_BACKOFF_SECONDS`）；仍失败则保留本地提交、记一次失败，
+  循环继续。
 - 任何一步失败都**不会**终止循环（脚本没有 `set -e`，每个 stage 都是
   `continue-on-error` 语义），失败与重试计数进入当天的 `days` 记录。
+
+验收口径（#113）：连续 24 小时 `.agent/probe.log` 里 `stage history failed` = 0、
+`unmerged files` = 0、`probe cycle N finished with errors` ≤ 2，
+每日成功周期 ≥ 94（15 分钟节拍共 96），`events.jsonl` 行数 ≈ 周期数，
+且 master 上 `data/fetch-log.json` 的 `fetches` 仍在增长。
 
 ### `data/fetch-log.json`
 

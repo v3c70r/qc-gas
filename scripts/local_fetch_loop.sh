@@ -15,6 +15,9 @@
 #   + a report-only check_data_size.py, then fetch_log.py records the completed
 #   cycle in data/fetch-log.json. `fetch_bulletin.py` (weekly PDF, unrelated to
 #   high-frequency probing) is deliberately skipped, as is `should_fetch.py`.
+#   `append_history.py` is **skipped by default** since #113: Actions already
+#   appends `data/history/**` every hour, and a second writer of the same tracked
+#   files made `pull --rebase` conflict on ~1 cycle in 4 (see PROBE_SKIP_STAGES).
 #
 # Safety:
 #   * the loop refuses to run on any branch but `PROBE_BASE_BRANCH` (default
@@ -22,6 +25,10 @@
 #     never in the same working tree where an agent edits a feature branch —
 #     otherwise its `git add`/`reset --hard` would swallow somebody else's work;
 #   * a failing stage never stops the loop (no `set -e`, no `should_fetch.py`);
+#   * a pull/rebase conflict is **resolved**, not aborted (#113): the remote
+#     (Actions) version wins for every `data/` path the probe does not own, the
+#     rebase continues, and the cycle's ledger commit still goes through; only
+#     when the rebase cannot be completed is the local state discarded;
 #   * the push is a bounded `pull --rebase` retry (default 3) so the Actions
 #     data commits win — a failed rebase aborts and resyncs to the remote
 #     instead of overwriting it;
@@ -40,6 +47,11 @@
 #   PROBE_COMMIT_INTERVAL_SECONDS  max one data commit per N seconds, default 3600
 #   PROBE_MAX_PUSH_RETRIES   rebase+push retries, default 3
 #   PROBE_MAX_CYCLES         stop after N cycles (0 = forever; 1 = smoke test)
+#   PROBE_SKIP_STAGES        comma-separated stages to skip, default `history`
+#                            (set it to an empty value to run every stage)
+#   PROBE_SKIP_HISTORY       non-empty: shorthand for adding `history` to the
+#                            skip list (kept for the container's default, #113)
+#   PROBE_SYNC_ATTEMPTS      bounded sync attempts per cycle, default 2
 #   PROBE_SKIP_PUSH          non-empty: commit locally but never push
 #   PROBE_SKIP_SUMMARY       non-empty: never comment the daily health summary
 #   PROBE_TRACKING_ISSUE     issue number for the daily summary, default 78
@@ -68,6 +80,27 @@ COMMIT_MESSAGE='Update gas prices data (local probe) [skip ci]'
 # The **only** files the probe may commit (issue #92): the ledger/schedule
 # bookkeeping are tiny, the snapshots are not — they stay local.
 COMMITTED_FILES=(data/update-profile.json data/fetch-log.json data/fetch-schedule.json)
+
+# Stage skips (issue #113). `history` is skipped by default: `append_history.py`
+# rewrites the *tracked* `data/history/**` that Actions owns (`update-data.yml`
+# appends it on every admitted run), so a second writer made `pull --rebase`
+# collide with the Actions commit on ~25 % of the cycles — `stage history failed`
+# (`JSONDecodeError` on a half-updated tree) and, worse, the following cycle died
+# on `error: Pulling is not possible because you have unmerged files`. The probe's
+# unique value is the 15-minute observation (`data/probe-local/events.jsonl`) plus
+# the latency/freshness metrics, not a second history writer. Set
+# `PROBE_SKIP_STAGES=` (empty) to run every stage again; comma-separated list
+# accepts any stage label (`download`, `process`, `profile`, `probe-events`,
+# `history`, `metrics`, `size-budget`).
+SKIP_STAGES="${PROBE_SKIP_STAGES-history}"
+if [ -n "${PROBE_SKIP_HISTORY:-}" ]; then
+  case ",$SKIP_STAGES," in
+    *',history,'*) ;;
+    *) SKIP_STAGES="${SKIP_STAGES:+$SKIP_STAGES,}history" ;;
+  esac
+fi
+SYNC_ATTEMPTS="${PROBE_SYNC_ATTEMPTS:-2}"
+SYNC_BACKOFF_SECONDS="${PROBE_SYNC_BACKOFF_SECONDS:-15}"
 
 # Push retries spent by the cycle that just finished are folded into the *next*
 # cycle's ledger entry (the entry has to be written before the commit it rides
@@ -102,6 +135,7 @@ require_base_branch() {
 }
 
 require_base_branch || exit 2
+log "probe stages skipped: '${SKIP_STAGES}' (default history: Actions owns data/history/; #113)"
 if [ -n "${PROBE_CHECK_ONLY:-}" ]; then
   log "PROBE_CHECK_ONLY set; startup checks passed on '$BASE_BRANCH'"
   echo "probe: startup checks passed on '$BASE_BRANCH'"
@@ -133,11 +167,25 @@ _stage() {
   return 0
 }
 
-run_stage() { _stage "$1" 1 "${@:2}"; }
+run_stage() {
+  local label="$1"
+  if stage_skipped "$label"; then
+    log "stage $label skipped (PROBE_SKIP_STAGES='${SKIP_STAGES}')"
+    return 0
+  fi
+  _stage "$label" 1 "${@:2}"
+}
 
 # Report-only stage (data-size budget: gates the commit in the workflow, but
 # must not stop the probe from collecting observations).
-warn_stage() { _stage "$1" 0 "${@:2}"; }
+warn_stage() {
+  local label="$1"
+  if stage_skipped "$label"; then
+    log "stage $label skipped (PROBE_SKIP_STAGES='${SKIP_STAGES}')"
+    return 0
+  fi
+  _stage "$label" 0 "${@:2}"
+}
 
 # `git reset --hard` may only discard the probe's own footprint: paths under
 # `data/`. A dirty path anywhere else (an agent editing this same worktree)
@@ -174,23 +222,170 @@ unstage_foreign_paths() {
   done
 }
 
-# Start-of-cycle sync: the Actions side keeps pushing data, so rebase first.
-# The remote always wins; a conflicted rebase is aborted and discarded — but
-# only the probe's own uncommitted work may be discarded.
-sync_with_remote() {
+# A stage named in `PROBE_SKIP_STAGES` (comma-separated) is not run at all.
+stage_skipped() {
+  local stage="$1" item
+  for item in $(printf '%s' "$SKIP_STAGES" | tr ',' ' '); do
+    [ "$item" = "$stage" ] && return 0
+  done
+  return 1
+}
+
+# ── Syncing with the remote (issue #113) ────────────────────────────────────
+#
+# Actions and the probe both write into `data/`, and the probe *rewrites* tracked
+# data files every cycle (`data/history/**`, `data/update-profile.json`, ...)
+# without ever committing them (#92/#103). Every Actions commit touching one of
+# those files therefore met a dirty local copy, `pull --rebase --autostash` left
+# an unmerged index behind and the next cycle died on
+# `error: Pulling is not possible because you have unmerged files`.
+#
+# The rule is now explicit and logged per path: the **remote wins** for every
+# path under `data/` except the probe's own ledger `data/fetch-log.json` (Actions
+# never writes it, so losing it would lose the cycle the probe just observed).
+# During a rebase HEAD is the upstream side, hence `--ours` *is* the remote
+# content and `--theirs` the local commit being replayed; a conflicted `--autostash`
+# pop has the same orientation.
+
+# Is a rebase (or a half-finished one) in progress in this worktree?
+rebase_in_progress() {
+  [ -d "$(git rev-parse --git-path rebase-merge 2>/dev/null)" ] && return 0
+  [ -d "$(git rev-parse --git-path rebase-apply 2>/dev/null)" ] && return 0
+  return 1
+}
+
+unmerged_paths() { git diff --name-only --diff-filter=U 2>/dev/null; }
+
+# Resolve one conflicted path and stage the result, logging which side won.
+resolve_conflict_path() {
+  local path="$1" side label
+  case "$path" in
+    data/fetch-log.json)
+      side=--theirs
+      label="kept the local probe ledger (Actions never writes it)"
+      ;;
+    data/*)
+      side=--ours
+      label="took the remote (Actions) version"
+      ;;
+    *)
+      log "conflict $path: outside data/, refusing to guess"
+      return 1
+      ;;
+  esac
+  if git checkout "$side" -- "$path" >>"$LOG_FILE" 2>&1 &&
+     git add -- "$path" >>"$LOG_FILE" 2>&1; then
+    log "conflict $path: $label"
+    return 0
+  fi
+  # A delete/modify conflict cannot be resolved by checking a side out.
+  if git rm -q -- "$path" >>"$LOG_FILE" 2>&1; then
+    log "conflict $path: $label (path removed)"
+    return 0
+  fi
+  log "conflict $path: could not be resolved automatically"
+  return 1
+}
+
+# Resolve every conflict of the in-progress rebase, then continue until it
+# finishes. Returns 0 once the rebase completed, 1 when it cannot be completed.
+finish_rebase() {
+  local guard=0 stalled=0 conflicts path
+  while rebase_in_progress; do
+    guard=$((guard + 1))
+    if [ "$guard" -gt 40 ]; then
+      log "rebase still running after $((guard - 1)) resolution step(s); giving up"
+      return 1
+    fi
+    conflicts="$(unmerged_paths)"
+    if [ -n "$conflicts" ]; then
+      for path in $conflicts; do
+        resolve_conflict_path "$path" || return 1
+      done
+      stalled=0
+    fi
+    if GIT_EDITOR=true git rebase --continue >>"$LOG_FILE" 2>&1; then
+      stalled=0
+    elif [ -z "$(unmerged_paths)" ]; then
+      # `--continue` refused with nothing left to resolve (e.g. an empty commit
+      # it wants `--skip` for). Two consecutive refusals mean we stop guessing.
+      stalled=$((stalled + 1))
+      if [ "$stalled" -ge 2 ]; then
+        log "rebase --continue refused with no conflicted path left; giving up"
+        return 1
+      fi
+    fi
+  done
+  return 0
+}
+
+# A failed `pull --rebase --autostash` leaves one of two states: (1) a rebase
+# stopped on conflicts, (2) no rebase but an unmerged index from the conflicted
+# autostash pop. Both are resolvable; anything else (network, refusal) is not.
+reconcile_failed_pull() {
+  local conflicts path
+  if rebase_in_progress; then
+    log "pull --rebase stopped on conflicts; resolving in favour of the remote (data/ is Actions-owned)"
+    finish_rebase
+    return $?
+  fi
+  conflicts="$(unmerged_paths)"
+  if [ -n "$conflicts" ]; then
+    log "autostash pop left unmerged files ($(printf '%s' "$conflicts" | tr '\n' ' ')); resolving in favour of the remote"
+    for path in $conflicts; do
+      resolve_conflict_path "$path" || return 1
+    done
+    return 0
+  fi
+  return 1
+}
+
+# `pull --rebase`, resolving conflicts instead of aborting. This is the single
+# path both the start-of-cycle sync and a rejected push use.
+pull_rebase_resolving() {
   if git pull --rebase --autostash >>"$LOG_FILE" 2>&1; then
     return 0
   fi
-  log "start-of-cycle pull --rebase failed; discarding local state, remote wins"
+  reconcile_failed_pull
+}
+
+# Last resort: the rebase cannot be completed, so throw the local state away —
+# but only when every dirty path belongs to the probe (`data/`). Logged as
+# "discarded local" so the log distinguishes it from "took the remote version".
+discard_local_state() {
   git rebase --abort >>"$LOG_FILE" 2>&1
   git rebase --quit >/dev/null 2>&1
   git merge --abort >/dev/null 2>&1
   git fetch origin >>"$LOG_FILE" 2>&1
   if probe_owns_worktree; then
-    git reset --hard '@{u}' >>"$LOG_FILE" 2>&1 || log "reset --hard @{u} failed; continuing"
+    if git reset --hard '@{u}' >>"$LOG_FILE" 2>&1; then
+      log "sync could not be completed; discarded local data/ changes, remote wins"
+    else
+      log "reset --hard @{u} failed; continuing"
+    fi
   else
     log "refusing reset --hard '@{u}': the working tree holds non-probe changes ($(git diff --name-only 2>/dev/null; git diff --cached --name-only 2>/dev/null | tr '\n' ' ')); leaving it untouched"
   fi
+}
+
+# Start-of-cycle sync: the Actions side keeps pushing data, so rebase first.
+# Bounded retries (PROBE_SYNC_ATTEMPTS, default 2): a conflict costs at most the
+# rebase resolution, and only a repeated failure falls back to discarding the
+# local state — never a failed cycle on its own (issue #113).
+sync_with_remote() {
+  local attempt=1
+  while [ "$attempt" -le "$SYNC_ATTEMPTS" ]; do
+    if pull_rebase_resolving; then
+      [ "$attempt" -gt 1 ] && log "synced with remote on attempt $attempt/$SYNC_ATTEMPTS"
+      return 0
+    fi
+    log "sync with remote failed (attempt $attempt/$SYNC_ATTEMPTS)"
+    attempt=$((attempt + 1))
+    if [ "$attempt" -le "$SYNC_ATTEMPTS" ]; then
+      sleep "$SYNC_BACKOFF_SECONDS"
+    fi
+  done
+  discard_local_state
   return 1
 }
 
@@ -207,8 +402,8 @@ push_with_retries() {
       return 1
     fi
     log "push rejected (retry $((retries + 1))/$MAX_PUSH_RETRIES); rebasing on remote"
-    if ! git pull --rebase --autostash >>"$LOG_FILE" 2>&1; then
-      log "rebase after rejected push failed; aborting rebase, keeping remote"
+    if ! pull_rebase_resolving; then
+      log "rebase after rejected push could not be completed; aborting it, keeping remote"
       git rebase --abort >>"$LOG_FILE" 2>&1
       return 1
     fi
@@ -348,7 +543,7 @@ cycle() {
   # A killed pre-#92 loop may have left a half-finished staging of the whole
   # `data/` tree in the index; drop it first so no snapshot can ride a commit.
   unstage_foreign_paths
-  sync_with_remote || true
+  sync_with_remote || log "start-of-cycle sync failed; continuing on the current tree"
 
   run_stage download "$PYTHON" scripts/download_data.py || failed=1
   run_stage process "$PYTHON" scripts/process_data.py || failed=1
@@ -359,6 +554,9 @@ cycle() {
     run_stage probe-events "$PYTHON" scripts/probe_events.py append \
       --events-file "$EVENTS_FILE" || failed=1
   fi
+  # Actions appends `data/history/**` on every admitted run; the probe writing
+  # the same tracked files is what made 1 cycle in 4 fail (#113), so the stage is
+  # skipped by default (PROBE_SKIP_STAGES, see above). The label stays `history`.
   run_stage history "$PYTHON" scripts/append_history.py || failed=1
   if [ -f scripts/metrics.py ]; then
     run_stage metrics "$PYTHON" scripts/metrics.py || failed=1
