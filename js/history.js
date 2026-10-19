@@ -12,6 +12,12 @@ let stationChangesPromise = null;
 const DAY_MS = 24 * 60 * 60 * 1000;
 const FUEL_SHORT = { regular: 'g', super: 's', diesel: 'd' };
 
+const HISTORY_INDEX_URL = 'data/history/index.json';
+const STATION_HISTORY_DIR = 'data/history/station-history/';
+const STATION_HISTORY_LEGACY = 'data/history/station-history.json';
+// 180-day retention spans at most 7 calendar months (6 full + the boundary).
+const STATION_HISTORY_MAX_MONTHS = 7;
+
 export async function loadHistoryData() {
   if (historyPromise) return historyPromise;
   historyPromise = fetch('data/history.json')
@@ -21,10 +27,71 @@ export async function loadHistoryData() {
   return historyPromise;
 }
 
+/**
+ * Merge month shards (`{ v, m, t: [day], s: {key: {g,s,d}} }`) into the single
+ * `{ v, t, s }` shape the station chart code has always consumed.
+ *
+ * Shards are keyed by month but the merge sorts by day, so the result is
+ * independent of the order the fetches resolve in (issue #114).
+ */
+export function mergeStationHistoryShards(shards) {
+  const list = (shards || []).filter(s => s && Array.isArray(s.t));
+  const daySet = new Set();
+  for (const shard of list) for (const day of shard.t) daySet.add(day);
+  const days = Array.from(daySet).sort();
+  const index = new Map(days.map((day, i) => [day, i]));
+  const merged = {};
+  for (const shard of list) {
+    for (const [key, site] of Object.entries(shard.s || {})) {
+      const target = merged[key] || (merged[key] = {});
+      for (const [short, values] of Object.entries(site || {})) {
+        if (!Array.isArray(values)) continue;
+        const arr = target[short] || (target[short] = new Array(days.length).fill(null));
+        shard.t.forEach((day, i) => {
+          const v = values[i];
+          if (v == null || !Number.isFinite(v)) return;
+          arr[index.get(day)] = v;
+        });
+      }
+    }
+  }
+  return { v: 1, t: days, s: merged };
+}
+
+function monthListFromIndex(index) {
+  const months = index && index.station_history && index.station_history.months;
+  if (!Array.isArray(months)) return [];
+  return months.filter(m => typeof m === 'string' && /^\d{4}-\d{2}$/.test(m)).sort();
+}
+
+async function fetchStationHistory() {
+  let months = [];
+  try {
+    const index = await fetch(HISTORY_INDEX_URL).then(r => (r.ok ? r.json() : null));
+    months = monthListFromIndex(index);
+  } catch {
+    months = [];
+  }
+
+  if (!months.length) {
+    // Legacy single-file layout (or an index that predates the shards).
+    const res = await fetch(STATION_HISTORY_LEGACY);
+    if (!res.ok) throw new Error('station history unavailable');
+    return res.json();
+  }
+
+  const recent = months.slice(-STATION_HISTORY_MAX_MONTHS);
+  const shards = await Promise.all(recent.map(month =>
+    fetch(`${STATION_HISTORY_DIR}${month}.json`)
+      .then(r => (r.ok ? r.json() : null))
+      .catch(() => null)
+  ));
+  return mergeStationHistoryShards(shards);
+}
+
 export async function loadStationHistoryData() {
   if (stationHistoryPromise) return stationHistoryPromise;
-  stationHistoryPromise = fetch('data/history/station-history.json')
-    .then(r => r.json())
+  stationHistoryPromise = fetchStationHistory()
     .then(d => { stationHistoryData = d; return d; })
     .catch(err => { stationHistoryPromise = null; throw err; });
   return stationHistoryPromise;

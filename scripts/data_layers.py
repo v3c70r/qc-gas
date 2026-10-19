@@ -26,8 +26,9 @@ never ``git add``-ed. Their ``.br`` siblings are build output only (nothing in
 
 **Persistent** — state that cannot be recomputed from the latest snapshot:
 
-* ``data/history/**`` — the raw/daily/monthly tier store, ``station-history``
-  and ``station-changes`` (the git revision history of the last one is
+* ``data/history/**`` — the raw/daily/monthly tier store, the month-sharded
+  ``station-history/YYYY-MM.json`` daily tier (issue #114) and
+  ``station-changes`` (the git revision history of the last one is
   ``interval_report.py``'s observation series)
 * ``data/update-profile.json`` — learned re-price profile (cumulative)
 * ``data/fetch-log.json`` — probe ledger

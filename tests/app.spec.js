@@ -14,6 +14,38 @@ const DEPLOY_URL = 'https://qgu.io/qc-gas/';
 const stationsSource = derivedDataPath('stations.json');
 const stationsFixture = JSON.parse(readFileSync(stationsSource, 'utf8'));
 
+// Issue #114: the station daily tier is sharded by month
+// (`data/history/station-history/YYYY-MM.json`) and the frontend learns which
+// shards exist from `data/history/index.json`.
+const stationHistoryShardRoute = (months) => async (page) => {
+  await page.route('**/data/history/index.json', route =>
+    route.fulfill({ json: { v: 1, station_history: { months: Object.keys(months) } } })
+  );
+  await page.route('**/data/history/station-history/*.json', route => {
+    const month = route.request().url().split('/').pop().replace('.json', '');
+    if (!months[month]) return route.fulfill({ status: 404, body: 'not found' });
+    return route.fulfill({ json: months[month] });
+  });
+};
+
+const stationKeys = () => stationsFixture.features.map((feature) => {
+  const [lng, lat] = feature.geometry.coordinates;
+  return `${lng.toFixed(5)},${lat.toFixed(5)}`;
+});
+
+const openFirstStation = async (page) => {
+  await page.goto(BASE_URL);
+  await page.waitForLoadState('networkidle', { timeout: 15000 }).catch(() => {});
+  await page.waitForTimeout(3000);
+
+  const list = page.locator('#station-list');
+  await expect(list.locator('.list-item').first()).toBeVisible();
+  await list.locator('.list-item').first().click();
+  await expect(page.locator('.mapboxgl-popup').first()).toBeVisible();
+  return page.locator('.mapboxgl-popup').first();
+};
+
+
 test.describe('QC Gas Price App - Regression Tests', () => {
   test.beforeEach(async ({ page }) => {
     await page.goto(BASE_URL);
@@ -726,6 +758,10 @@ test.describe('Trip Fuel Cost Estimator', () => {
 
 test.describe('Station History (real data only)', () => {
   test('shows empty placeholder and hides change chip when no recorded station history', async ({ page }) => {
+    // No `station_history.months` in the index -> legacy single-file fallback.
+    await page.route('**/data/history/index.json', route =>
+      route.fulfill({ json: { v: 1 } })
+    );
     await page.route('**/data/history/station-history.json', route =>
       route.fulfill({ json: { v: 1, t: [], s: {} } })
     );
@@ -1837,29 +1873,52 @@ test.describe('Same-day regional benchmark', () => {
   });
 
   test('disables range pills beyond real station history coverage', async ({ page }) => {
-    const history = { v: 1, t: ['2026-09-18', '2026-09-19'], s: {} };
-    for (const feature of stationsFixture.features) {
-      const [lng, lat] = feature.geometry.coordinates;
-      const key = `${lng.toFixed(5)},${lat.toFixed(5)}`;
+    const history = { v: 1, m: '2026-09', t: ['2026-09-18', '2026-09-19'], s: {} };
+    for (const key of stationKeys()) {
       history.s[key] = { g: [199.9, 198.4], s: [239.9, 238.4], d: [259.9, 258.4] };
     }
 
-    await page.route('**/data/history/station-history.json', route =>
-      route.fulfill({ json: history })
-    );
-    await page.goto(BASE_URL);
-    await page.waitForLoadState('networkidle', { timeout: 15000 }).catch(() => {});
-    await page.waitForTimeout(3000);
+    await stationHistoryShardRoute({ '2026-09': history })(page);
 
-    const list = page.locator('#station-list');
-    await expect(list.locator('.list-item').first()).toBeVisible();
-    await list.locator('.list-item').first().click();
-    await expect(page.locator('.mapboxgl-popup').first()).toBeVisible();
-
-    const popup = page.locator('.mapboxgl-popup').first();
+    const popup = await openFirstStation(page);
     await expect(popup.locator('.sc-rangepill[aria-disabled="true"]')).toHaveCount(5);
     await expect(popup.locator('.sc-coverage')).toContainText('2');
     await expect(popup.locator('.sc-coverage')).toContainText('2026-09-18');
+  });
+
+  test('reads the last 90 days from the month shards', async ({ page }) => {
+    // 90 consecutive days ending 2026-09-28 -> spans 4 month shards. The
+    // shards are registered in reverse order to prove the merge sorts by day.
+    const days = [];
+    const end = Date.UTC(2026, 8, 28);
+    for (let i = 89; i >= 0; i--) days.push(new Date(end - i * 86400000).toISOString().slice(0, 10));
+
+    const months = {};
+    const keys = stationKeys();
+    days.forEach((day, i) => {
+      const month = day.slice(0, 7);
+      months[month] = months[month] || { v: 1, m: month, t: [], s: {} };
+      months[month].t.push(day);
+      for (const key of keys) {
+        const site = months[month].s[key] = months[month].s[key] || { g: [], s: [], d: [] };
+        const base = 190 + i * 0.1;
+        site.g.push(Math.round(base * 10) / 10);
+        site.s.push(Math.round((base + 40) * 10) / 10);
+        site.d.push(Math.round((base + 60) * 10) / 10);
+      }
+    });
+    const ordered = Object.keys(months).sort();
+    const reversed = {};
+    for (const month of ordered.slice().reverse()) reversed[month] = months[month];
+
+    await stationHistoryShardRoute(reversed)(page);
+
+    const popup = await openFirstStation(page);
+    await expect(popup.locator('.sc-coverage')).toContainText(String(days.length));
+    await expect(popup.locator('.sc-coverage')).toContainText(days[0]);
+    await expect(popup.locator('.sc-chart')).toBeVisible();
+    // 7 / 30 / 90 stay selectable, 180 / 365 are beyond the recorded window.
+    await expect(popup.locator('.sc-rangepill[aria-disabled="true"]')).toHaveCount(2);
   });
 
   test('station card and detail panel show the same-day benchmark block', async ({ page }) => {

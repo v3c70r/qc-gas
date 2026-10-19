@@ -326,6 +326,46 @@ class DailyChangeIntervalsTest(unittest.TestCase):
         self.assertEqual(ir.daily_change_intervals(None, {})['overall'], [])
 
 
+class StationHistoryLoadingTest(unittest.TestCase):
+    """Issue #114: the daily station store is sharded by month on disk.
+
+    The report must keep reading the same merged shape (`t` + `s`) no matter
+    whether the checkout has the new `history/station-history/YYYY-MM.json`
+    shards or the legacy single `history/station-history.json` file.
+    """
+
+    def setUp(self):
+        self._tmp = tempfile.TemporaryDirectory()
+        self.data = Path(self._tmp.name) / 'data'
+        self.addCleanup(self._tmp.cleanup)
+
+    def test_reads_and_merges_month_shards(self):
+        write_json(self.data / 'history' / 'station-history' / '2026-09.json', {
+            'v': 1, 'm': '2026-09', 't': ['2026-09-30'],
+            's': {'0.00000,0.00000': {'g': [150.0]}},
+        })
+        write_json(self.data / 'history' / 'station-history' / '2026-10.json', {
+            'v': 1, 'm': '2026-10', 't': ['2026-10-01'],
+            's': {'0.00000,0.00000': {'g': [151.0]}},
+        })
+        store = ir.load_station_history(self.data)
+        self.assertEqual(store['t'], ['2026-09-30', '2026-10-01'])
+        self.assertEqual(store['s']['0.00000,0.00000']['g'], [150.0, 151.0])
+
+    def test_falls_back_to_the_legacy_single_file(self):
+        write_json(self.data / 'history' / 'station-history.json', {
+            'v': 1, 't': ['2026-10-01'],
+            's': {'0.00000,0.00000': {'g': [151.0]}},
+        })
+        store = ir.load_station_history(self.data)
+        self.assertEqual(store['t'], ['2026-10-01'])
+
+    def test_missing_store_is_an_empty_store(self):
+        store = ir.load_station_history(self.data)
+        self.assertEqual(store['t'], [])
+        self.assertEqual(store['s'], {})
+
+
 class GitObservationsTest(unittest.TestCase):
     def setUp(self):
         self._tmp = tempfile.TemporaryDirectory()

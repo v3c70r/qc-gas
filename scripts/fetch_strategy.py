@@ -468,7 +468,7 @@ def station_coord_key(feat):
 
     The upstream payload has no station id, so coordinates are the only stable
     handle. Five decimals (~1 m) has been the de-facto key of
-    ``data/history/station-history.json`` and loses only 0.61% of keys over
+    ``data/history/station-history/YYYY-MM.json`` and loses only 0.61% of keys over
     30 days — far less than a name/address key would.
     """
     coords = (feat or {}).get('geometry') or {}
