@@ -1,14 +1,20 @@
 #!/usr/bin/env python3
 """Regression tests for the station-level history store in append_history.py."""
 
+import json
 import sys
+import tempfile
 import unittest
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
+import append_history  # noqa: E402
 from append_history import (  # noqa: E402
+    load_station_shards,
+    merge_month_shard,
     merge_station_shards,
+    save_station_shards,
     split_station_store,
     update_station_history,
     update_station_shards,
@@ -169,6 +175,97 @@ class StationHistoryShardingTest(unittest.TestCase):
         merged = merge_station_shards({})
         self.assertEqual(merged['t'], [])
         self.assertEqual(merged['s'], {})
+
+    def test_merging_months_unions_days_and_keeps_the_primary_values(self):
+        primary = {'v': 1, 'm': '2026-10', 't': ['2026-10-01'],
+                   's': {'a,b': {'g': [181.0]}}}
+        secondary = {'v': 1, 'm': '2026-10', 't': ['2026-10-01', '2026-10-02'],
+                     's': {'a,b': {'g': [179.0, 182.0]}, 'c,d': {'g': [170.0, 171.0]}}}
+        merged = merge_month_shard(primary, secondary)
+        self.assertEqual(merged['t'], ['2026-10-01', '2026-10-02'])
+        self.assertEqual(merged['s']['a,b']['g'], [181.0, 182.0])
+        self.assertEqual(merged['s']['c,d']['g'], [170.0, 171.0])
+        self.assertEqual(merged['m'], '2026-10')
+
+
+class StationHistoryMigrationTest(unittest.TestCase):
+    """Issue #114 review round 1: the legacy file must never be dropped early.
+
+    ``data/history/**`` is *the only copy that exists*, so a migration that
+    deletes `data/history/station-history.json` before every month it carried
+    has been written to the shard directory loses history permanently.
+    """
+
+    def setUp(self):
+        self._tmp = tempfile.TemporaryDirectory()
+        root = Path(self._tmp.name) / 'data' / 'history'
+        self.dir = root / 'station-history'
+        self.legacy = root / 'station-history.json'
+        self.dir.mkdir(parents=True)
+        self._saved = (append_history.STATION_HISTORY_DIR,
+                       append_history.STATION_HISTORY_FILE)
+        append_history.STATION_HISTORY_DIR = self.dir
+        append_history.STATION_HISTORY_FILE = self.legacy
+        self.addCleanup(self._restore)
+
+    def _restore(self):
+        append_history.STATION_HISTORY_DIR, append_history.STATION_HISTORY_FILE = self._saved
+        self._tmp.cleanup()
+
+    def _write(self, path, obj):
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(json.dumps(obj), encoding='utf-8')
+
+    def _read(self, path):
+        return json.loads(path.read_text(encoding='utf-8'))
+
+    def test_months_only_in_the_legacy_file_are_written_before_it_is_deleted(self):
+        # Shard dir already has October, the legacy file still carries September.
+        self._write(self.dir / '2026-10.json', {
+            'v': 1, 'm': '2026-10', 't': ['2026-10-19'],
+            's': {'a,b': {'g': [180.4]}},
+        })
+        self._write(self.legacy, {
+            'v': 1, 't': ['2026-09-15', '2026-09-16'],
+            's': {'a,b': {'g': [179.0, 179.5]}},
+        })
+
+        shards = load_station_shards()
+        # Today is already recorded -> nothing "changed" in the update step.
+        shards, changed = update_station_shards(
+            shards, {'a,b': {'g': 180.4}}, '2026-10-19', '2026-05-01')
+        self.assertEqual(changed, [])
+        save_station_shards(shards, changed)
+
+        self.assertFalse(self.legacy.exists(), 'legacy file should be gone after migration')
+        september = self._read(self.dir / '2026-09.json')
+        self.assertEqual(september['t'], ['2026-09-15', '2026-09-16'])
+        self.assertEqual(september['s']['a,b']['g'], [179.0, 179.5])
+
+        # A reload must still see both months (nothing lost on disk).
+        reloaded = load_station_shards()
+        self.assertEqual(sorted(reloaded), ['2026-09', '2026-10'])
+        self.assertEqual(merge_station_shards(reloaded)['t'],
+                         ['2026-09-15', '2026-09-16', '2026-10-19'])
+
+    def test_overlapping_legacy_month_is_merged_with_the_disk_shard(self):
+        self._write(self.dir / '2026-10.json', {
+            'v': 1, 'm': '2026-10', 't': ['2026-10-01'],
+            's': {'a,b': {'g': [181.0]}},
+        })
+        self._write(self.legacy, {
+            'v': 1, 't': ['2026-10-01', '2026-10-02'],
+            's': {'a,b': {'g': [179.0, 182.0]}},
+        })
+
+        shards = load_station_shards()
+        save_station_shards(shards, [])
+        self.assertFalse(self.legacy.exists())
+
+        october = self._read(self.dir / '2026-10.json')
+        self.assertEqual(october['t'], ['2026-10-01', '2026-10-02'])
+        # The shard on disk is the source of truth for a day it already has.
+        self.assertEqual(october['s']['a,b']['g'], [181.0, 182.0])
 
 
 if __name__ == '__main__':

@@ -57,6 +57,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
+from append_history import merge_month_shard, merge_station_shards, split_station_store  # noqa: E402
 from fetch_log import SAMPLE_MIN_DAYS, load_log, summary as probe_summary  # noqa: E402
 from fetch_strategy import PRICE_EPSILON, diff_stations, prices_from_row  # noqa: E402
 from metrics import load_json, parse_iso, percentile, to_iso  # noqa: E402
@@ -326,8 +327,10 @@ def grouped_stats(intervals):
 def load_station_history(data_dir):
     """读取站点日分辨率存储（issue #114：按月分片，兼容旧的单文件）。
 
-    磁盘上是 ``history/station-history/YYYY-MM.json`` 分片；这里合并成报告一直
-    使用的同一形状（``t`` = 排序后的日键列表，``s[key][fuel]`` = 与之对齐的数组），
+    磁盘上是 ``history/station-history/YYYY-MM.json`` 分片；过渡态（迁移未完成）
+    还会同时存在旧的单文件，两者按「分片为准、按天并集」合并（与
+    ``append_history.load_station_shards()`` 同一语义），再合并成报告一直使用的
+    同一形状（``t`` = 排序后的日键列表，``s[key][fuel]`` = 与之对齐的数组），
     所以 ``daily_change_intervals`` 不需要知道分片存在。
     """
     data_dir = Path(data_dir)
@@ -341,25 +344,20 @@ def load_station_history(data_dir):
             shard = load_json(path)
             if shard:
                 shards[month] = shard
+    # A checkout can carry both layouts (migration in flight): union them the
+    # same way `append_history.load_station_shards()` does, so the report never
+    # reads less history than the repository actually holds.
+    legacy = load_json(data_dir / STATION_HISTORY_REL)
+    if legacy:
+        for month, shard in split_station_store(legacy).items():
+            if month in shards:
+                shards[month] = merge_month_shard(shards[month], shard)
+            else:
+                shards[month] = shard
     if not shards:
-        return load_json(data_dir / STATION_HISTORY_REL) or {'v': 1, 't': [], 's': {}}
+        return {'v': 1, 't': [], 's': {}}
 
-    days = sorted({str(day) for shard in shards.values()
-                   for day in (shard.get('t') or [])})
-    index = {day: i for i, day in enumerate(days)}
-    sites = {}
-    for month in sorted(shards):
-        shard = shards[month]
-        shard_days = shard.get('t') or []
-        for key, site in (shard.get('s') or {}).items():
-            target = sites.setdefault(key, {})
-            for short, values in (site or {}).items():
-                out = target.setdefault(short, [None] * len(days))
-                for i, day in enumerate(shard_days):
-                    value = values[i] if i < len(values) else None
-                    if value is not None:
-                        out[index[str(day)]] = value
-    return {'v': 1, 't': days, 's': sites}
+    return merge_station_shards(shards)
 
 
 def daily_change_intervals(store, labels=None, epsilon=PRICE_EPSILON):

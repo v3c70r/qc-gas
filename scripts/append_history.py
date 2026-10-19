@@ -313,6 +313,30 @@ def merge_station_shards(shards):
     return {'v': 1, 't': days, 's': sites}
 
 
+def merge_month_shard(primary, secondary):
+    """Union two shards of the **same** month; ``primary`` wins on shared days.
+
+    Used for the legacy-file migration (issue #114 review round 1): a checkout
+    can carry a legacy ``station-history.json`` *and* a partly populated shard
+    directory, so neither source may be dropped on the floor.
+    """
+    days = sorted(set(primary.get('t') or []) | set(secondary.get('t') or []))
+    index = {day: i for i, day in enumerate(days)}
+    sites = {}
+    for shard in (secondary, primary):  # primary applied last -> wins
+        shard_days = shard.get('t') or []
+        for key, site in (shard.get('s') or {}).items():
+            target = sites.setdefault(key, {})
+            for short, arr in (site or {}).items():
+                out = target.setdefault(short, [None] * len(days))
+                for i, day in enumerate(shard_days):
+                    value = arr[i] if i < len(arr) else None
+                    if value is not None:
+                        out[index[day]] = value
+    month = primary.get('m') or secondary.get('m') or (month_of_day(days[0]) if days else '')
+    return _shard(month, days, sites)
+
+
 def _prune_shard(shard, cutoff_day):
     """Drop days older than ``cutoff_day`` from one shard (keeps arrays aligned)."""
     days = shard.get('t') or []
@@ -370,7 +394,9 @@ def load_station_shards():
     """Read ``data/history/station-history/YYYY-MM.json`` shards.
 
     A legacy ``station-history.json`` (pre-#114) is split into the same shards on
-    read; ``main`` deletes it once the shards are written.
+    read and unioned with any shard the directory already holds (the disk copy is
+    the source of truth for a day both layouts carry). ``save_station_shards()``
+    deletes the legacy file only once every month is safely on disk.
     """
     shards = {}
     if STATION_HISTORY_DIR.is_dir():
@@ -384,27 +410,54 @@ def load_station_shards():
     legacy = load_json(STATION_HISTORY_FILE)
     if legacy:
         for month, shard in split_station_store(legacy).items():
-            shards.setdefault(month, shard)
+            if month in shards:
+                # Both layouts carry this month: union the days, disk wins.
+                shards[month] = merge_month_shard(shards[month], shard)
+            else:
+                shards[month] = shard
     return shards
 
 
 def save_station_shards(shards, changed_months):
-    """Write only the shards whose content changed; delete dropped months."""
+    """Write the shards the store changed, then retire the legacy file.
+
+    ``changed_months`` is the *update* delta, but the store can also differ from
+    what is on disk for reasons the update does not report — most importantly a
+    month that only existed in the legacy single file (migration). Writing just
+    ``changed_months`` and then deleting the legacy file would lose that month
+    permanently, so every in-memory shard whose on-disk copy differs is written
+    too, and the legacy file is only removed once all months are safely on disk.
+    """
     STATION_HISTORY_DIR.mkdir(parents=True, exist_ok=True)
+    to_delete = set()
+    to_write = set()
     for month in changed_months:
-        path = STATION_HISTORY_DIR / month_shard_name(month)
-        shard = shards.get(month)
-        if shard is None:
-            path.unlink(missing_ok=True)
+        if shards.get(month) is None:
+            to_delete.add(month)
         else:
-            save_json(path, shard)
+            to_write.add(month)
+    for month, shard in shards.items():
+        if month in to_write:
+            continue
+        if load_json(STATION_HISTORY_DIR / month_shard_name(month)) != shard:
+            to_write.add(month)
+
+    for month in sorted(to_write):
+        save_json(STATION_HISTORY_DIR / month_shard_name(month), shards[month])
+    for month in sorted(to_delete):
+        (STATION_HISTORY_DIR / month_shard_name(month)).unlink(missing_ok=True)
     # Drop any shard file that is no longer part of the store (e.g. left over
     # from a previous retention window or an interrupted run).
     for path in STATION_HISTORY_DIR.glob('*.json'):
         if path.stem not in shards:
             path.unlink(missing_ok=True)
-    # The legacy single file has been migrated into the shards above.
-    STATION_HISTORY_FILE.unlink(missing_ok=True)
+
+    # Retire the legacy single file only once every month of the store exists on
+    # disk: `data/history/**` is the only copy that exists (#114 review).
+    if STATION_HISTORY_FILE.exists():
+        on_disk = {path.stem for path in STATION_HISTORY_DIR.glob('*.json')}
+        if set(shards) <= on_disk:
+            STATION_HISTORY_FILE.unlink()
 
 
 # ── Snapshot merging (weighted avg / min / max / count) ─────────────────────

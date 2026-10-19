@@ -891,6 +891,14 @@ touches the current month's shard on the first observation of a day, which turns
 `save_json_if_changed()` additionally keeps an unchanged file from being
 rewritten at all (raw shards, `daily.json`, `monthly.json`, `index.json`).
 
+The one-off migration from the single file is loss-safe: `load_station_shards()`
+unions a legacy `station-history.json` with whatever the shard directory already
+holds (disk wins for a day both carry), `save_station_shards()` writes every
+shard whose on-disk copy differs — not just the months the daily update touched
+— and the legacy file is unlinked **only after** every month of the store exists
+on disk. A partial migration (legacy file + a partly populated shard directory)
+therefore cannot drop history.
+
 ## Station-level change detection
 
 Region averages hide two things (issue #68): a +5¢ and a −5¢ move inside the

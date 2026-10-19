@@ -360,6 +360,21 @@ class StationHistoryLoadingTest(unittest.TestCase):
         store = ir.load_station_history(self.data)
         self.assertEqual(store['t'], ['2026-10-01'])
 
+    def test_merges_legacy_days_the_shards_do_not_have(self):
+        # Transition state (#114 review round 1): the shard directory exists but
+        # the legacy single file still carries an earlier month.
+        write_json(self.data / 'history' / 'station-history' / '2026-10.json', {
+            'v': 1, 'm': '2026-10', 't': ['2026-10-01'],
+            's': {'0.00000,0.00000': {'g': [151.0]}},
+        })
+        write_json(self.data / 'history' / 'station-history.json', {
+            'v': 1, 't': ['2026-09-30'],
+            's': {'0.00000,0.00000': {'g': [150.0]}},
+        })
+        store = ir.load_station_history(self.data)
+        self.assertEqual(store['t'], ['2026-09-30', '2026-10-01'])
+        self.assertEqual(store['s']['0.00000,0.00000']['g'], [150.0, 151.0])
+
     def test_missing_store_is_an_empty_store(self):
         store = ir.load_station_history(self.data)
         self.assertEqual(store['t'], [])
