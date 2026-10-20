@@ -15,6 +15,7 @@
 import { stationId } from './favorites.js';
 import { t, tf, translations, getLanguage, onLanguageChange } from './i18n.js';
 import { map, currentStations } from './map.js';
+import { showPopup } from './stats.js';
 
 export const STORAGE_KEY = 'qc-gas-watch';
 const FUEL_KEYS = ['regular', 'super', 'diesel'];
@@ -425,7 +426,6 @@ async function openWatchStation(feature) {
   if (map?.flyTo && coords) {
     map.flyTo({ center: coords, zoom: 15, duration: 800 });
   }
-  const { showPopup } = await import('./stats.js');
   showPopup(feature);
 }
 
