@@ -141,6 +141,11 @@ BASE_URL=https://qgu.io/qc-gas/ npm run measure:map-load   # 生产环境（能�
 脚本把 dev server、Playwright Chromium、视口都拉齐，唯一前置是要有
 `.env` 里的 `VITE_MAPBOX_ACCESS_TOKEN`（应用已经需要它）。
 
+**dev server 生命周期**：若 5173 上已经有人在服务（`npm run dev` 手动起着），脚本直接复用、
+退出时不动它；如果是脚本自己拉起的，退出时把整组进程结束掉（`SIGTERM`，5 s 内没退就
+`SIGKILL`）——只 kill 掉 npm 的 PID 会留下孤儿 vite 占着 5173，下一次测量就会悄悄测到
+旧代码（review 第 1 轮抓到的缺陷，回归用例见 `tests/measure-map-load.spec.js`）。
+
 ### 性能守卫（超预算即失败）
 
 `js/map-style.js` 里的 `STYLE_LOAD_BUDGET_MS = 8000`，由
@@ -196,6 +201,11 @@ expect(measured, `basemap style.load took ${measured} ms, budget ${STYLE_LOAD_BU
    仅供人工比对，无像素断言。等待条件是状态而非时间（`isStyleLoaded()` + 至少一个 `sourcedata`/`idle`
    事件 + `areTilesLoaded()`），route 转发异常一律 `route.abort()` 并记账；瓦片没到位、或失败多过成功时
    用例 `test.skip` 并写入 `test.info().annotations`，**不会**把整轮流水线拖成 `needs_human`。
+
+另一个 Node 侧用例文件 `tests/measure-map-load.spec.js`（无浏览器、无 Mapbox 流量）守着测量
+脚本自身：`stopServer()` 必须结束整组进程（npm + vite 孙进程，见上）、不碰别人起的 server，
+`urlVariants()` 覆盖容器里 `localhost` / `::1` / `127.0.0.1` 三种写法，`summarise()` 的
+中位数/范围算法与 `STYLE_LOAD_BASELINE` 记录口径一致。
 
 > **本地 token 限制**：仓库 `.env` 里的 Mapbox token 绑定了 `qgu.io` 域名，所以直接访问
 > `localhost:5173` 时矢量瓦片返回 403（样式 JSON 正常 200，因此所有 `getStyle()`/`getPaintProperty()`

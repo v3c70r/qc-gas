@@ -31,6 +31,7 @@
 // guard in tests/map-style.spec.js enforces `STYLE_LOAD_BUDGET_MS` against the
 // app row.
 import { spawn } from 'node:child_process';
+import { pathToFileURL } from 'node:url';
 import { chromium } from '@playwright/test';
 
 const DEV_URL = 'http://localhost:5173';
@@ -78,7 +79,7 @@ const median = (values) => {
   return sorted.length % 2 ? sorted[mid] : Math.round((sorted[mid - 1] + sorted[mid]) / 2);
 };
 
-function summarise(values) {
+export function summarise(values) {
   const clean = values.filter(v => typeof v === 'number' && Number.isFinite(v));
   if (clean.length === 0) return { median: null, range: null, samples: [] };
   return {
@@ -95,7 +96,7 @@ function summarise(values) {
  * Vite binds to `::1` in some containers while resolving `localhost` to
  * `127.0.0.1` first. Try the obvious spellings and use whichever answers.
  */
-function urlVariants(url) {
+export function urlVariants(url) {
   const base = new URL(url);
   if (base.hostname !== 'localhost') return [base.toString()];
   const variants = [base.toString()];
@@ -140,16 +141,69 @@ async function waitForReachable(url, timeoutMs = 30000) {
   return null;
 }
 
+/** True when no process is left in the process group led by `pid`. */
+function processGroupGone(pid) {
+  try {
+    process.kill(-pid, 0);
+    return false;
+  } catch (err) {
+    return err.code === 'ESRCH';
+  }
+}
+
+async function waitForProcessGroupExit(pid, timeoutMs) {
+  const deadline = Date.now() + timeoutMs;
+  while (Date.now() < deadline) {
+    if (processGroupGone(pid)) return true;
+    await new Promise(r => setTimeout(r, 50));
+  }
+  return processGroupGone(pid);
+}
+
+/**
+ * Shut the dev server down *for real*.
+ *
+ * `child.kill()` only signals the `npm` process; the `vite` grandchild it
+ * spawned is reparented to init and keeps holding port 5173. A stale server then
+ * serves old code while the next `npm run dev` quietly moves to 5174 — i.e. the
+ * next measurement points at an orphan (found in review round 1). The child is
+ * therefore spawned as its own process *group* (`detached: true`) and the whole
+ * group is signalled, with a SIGKILL escalation for a wedged server.
+ */
+export async function stopServer(child, { termTimeoutMs = 5000, killTimeoutMs = 2000 } = {}) {
+  if (!child || typeof child.pid !== 'number') return;
+  const pid = child.pid;
+  // ESRCH here means the group is already gone (or was never its own group).
+  if (processGroupGone(pid)) return;
+
+  const signalGroup = (signal) => {
+    try {
+      process.kill(-pid, signal);
+    } catch {
+      /* group already empty */
+    }
+  };
+
+  signalGroup('SIGTERM');
+  if (await waitForProcessGroupExit(pid, termTimeoutMs)) return;
+
+  signalGroup('SIGKILL');
+  await waitForProcessGroupExit(pid, killTimeoutMs);
+}
+
 /** Boot `npm run dev` only when the base URL is not already serving. */
 async function ensureServer(baseUrl) {
   const existing = await resolveBaseUrl(baseUrl);
   if (existing) return { child: null, url: existing, reuse: true };
 
-  const child = spawn('npm', ['run', 'dev'], { stdio: 'ignore', detached: false });
+  // `detached: true` puts npm *and* everything it spawns into one process group,
+  // so `stopServer()` can reap the vite child too (see stopServer()).
+  const child = spawn('npm', ['run', 'dev'], { stdio: 'ignore', detached: true });
   child.on('error', (err) => console.error(`dev server failed to start: ${err.message}`));
+
   const resolved = await waitForReachable(baseUrl);
   if (!resolved) {
-    child.kill('SIGTERM');
+    await stopServer(child);
     throw new Error(`dev server never became reachable at ${baseUrl}`);
   }
   return { child, url: resolved, reuse: false };
@@ -342,11 +396,20 @@ async function main() {
     }
   } finally {
     if (browser) await browser.close();
-    if (child) child.kill('SIGTERM');
+    // Whole process group, not just the npm PID — otherwise vite survives and
+    // the next run measures a stale server (review round 1).
+    await stopServer(child);
   }
 }
 
-main().catch((err) => {
-  console.error(`measure_map_load failed: ${err.message}`);
-  process.exit(1);
-});
+// Only run when executed directly (`npm run measure:map-load`); importing the
+// module from tests/measure-map-load.spec.js must not start a browser.
+const invokedDirectly = process.argv[1]
+  && pathToFileURL(process.argv[1]).href === import.meta.url;
+
+if (invokedDirectly) {
+  main().catch((err) => {
+    console.error(`measure_map_load failed: ${err.message}`);
+    process.exit(1);
+  });
+}
