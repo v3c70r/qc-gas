@@ -2,9 +2,10 @@
 import { t, onLanguageChange } from './i18n.js';
 import { BASEMAP_STYLE, applyBasemapPalette } from './map-style.js';
 import { brandColor, brandAbbr, isMembershipBrand } from './constants.js';
-import { updateStats } from './stats.js';
+import { updateStats, showPopup } from './stats.js';
 import { setDataSnapshot, isResponseFromCache, setDataError, clearDataError, setDataRetryHandler } from './pwa.js';
 import { startFreshness, setAppliedSnapshot } from './freshness.js';
+import { debugLog } from './debug.js';
 
 const mapboxToken = import.meta.env.VITE_MAPBOX_ACCESS_TOKEN;
 
@@ -458,7 +459,7 @@ export function applyStations(data, { fromCache = false } = {}) {
   currentStations = { ...data, features: validFeatures };
   stationCount = validFeatures.length;
 
-  console.log('Loaded', validFeatures.length, 'stations (excluded', rawFeatures.length - validFeatures.length, 'invalid coordinates)');
+  debugLog('Loaded', validFeatures.length, 'stations (excluded', rawFeatures.length - validFeatures.length, 'invalid coordinates)');
 
   syncBrandFilters(validFeatures);
   syncRegionOptions(validFeatures);
@@ -667,7 +668,7 @@ function addStationLayers() {
   // Individual point click event
   map.on('click', 'unclustered-points', (e) => {
     if (e.features && e.features.length > 0) {
-      showPopup(e.features[0]);
+      showStationPopup(e.features[0]);
     }
   });
 
@@ -899,9 +900,9 @@ function toRad(deg) { return deg * Math.PI / 180; }
 function toDeg(rad) { return rad * 180 / Math.PI; }
 
 // Show popup (called from unclustered-points click)
-function showPopup(feature) {
-  // Delegate to shared popup in stats.js
-  import('./stats.js').then(mod => mod.showPopup(feature));
+function showStationPopup(feature) {
+  // Delegate to the shared popup in stats.js
+  showPopup(feature);
 }
 
 // Test hook: expose the current number of features in the station source.

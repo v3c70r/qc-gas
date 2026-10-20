@@ -17,6 +17,10 @@
 //   • Replace is destructive and therefore confirmed a second time in the UI.
 
 import { t, tf, onLanguageChange } from './i18n.js';
+import { reloadFavorites } from './favorites.js';
+import { reloadFillups, reloadFillupPrefs } from './fillups.js';
+import { reloadWatch } from './watch.js';
+import { reloadListPreferences } from './stats.js';
 
 export const BACKUP_VERSION = 1;
 export const BACKUP_APP = 'essence-quebec';
@@ -350,18 +354,17 @@ export function writeLocalData(data) {
 
 // The stores keep an in-memory copy loaded at module init, so a successful
 // import must ask them to re-read localStorage (otherwise the restored data
-// would only appear after a manual reload). Dynamic imports keep this module
-// free of heavy static dependencies.
+// would only appear after a manual reload). These stores are part of the entry
+// chunk anyway (freshness/UI need them), so they are imported statically: a
+// dynamic import here would move nothing into another chunk (issue #123).
 function rehydrateStores() {
-  const tasks = [
-    import('./favorites.js').then(m => m.reloadFavorites()),
-    import('./fillups.js').then(m => m.reloadFillups()),
-    import('./fillups.js').then(m => m.reloadFillupPrefs()),
-    import('./watch.js').then(m => m.reloadWatch()),
-    import('./stats.js').then(m => m.reloadListPreferences())
-  ];
+  reloadFavorites();
+  reloadFillups();
+  reloadFillupPrefs();
+  reloadWatch();
+  reloadListPreferences();
+  // The station card IS a separate chunk, so its trip preferences stay lazy.
   import('./station-card.js').then(m => m.reloadTripPrefs?.()).catch(() => {});
-  Promise.all(tasks).catch(() => {});
 }
 
 // ── Import / export ──

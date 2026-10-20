@@ -3,6 +3,7 @@ import { tf, t, getLanguage, onLanguageChange } from './i18n.js';
 import { brandColor, brandAbbr } from './constants.js';
 import { isFavorite, toggleFavorite, getFavoriteCount, subscribe, STAR_ICON } from './favorites.js';
 import { searchFeatures, getSearchQuery, isSearchActive, refreshSearchSuggestions } from './search.js';
+import { loadHistoryData } from './history.js';
 
 // The sidebar renders stations in pages so a big city (Montréal has ~500
 // stations within 25 km) stays browsable without dumping everything at once.
@@ -810,7 +811,7 @@ function updatePopup(feature) {
     const timeStr = d.toLocaleString(getLanguage(), { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' });
     updatedText = tf('dataUpdated', { time: timeStr });
   }
-  import('./history.js').then(h => h.loadHistoryData().catch(() => null))
+  loadHistoryData().catch(() => null)
     .then(() => import('./station-card.js'))
     .then(mod => mod.showStationCard(feature, map, updatedText));
 }
@@ -823,7 +824,7 @@ export function openStationDetail(feature) {
     const timeStr = d.toLocaleString(getLanguage(), { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' });
     updatedText = tf('dataUpdated', { time: timeStr });
   }
-  import('./history.js').then(h => h.loadHistoryData().catch(() => null))
+  loadHistoryData().catch(() => null)
     .then(() => import('./station-card.js'))
     .then(mod => mod.openStationDetail(feature, map, updatedText));
 }

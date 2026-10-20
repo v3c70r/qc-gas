@@ -9,6 +9,7 @@
 // renames or re-addresses a station, which silently broke text-key favorites.
 // The legacy text key (`name|address|postal_code`) still matches as a fallback,
 // and a one-shot, idempotent migration rewrites resolvable text keys.
+import { currentStations } from './map.js';
 
 const STORAGE_KEY = 'qc-gas-favorites';
 const COORD_PREFIX = 'coord:';
@@ -174,19 +175,20 @@ if (typeof window !== 'undefined') {
     if (event?.detail) snapshotStations = event.detail;
     migrateFromKnownSnapshot();
   });
-  // The snapshot may already be applied when this module is evaluated late
-  // (dynamic import from the backup flow, HMR): read it lazily instead of
-  // importing map.js statically, which would create an import cycle.
-  import('./map.js')
-    .then(mod => {
-      if (snapshotStations) return;
-      const stations = mod?.currentStations;
-      if (stations && Array.isArray(stations.features) && stations.features.length) {
-        snapshotStations = stations;
-        migrateFromKnownSnapshot();
-      }
-    })
-    .catch(() => {});
+  // The migration needs the station snapshot. It normally arrives through the
+  // `stations:loaded` event above, but this module can also be evaluated after
+  // the snapshot was applied (HMR). Read map.js's live binding once on a
+  // microtask: favorites.js and map.js sit in a static import cycle
+  // (map → stats → favorites → map), so the binding is still in its TDZ while
+  // this module body runs — a microtask only fires once the graph is evaluated.
+  queueMicrotask(() => {
+    if (snapshotStations) return;
+    const stations = currentStations;
+    if (stations && Array.isArray(stations.features) && stations.features.length) {
+      snapshotStations = stations;
+      migrateFromKnownSnapshot();
+    }
+  });
 }
 
 export { STAR_ICON };
