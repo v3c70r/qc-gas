@@ -16,6 +16,8 @@ import {
   BASEMAP_PALETTE,
   PAINT_OVERRIDES,
   POI_MIN_ZOOM,
+  STYLE_LOAD_BASELINE,
+  STYLE_LOAD_BUDGET_MS,
   applyBasemapPalette,
   contrastRatio
 } from '../js/map-style.js';
@@ -131,6 +133,56 @@ test.describe('applyBasemapPalette (unit)', () => {
     const result = applyBasemapPalette(map);
     expect(result.applied).toBe(2);
     expect(result.skipped).toBeGreaterThan(0);
+  });
+});
+
+// ── Perf baseline constants (unit) ──
+//
+// `STYLE_LOAD_BUDGET_MS` is the number the live guard below enforces, and
+// `STYLE_LOAD_BASELINE` is the measurement the docs quote (issue #124). Keeping
+// them in `js/map-style.js` means the doc, the guard and the measuring script
+// cannot drift apart: bumping the recorded baseline without relaxing the budget
+// (or the reverse) fails here instead of rotting silently.
+const median = (values) => {
+  const sorted = [...values].sort((a, b) => a - b);
+  const mid = Math.floor(sorted.length / 2);
+  return sorted.length % 2 ? sorted[mid] : (sorted[mid - 1] + sorted[mid]) / 2;
+};
+
+test.describe('basemap perf baseline (unit)', () => {
+  test('records at least 3 samples per style, with a consistent median and range', () => {
+    for (const [label, series] of Object.entries(STYLE_LOAD_BASELINE.series)) {
+      expect(series.samples.length, `${label} samples`).toBeGreaterThanOrEqual(3);
+      expect(series.median, `${label} median`).toBe(median(series.samples));
+      expect(series.range, `${label} range`).toEqual([
+        Math.min(...series.samples),
+        Math.max(...series.samples)
+      ]);
+    }
+    // The app series is what the live guard compares against; the two probe
+    // series are the streets-v12 ↔ light-v11 comparison the docs quote.
+    expect(Object.keys(STYLE_LOAD_BASELINE.series)).toEqual(
+      expect.arrayContaining(['app', 'streets-v12', 'light-v11'])
+    );
+    expect(STYLE_LOAD_BASELINE.environment).toMatch(/1280/);
+    expect(STYLE_LOAD_BASELINE.command).toContain('measure:map-load');
+  });
+
+  test('the enforced budget is at least 3× the recorded median (no silent slowdown)', () => {
+    // `app` is the series the guard measures, so it gets the 3× rule (the issue
+    // asks for "median × 3 or a fixed 8 s"; we do both).
+    const app = STYLE_LOAD_BASELINE.series.app;
+    expect(app.median).toBeGreaterThan(0);
+    expect(STYLE_LOAD_BUDGET_MS).toBeGreaterThanOrEqual(3 * app.median);
+    expect(STYLE_LOAD_BUDGET_MS).toBeGreaterThanOrEqual(3 * STYLE_LOAD_BASELINE.series['streets-v12'].median);
+    // The guard must also be reachable inside the Playwright 45 s budget.
+    expect(STYLE_LOAD_BUDGET_MS).toBeLessThanOrEqual(20000);
+  });
+
+  test('the measured baseline does not exceed the enforced budget', () => {
+    for (const [label, series] of Object.entries(STYLE_LOAD_BASELINE.series)) {
+      expect(series.range[1], `${label} worst sample`).toBeLessThanOrEqual(STYLE_LOAD_BUDGET_MS);
+    }
   });
 });
 
@@ -298,6 +350,46 @@ test.describe('basemap integration (live map)', () => {
       window.__qcMap.getPaintProperty('unclustered-points', 'circle-radius')
     );
     expect(JSON.stringify(radius)).toContain('"zoom"');
+  });
+});
+
+// ── Integration: performance guard (issue #124) ──
+//
+// #109 swapped `light-v11` for the much heavier `streets-v12` (134 vs 50
+// layers). Without a guard, a future style/palette change could double the first
+// paint and nobody would notice until users complained. `js/map.js` records the
+// cold `style.load` time next to the `mapboxgl.Map()` call, so this test only
+// has to compare one number with the documented budget.
+//
+// Budget rationale (docs/map-style.md → 「性能基线」): 3× the recorded median,
+// and a fixed floor. It is deliberately loose — a perf guard that flakes on a
+// busy CI runner gets muted, and a muted guard protects nothing.
+test.describe('basemap perf guard (live map)', () => {
+  test.describe.configure({ timeout: 45000 });
+
+  test.beforeEach(async ({ page }) => {
+    derivedDataPath('stations.json');
+    await page.goto(BASE_URL, { waitUntil: 'domcontentloaded' });
+  });
+
+  test('style.load stays within the documented budget', async ({ page }) => {
+    await skipUnlessStyleLoaded(page);
+    const measured = await page.evaluate(() => window.__qcGasMap.getBasemapStyleLoadMs());
+    const baseline = STYLE_LOAD_BASELINE.series['streets-v12'];
+
+    expect(
+      measured,
+      'window.__qcGasMap.getBasemapStyleLoadMs() returned nothing: js/map.js must keep ' +
+        'recording the style.load time set up before `new mapboxgl.Map()`'
+    ).not.toBeNull();
+
+    expect(
+      measured,
+      `basemap style.load took ${measured} ms, budget ${STYLE_LOAD_BUDGET_MS} ms ` +
+        `(recorded baseline: median ${baseline.median} ms, range ${baseline.range.join('–')} ms). ` +
+        'Something made the basemap heavier or the style slower to parse — re-measure with ' +
+        '`npm run measure:map-load` before relaxing the budget in docs/map-style.md.'
+    ).toBeLessThanOrEqual(STYLE_LOAD_BUDGET_MS);
   });
 });
 
