@@ -3,7 +3,7 @@ import { t, onLanguageChange } from './i18n.js';
 import { BASEMAP_STYLE, applyBasemapPalette } from './map-style.js';
 import { brandColor, brandAbbr, isMembershipBrand } from './constants.js';
 import { updateStats } from './stats.js';
-import { setDataSnapshot, isResponseFromCache } from './pwa.js';
+import { setDataSnapshot, isResponseFromCache, setDataError, clearDataError, setDataRetryHandler } from './pwa.js';
 import { startFreshness, setAppliedSnapshot } from './freshness.js';
 
 const mapboxToken = import.meta.env.VITE_MAPBOX_ACCESS_TOKEN;
@@ -488,21 +488,67 @@ export function applyStations(data, { fromCache = false } = {}) {
   window.dispatchEvent(new CustomEvent('stations:loaded', { detail: currentStations }));
 }
 
-// Load stations data (first paint only — later updates go through applyStations)
-export async function loadStations() {
-  document.getElementById('loading').classList.add('active');
+// ── Station snapshot loading (with classified failures, issue #119) ──
+// `data/stations.json` is a derived artifact served by Pages, so the first load
+// can fail for three very different reasons. Each gets its own tag: the user
+// sees one localized message, while the console keeps the distinction that
+// makes the failure diagnosable (bad URL vs flaky network vs mangled body).
+let lastLoadError = null;
+
+function loadErrorWithKind(kind, { status = null, message = '', cause = null } = {}) {
+  const error = new Error(message || kind);
+  error.kind = kind;
+  error.status = status;
+  if (cause) error.cause = cause;
+  return error;
+}
+
+async function fetchStationsSnapshot() {
+  let response;
+  try {
+    response = await fetch('data/stations.json');
+  } catch (error) {
+    // fetch() rejects (TypeError) only for transport-level failures.
+    throw loadErrorWithKind('network', { message: 'network request failed', cause: error });
+  }
+
+  if (!response.ok) {
+    throw loadErrorWithKind('http', { status: response.status, message: `HTTP ${response.status}` });
+  }
 
   try {
-    const response = await fetch('data/stations.json');
-    const data = await response.json();
-    applyStations(data, { fromCache: isResponseFromCache(response) });
+    return { data: await response.json(), response };
   } catch (error) {
-    console.error('Error loading stations:', error);
-    document.getElementById('data-status').textContent = 'Erreur de chargement des données';
-  } finally {
-    document.getElementById('loading').classList.remove('active');
+    throw loadErrorWithKind('parse', { message: 'response body is not valid JSON', cause: error });
   }
 }
+
+// Load stations data (first paint only — later updates go through applyStations).
+// `showLoading: false` is used by the retry button: the map stays usable while
+// a second attempt runs instead of flashing the full-screen spinner.
+export async function loadStations({ showLoading = true } = {}) {
+  const loadingEl = document.getElementById('loading');
+  if (showLoading && loadingEl) loadingEl.classList.add('active');
+
+  try {
+    const { data, response } = await fetchStationsSnapshot();
+    lastLoadError = null;
+    clearDataError();
+    applyStations(data, { fromCache: isResponseFromCache(response) });
+  } catch (error) {
+    const kind = error?.kind || 'network';
+    const status = error?.status ?? null;
+    lastLoadError = { kind, status };
+    console.error(`[data-load:${kind}]${status ? ` ${status}` : ''} station snapshot failed`, error);
+    setDataError({ kind, status });
+  } finally {
+    if (showLoading && loadingEl) loadingEl.classList.remove('active');
+  }
+}
+
+// The retry button lives in pwa.js (sole #data-status writer); it calls back
+// into this module so a retry re-enters the exact same load path.
+setDataRetryHandler(() => loadStations({ showLoading: false }));
 
 // Automatic refresh triggers (issue #47): re-apply a newer snapshot in place
 // when the tab becomes visible again and every 10 minutes while it stays so.
@@ -881,7 +927,9 @@ window.__qcGasMap = {
     return [[b.getWest(), b.getSouth()], [b.getEast(), b.getNorth()]];
   },
   getView: () => (map && map.getCenter ? { center: map.getCenter(), zoom: map.getZoom() } : null),
-  getBasemapStyleLoadMs: () => (typeof window !== 'undefined' ? window.__qcBasemapStyleLoadMs ?? null : null)
+  getBasemapStyleLoadMs: () => (typeof window !== 'undefined' ? window.__qcBasemapStyleLoadMs ?? null : null),
+  // Last classified snapshot-load failure (issue #119); null after a success.
+  getLastLoadError: () => lastLoadError
 };
 
 export { map, currentStations, MONTREAL_CENTER, addRangeCircle };
