@@ -7,7 +7,7 @@ data files). "before" = `agent/123` at the commit preceding the change.
 
 | Asset | before (raw) | before (gzip) | after (raw) | after (gzip) | Δ gzip |
 | --- | --- | --- | --- | --- | --- |
-| `assets/index-*.js` | 123.11 kB | 39.82 kB | 119.54 kB | 39.16 kB | **−0.66 kB** |
+| `assets/index-*.js` | 123.11 kB | 39.82 kB | 119.56 kB | 39.17 kB | **−0.65 kB** |
 | `assets/station-card-*.js` | 27.78 kB | 8.88 kB | 27.78 kB | 8.88 kB | ±0 |
 | `assets/index-*.css` | 48.91 kB | 8.17 kB | 48.91 kB | 8.17 kB | ±0 |
 | `index.html` | 15.95 kB | 4.08 kB | 15.95 kB | 4.08 kB | ±0 |

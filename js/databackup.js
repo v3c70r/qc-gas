@@ -357,12 +357,21 @@ export function writeLocalData(data) {
 // would only appear after a manual reload). These stores are part of the entry
 // chunk anyway (freshness/UI need them), so they are imported statically: a
 // dynamic import here would move nothing into another chunk (issue #123).
+//
+// Each reload is isolated: it re-renders the panel that owns the dataset, and a
+// throwing render path must not abort the import flow (the caller still has a
+// result message to show and the replace-mode confirm dialog to close). This
+// keeps the error tolerance the previous `Promise.all(...).catch(() => {})`
+// fan-out had.
 function rehydrateStores() {
-  reloadFavorites();
-  reloadFillups();
-  reloadFillupPrefs();
-  reloadWatch();
-  reloadListPreferences();
+  [reloadFavorites, reloadFillups, reloadFillupPrefs, reloadWatch, reloadListPreferences]
+    .forEach(reload => {
+      try {
+        reload();
+      } catch {
+        // One broken render must not hide the others (nor the import result).
+      }
+    });
   // The station card IS a separate chunk, so its trip preferences stay lazy.
   import('./station-card.js').then(m => m.reloadTripPrefs?.()).catch(() => {});
 }

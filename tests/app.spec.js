@@ -3941,6 +3941,41 @@ test.describe('Mes données backup / restore (Issue #57)', () => {
     expect(after).toEqual(['Only']);
   });
 
+  // Issue #123: the post-import rehydration used to run through dynamic
+  // imports whose failures were swallowed (`Promise.all(...).catch(() => {})`).
+  // It is now synchronous, so a throwing render path (here: `updateStationList`
+  // on a missing #station-list) must stay contained: the user still gets the
+  // import result and the replace-mode dialog still closes instead of hanging.
+  test('a broken sidebar render does not abort the import flow', async ({ page }) => {
+    await seed(page);
+    await waitHook(page);
+    await page.evaluate(() => document.getElementById('station-list')?.remove());
+
+    const incoming = JSON.stringify({
+      v: 1,
+      app: 'essence-quebec',
+      exported_at: '2026-10-03T00:00:00.000Z',
+      data: { favorites: ['Only'], fillups: [], watch: [], tripPrefs: { consumption: 8, roundTrip: false }, listPrefs: { sort: 'price' } }
+    });
+
+    const direct = await page.evaluate((json) => window.__qcGasBackup.importFromText(json, 'replace'), incoming);
+    expect(direct.ok).toBe(true);
+    expect(direct.imported).toBeGreaterThan(0);
+
+    await page.locator('#databackup-toggle').click();
+    await page.locator('input[name="databackup-mode"][value="replace"]').check();
+    await page.locator('#databackup-file').setInputFiles({
+      name: 'backup.json',
+      mimeType: 'application/json',
+      buffer: Buffer.from(incoming)
+    });
+    await expect(page.locator('#databackup-confirm')).toBeVisible();
+    await page.locator('#databackup-confirm-yes').click();
+    await expect(page.locator('#databackup-confirm')).toBeHidden();
+    await expect(page.locator('#databackup-status')).toContainText(/Import|导入/);
+    expect(await page.evaluate(() => JSON.parse(localStorage.getItem('qc-gas-favorites')))).toEqual(['Only']);
+  });
+
   test('round-trip: export → wipe → import (replace) restores every dataset in the UI', async ({ page }) => {
     await seed(page);
     await waitHook(page);

@@ -9,6 +9,7 @@
 // renames or re-addresses a station, which silently broke text-key favorites.
 // The legacy text key (`name|address|postal_code`) still matches as a fallback,
 // and a one-shot, idempotent migration rewrites resolvable text keys.
+
 import { currentStations } from './map.js';
 
 const STORAGE_KEY = 'qc-gas-favorites';
@@ -19,8 +20,7 @@ const STAR_ICON = `<svg viewBox="0 0 24 24" width="16" height="16" fill="none" s
 let favorites = load();
 const listeners = new Set();
 // Last snapshot announced by map.js through `stations:loaded`; kept so the
-// migration can run again (backup import) without importing map.js statically
-// (that would close an import cycle: map → stats → favorites).
+// migration can run again (backup import) without re-reading map.js.
 let snapshotStations = null;
 
 function load() {
