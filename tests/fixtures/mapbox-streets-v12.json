@@ -1,0 +1,808 @@
+{
+ "name": "Mapbox Streets",
+ "layers": [
+  {
+   "id": "land",
+   "type": "background",
+   "minzoom": 0
+  },
+  {
+   "id": "landcover",
+   "type": "fill",
+   "source-layer": "landcover",
+   "minzoom": 0
+  },
+  {
+   "id": "national-park",
+   "type": "fill",
+   "source-layer": "landuse_overlay",
+   "minzoom": 5
+  },
+  {
+   "id": "landuse",
+   "type": "fill",
+   "source-layer": "landuse",
+   "minzoom": 5
+  },
+  {
+   "id": "pitch-outline",
+   "type": "line",
+   "source-layer": "landuse",
+   "minzoom": 15
+  },
+  {
+   "id": "waterway-shadow",
+   "type": "line",
+   "source-layer": "waterway",
+   "minzoom": 10
+  },
+  {
+   "id": "water-shadow",
+   "type": "fill",
+   "source-layer": "water",
+   "minzoom": 10
+  },
+  {
+   "id": "waterway",
+   "type": "line",
+   "source-layer": "waterway",
+   "minzoom": 8
+  },
+  {
+   "id": "water",
+   "type": "fill",
+   "source-layer": "water",
+   "minzoom": 0
+  },
+  {
+   "id": "water-depth",
+   "type": "fill",
+   "source-layer": "depth",
+   "minzoom": 0
+  },
+  {
+   "id": "hillshade",
+   "type": "fill",
+   "source-layer": "hillshade",
+   "minzoom": 0
+  },
+  {
+   "id": "land-structure-polygon",
+   "type": "fill",
+   "source-layer": "structure",
+   "minzoom": 13
+  },
+  {
+   "id": "land-structure-line",
+   "type": "line",
+   "source-layer": "structure",
+   "minzoom": 13
+  },
+  {
+   "id": "aeroway-polygon",
+   "type": "fill",
+   "source-layer": "aeroway",
+   "minzoom": 11
+  },
+  {
+   "id": "aeroway-line",
+   "type": "line",
+   "source-layer": "aeroway",
+   "minzoom": 9
+  },
+  {
+   "id": "building",
+   "type": "fill",
+   "source-layer": "building",
+   "minzoom": 15
+  },
+  {
+   "id": "building-underground",
+   "type": "fill",
+   "source-layer": "building",
+   "minzoom": 15
+  },
+  {
+   "id": "tunnel-minor-case",
+   "type": "line",
+   "source-layer": "road",
+   "minzoom": 13
+  },
+  {
+   "id": "tunnel-street-case",
+   "type": "line",
+   "source-layer": "road",
+   "minzoom": 14
+  },
+  {
+   "id": "tunnel-minor-link-case",
+   "type": "line",
+   "source-layer": "road",
+   "minzoom": 13
+  },
+  {
+   "id": "tunnel-secondary-tertiary-case",
+   "type": "line",
+   "source-layer": "road",
+   "minzoom": 11
+  },
+  {
+   "id": "tunnel-primary-case",
+   "type": "line",
+   "source-layer": "road",
+   "minzoom": 10
+  },
+  {
+   "id": "tunnel-major-link-case",
+   "type": "line",
+   "source-layer": "road",
+   "minzoom": 12
+  },
+  {
+   "id": "tunnel-motorway-trunk-case",
+   "type": "line",
+   "source-layer": "road",
+   "minzoom": 13
+  },
+  {
+   "id": "tunnel-path",
+   "type": "line",
+   "source-layer": "road",
+   "minzoom": 14
+  },
+  {
+   "id": "tunnel-steps",
+   "type": "line",
+   "source-layer": "road",
+   "minzoom": 14
+  },
+  {
+   "id": "tunnel-pedestrian",
+   "type": "line",
+   "source-layer": "road",
+   "minzoom": 13
+  },
+  {
+   "id": "tunnel-construction",
+   "type": "line",
+   "source-layer": "road",
+   "minzoom": 14
+  },
+  {
+   "id": "tunnel-minor",
+   "type": "line",
+   "source-layer": "road",
+   "minzoom": 13
+  },
+  {
+   "id": "tunnel-minor-link",
+   "type": "line",
+   "source-layer": "road",
+   "minzoom": 13
+  },
+  {
+   "id": "tunnel-major-link",
+   "type": "line",
+   "source-layer": "road",
+   "minzoom": 12
+  },
+  {
+   "id": "tunnel-street",
+   "type": "line",
+   "source-layer": "road",
+   "minzoom": 13
+  },
+  {
+   "id": "tunnel-street-low",
+   "type": "line",
+   "source-layer": "road",
+   "minzoom": 13
+  },
+  {
+   "id": "tunnel-secondary-tertiary",
+   "type": "line",
+   "source-layer": "road",
+   "minzoom": 13
+  },
+  {
+   "id": "tunnel-primary",
+   "type": "line",
+   "source-layer": "road",
+   "minzoom": 13
+  },
+  {
+   "id": "tunnel-motorway-trunk",
+   "type": "line",
+   "source-layer": "road",
+   "minzoom": 13
+  },
+  {
+   "id": "tunnel-oneway-arrow-blue",
+   "type": "symbol",
+   "source-layer": "road",
+   "minzoom": 16
+  },
+  {
+   "id": "tunnel-oneway-arrow-white",
+   "type": "symbol",
+   "source-layer": "road",
+   "minzoom": 16
+  },
+  {
+   "id": "ferry",
+   "type": "line",
+   "source-layer": "road",
+   "minzoom": 8
+  },
+  {
+   "id": "ferry-auto",
+   "type": "line",
+   "source-layer": "road",
+   "minzoom": 8
+  },
+  {
+   "id": "road-pedestrian-polygon-fill",
+   "type": "fill",
+   "source-layer": "road",
+   "minzoom": 14
+  },
+  {
+   "id": "road-pedestrian-polygon-pattern",
+   "type": "fill",
+   "source-layer": "road",
+   "minzoom": 16
+  },
+  {
+   "id": "road-path-bg",
+   "type": "line",
+   "source-layer": "road",
+   "minzoom": 12
+  },
+  {
+   "id": "road-steps-bg",
+   "type": "line",
+   "source-layer": "road",
+   "minzoom": 14
+  },
+  {
+   "id": "road-pedestrian-case",
+   "type": "line",
+   "source-layer": "road",
+   "minzoom": 14
+  },
+  {
+   "id": "road-path",
+   "type": "line",
+   "source-layer": "road",
+   "minzoom": 12
+  },
+  {
+   "id": "road-steps",
+   "type": "line",
+   "source-layer": "road",
+   "minzoom": 14
+  },
+  {
+   "id": "road-pedestrian",
+   "type": "line",
+   "source-layer": "road",
+   "minzoom": 12
+  },
+  {
+   "id": "golf-hole-line",
+   "type": "line",
+   "source-layer": "road",
+   "minzoom": 16
+  },
+  {
+   "id": "road-polygon",
+   "type": "fill",
+   "source-layer": "road",
+   "minzoom": 12
+  },
+  {
+   "id": "turning-feature-outline",
+   "type": "circle",
+   "source-layer": "road",
+   "minzoom": 15
+  },
+  {
+   "id": "road-minor-case",
+   "type": "line",
+   "source-layer": "road",
+   "minzoom": 13
+  },
+  {
+   "id": "road-street-case",
+   "type": "line",
+   "source-layer": "road",
+   "minzoom": 14
+  },
+  {
+   "id": "road-minor-link-case",
+   "type": "line",
+   "source-layer": "road",
+   "minzoom": 13
+  },
+  {
+   "id": "road-secondary-tertiary-case",
+   "type": "line",
+   "source-layer": "road",
+   "minzoom": 11
+  },
+  {
+   "id": "road-primary-case",
+   "type": "line",
+   "source-layer": "road",
+   "minzoom": 10
+  },
+  {
+   "id": "road-major-link-case",
+   "type": "line",
+   "source-layer": "road",
+   "minzoom": 12
+  },
+  {
+   "id": "road-motorway-trunk-case",
+   "type": "line",
+   "source-layer": "road",
+   "minzoom": 3
+  },
+  {
+   "id": "turning-feature",
+   "type": "circle",
+   "source-layer": "road",
+   "minzoom": 15
+  },
+  {
+   "id": "road-construction",
+   "type": "line",
+   "source-layer": "road",
+   "minzoom": 14
+  },
+  {
+   "id": "road-minor",
+   "type": "line",
+   "source-layer": "road",
+   "minzoom": 13
+  },
+  {
+   "id": "road-minor-link",
+   "type": "line",
+   "source-layer": "road",
+   "minzoom": 12
+  },
+  {
+   "id": "road-major-link",
+   "type": "line",
+   "source-layer": "road",
+   "minzoom": 12
+  },
+  {
+   "id": "road-street",
+   "type": "line",
+   "source-layer": "road",
+   "minzoom": 13
+  },
+  {
+   "id": "road-street-low",
+   "type": "line",
+   "source-layer": "road",
+   "minzoom": 11
+  },
+  {
+   "id": "road-secondary-tertiary",
+   "type": "line",
+   "source-layer": "road",
+   "minzoom": 9
+  },
+  {
+   "id": "road-primary",
+   "type": "line",
+   "source-layer": "road",
+   "minzoom": 6
+  },
+  {
+   "id": "road-motorway-trunk",
+   "type": "line",
+   "source-layer": "road",
+   "minzoom": 3
+  },
+  {
+   "id": "road-rail",
+   "type": "line",
+   "source-layer": "road",
+   "minzoom": 13
+  },
+  {
+   "id": "road-rail-tracks",
+   "type": "line",
+   "source-layer": "road",
+   "minzoom": 13
+  },
+  {
+   "id": "level-crossing",
+   "type": "symbol",
+   "source-layer": "road",
+   "minzoom": 16
+  },
+  {
+   "id": "road-oneway-arrow-blue",
+   "type": "symbol",
+   "source-layer": "road",
+   "minzoom": 16
+  },
+  {
+   "id": "road-oneway-arrow-white",
+   "type": "symbol",
+   "source-layer": "road",
+   "minzoom": 16
+  },
+  {
+   "id": "crosswalks",
+   "type": "symbol",
+   "source-layer": "structure",
+   "minzoom": 17
+  },
+  {
+   "id": "bridge-path-bg",
+   "type": "line",
+   "source-layer": "road",
+   "minzoom": 14
+  },
+  {
+   "id": "bridge-steps-bg",
+   "type": "line",
+   "source-layer": "road",
+   "minzoom": 14
+  },
+  {
+   "id": "bridge-pedestrian-case",
+   "type": "line",
+   "source-layer": "road",
+   "minzoom": 14
+  },
+  {
+   "id": "bridge-path",
+   "type": "line",
+   "source-layer": "road",
+   "minzoom": 14
+  },
+  {
+   "id": "bridge-steps",
+   "type": "line",
+   "source-layer": "road",
+   "minzoom": 14
+  },
+  {
+   "id": "bridge-pedestrian",
+   "type": "line",
+   "source-layer": "road",
+   "minzoom": 13
+  },
+  {
+   "id": "bridge-minor-case",
+   "type": "line",
+   "source-layer": "road",
+   "minzoom": 13
+  },
+  {
+   "id": "bridge-street-case",
+   "type": "line",
+   "source-layer": "road",
+   "minzoom": 14
+  },
+  {
+   "id": "bridge-minor-link-case",
+   "type": "line",
+   "source-layer": "road",
+   "minzoom": 13
+  },
+  {
+   "id": "bridge-secondary-tertiary-case",
+   "type": "line",
+   "source-layer": "road",
+   "minzoom": 11
+  },
+  {
+   "id": "bridge-primary-case",
+   "type": "line",
+   "source-layer": "road",
+   "minzoom": 10
+  },
+  {
+   "id": "bridge-major-link-case",
+   "type": "line",
+   "source-layer": "road",
+   "minzoom": 12
+  },
+  {
+   "id": "bridge-motorway-trunk-case",
+   "type": "line",
+   "source-layer": "road",
+   "minzoom": 13
+  },
+  {
+   "id": "bridge-construction",
+   "type": "line",
+   "source-layer": "road",
+   "minzoom": 14
+  },
+  {
+   "id": "bridge-minor",
+   "type": "line",
+   "source-layer": "road",
+   "minzoom": 13
+  },
+  {
+   "id": "bridge-minor-link",
+   "type": "line",
+   "source-layer": "road",
+   "minzoom": 13
+  },
+  {
+   "id": "bridge-major-link",
+   "type": "line",
+   "source-layer": "road",
+   "minzoom": 12
+  },
+  {
+   "id": "bridge-street",
+   "type": "line",
+   "source-layer": "road",
+   "minzoom": 13
+  },
+  {
+   "id": "bridge-street-low",
+   "type": "line",
+   "source-layer": "road",
+   "minzoom": 13
+  },
+  {
+   "id": "bridge-secondary-tertiary",
+   "type": "line",
+   "source-layer": "road",
+   "minzoom": 13
+  },
+  {
+   "id": "bridge-primary",
+   "type": "line",
+   "source-layer": "road",
+   "minzoom": 13
+  },
+  {
+   "id": "bridge-motorway-trunk",
+   "type": "line",
+   "source-layer": "road",
+   "minzoom": 13
+  },
+  {
+   "id": "bridge-major-link-2-case",
+   "type": "line",
+   "source-layer": "road",
+   "minzoom": 12
+  },
+  {
+   "id": "bridge-motorway-trunk-2-case",
+   "type": "line",
+   "source-layer": "road",
+   "minzoom": 13
+  },
+  {
+   "id": "bridge-major-link-2",
+   "type": "line",
+   "source-layer": "road",
+   "minzoom": 12
+  },
+  {
+   "id": "bridge-motorway-trunk-2",
+   "type": "line",
+   "source-layer": "road",
+   "minzoom": 13
+  },
+  {
+   "id": "bridge-oneway-arrow-blue",
+   "type": "symbol",
+   "source-layer": "road",
+   "minzoom": 16
+  },
+  {
+   "id": "bridge-oneway-arrow-white",
+   "type": "symbol",
+   "source-layer": "road",
+   "minzoom": 16
+  },
+  {
+   "id": "bridge-rail",
+   "type": "line",
+   "source-layer": "road",
+   "minzoom": 13
+  },
+  {
+   "id": "bridge-rail-tracks",
+   "type": "line",
+   "source-layer": "road",
+   "minzoom": 13
+  },
+  {
+   "id": "aerialway",
+   "type": "line",
+   "source-layer": "road",
+   "minzoom": 12
+  },
+  {
+   "id": "admin-1-boundary-bg",
+   "type": "line",
+   "source-layer": "admin",
+   "minzoom": 7
+  },
+  {
+   "id": "admin-0-boundary-bg",
+   "type": "line",
+   "source-layer": "admin",
+   "minzoom": 1
+  },
+  {
+   "id": "admin-1-boundary",
+   "type": "line",
+   "source-layer": "admin",
+   "minzoom": 2
+  },
+  {
+   "id": "admin-0-boundary",
+   "type": "line",
+   "source-layer": "admin",
+   "minzoom": 1
+  },
+  {
+   "id": "admin-0-boundary-disputed",
+   "type": "line",
+   "source-layer": "admin",
+   "minzoom": 1
+  },
+  {
+   "id": "building-entrance",
+   "type": "symbol",
+   "source-layer": "structure",
+   "minzoom": 18
+  },
+  {
+   "id": "building-number-label",
+   "type": "symbol",
+   "source-layer": "housenum_label",
+   "minzoom": 17
+  },
+  {
+   "id": "block-number-label",
+   "type": "symbol",
+   "source-layer": "place_label",
+   "minzoom": 16
+  },
+  {
+   "id": "road-label",
+   "type": "symbol",
+   "source-layer": "road",
+   "minzoom": 10
+  },
+  {
+   "id": "road-intersection",
+   "type": "symbol",
+   "source-layer": "road",
+   "minzoom": 15
+  },
+  {
+   "id": "road-number-shield",
+   "type": "symbol",
+   "source-layer": "road",
+   "minzoom": 6
+  },
+  {
+   "id": "road-exit-shield",
+   "type": "symbol",
+   "source-layer": "motorway_junction",
+   "minzoom": 14
+  },
+  {
+   "id": "path-pedestrian-label",
+   "type": "symbol",
+   "source-layer": "road",
+   "minzoom": 12
+  },
+  {
+   "id": "golf-hole-label",
+   "type": "symbol",
+   "source-layer": "road",
+   "minzoom": 16
+  },
+  {
+   "id": "ferry-aerialway-label",
+   "type": "symbol",
+   "source-layer": "road",
+   "minzoom": 15
+  },
+  {
+   "id": "waterway-label",
+   "type": "symbol",
+   "source-layer": "natural_label",
+   "minzoom": 13
+  },
+  {
+   "id": "natural-line-label",
+   "type": "symbol",
+   "source-layer": "natural_label",
+   "minzoom": 4
+  },
+  {
+   "id": "natural-point-label",
+   "type": "symbol",
+   "source-layer": "natural_label",
+   "minzoom": 4
+  },
+  {
+   "id": "water-line-label",
+   "type": "symbol",
+   "source-layer": "natural_label",
+   "minzoom": 1
+  },
+  {
+   "id": "water-point-label",
+   "type": "symbol",
+   "source-layer": "natural_label",
+   "minzoom": 1
+  },
+  {
+   "id": "poi-label",
+   "type": "symbol",
+   "source-layer": "poi_label",
+   "minzoom": 6
+  },
+  {
+   "id": "transit-label",
+   "type": "symbol",
+   "source-layer": "transit_stop_label",
+   "minzoom": 12
+  },
+  {
+   "id": "airport-label",
+   "type": "symbol",
+   "source-layer": "airport_label",
+   "minzoom": 8
+  },
+  {
+   "id": "settlement-subdivision-label",
+   "type": "symbol",
+   "source-layer": "place_label",
+   "minzoom": 10
+  },
+  {
+   "id": "settlement-minor-label",
+   "type": "symbol",
+   "source-layer": "place_label",
+   "minzoom": 2
+  },
+  {
+   "id": "settlement-major-label",
+   "type": "symbol",
+   "source-layer": "place_label",
+   "minzoom": 2
+  },
+  {
+   "id": "state-label",
+   "type": "symbol",
+   "source-layer": "place_label",
+   "minzoom": 3
+  },
+  {
+   "id": "country-label",
+   "type": "symbol",
+   "source-layer": "place_label",
+   "minzoom": 1
+  },
+  {
+   "id": "continent-label",
+   "type": "symbol",
+   "source-layer": "natural_label",
+   "minzoom": 0.75
+  }
+ ]
+}
