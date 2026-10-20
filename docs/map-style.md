@@ -92,7 +92,7 @@ Playwright 30 s 超时内绰绰有余（`tests/map-style.spec.js` 的集成用�
 
 ## 测试
 
-`tests/map-style.spec.js`：
+`tests/map-style.spec.js`（issue #125 把「断言」与「截图」彻底解耦：断言不碰瓦片，截图永不失败）：
 
 1. **单元**（node 侧直接 import `js/map-style.js`）
    - `BASEMAP_STYLE` 是 `streets-v12`；
@@ -100,12 +100,22 @@ Playwright 30 s 超时内绰绰有余（`tests/map-style.spec.js` 的集成用�
    - `applyBasemapPalette(fakeMap)` 只对存在的层调用 `setPaintProperty`，缺失层静默跳过不抛错；
    - `setLayerZoomRange('poi-label', 12, 24)` 被调用；
    - 覆盖项里不出现 `line-width` / `line-opacity` / `fill-opacity`。
-2. **集成**（真 Mapbox 样式）
-   - `window.__qcMap.getStyle().layers` 中含 `source-layer === 'road'` 的层，`style.name === 'Mapbox Streets'`，层数 > 100；
-   - `getPaintProperty('land','background-color')`、`('water','fill-color')`、`('road-street','line-color')`、`('national-park','fill-color')`、`('poi-label','text-color')` 与 `BASEMAP_PALETTE` 一致；
-   - `getLayer('poi-label').minzoom === 12`；
-   - 应用层 `unclustered-points` / `station-price-labels` 仍在 `poi-label` 之上（`getStyle().layers` 顺序）。
-3. **截图**：`tests/screenshots/basemap-google-like.png`（蒙特利尔，z12，pitch 0），仅供人工比对，无像素断言。
+2. **样式数据（离线，无网络、无瓦片、无浏览器）** — 严格断言跑在这里
+   - 数据源是 `tests/fixtures/mapbox-streets-v12.json`：真实样式的一份裁剪快照（`id`/`type`/
+     `source-layer`/`minzoom`，134 层约 14 KB），重抓方式见 `scripts/refresh-map-style-fixture.mjs`；
+   - 层表里含 `source-layer === 'road'` 的层、`road-street` 存在、`name === 'Mapbox Streets'`、层数 > 100；
+   - `applyBasemapPalette` 作用在真实层表上：`missing === []`（上游改名/删层会立刻失败）、
+     `land.background-color` / `water.fill-color` / `road-street.line-color` / `national-park.fill-color` /
+     `poi-label.text-color` 与 `BASEMAP_PALETTE` 一致；
+   - `poi-label` 被抬到 `minzoom` 12。
+3. **实时地图（真 Mapbox 样式，但仍不依赖瓦片）**
+   - 同一批属性从运行中的 `window.__qcMap` 读取，用来抓“调色板没应用 / 样式被换回 light-v11 / 层序错”这类接线回归；
+   - Mapbox 完全不可达（无 `window.__qcMap`）时用例 `test.skip` 并记录原因，因为离线组已经覆盖同样的属性
+     （issue #125 验收 2）。
+4. **截图（best-effort）**：`tests/screenshots/basemap-google-like.png`（蒙特利尔，z12，pitch 0），
+   仅供人工比对，无像素断言。等待条件是状态而非时间（`isStyleLoaded()` + 至少一个 `sourcedata`/`idle`
+   事件 + `areTilesLoaded()`），route 转发异常一律 `route.abort()` 并记账；瓦片没到位、或失败多过成功时
+   用例 `test.skip` 并写入 `test.info().annotations`，**不会**把整轮流水线拖成 `needs_human`。
 
 > **本地 token 限制**：仓库 `.env` 里的 Mapbox token 绑定了 `qgu.io` 域名，所以直接访问
 > `localhost:5173` 时矢量瓦片返回 403（样式 JSON 正常 200，因此所有 `getStyle()`/`getPaintProperty()`
