@@ -1,5 +1,5 @@
 import { test, expect } from '@playwright/test';
-import { readFileSync } from 'node:fs';
+import { readFileSync, readdirSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import path from 'node:path';
 import { derivedDataPath } from './fixtures/data-snapshots.js';
@@ -4831,5 +4831,219 @@ test.describe('Sidebar list — "Par région" summary view (Issue #87)', () => {
     });
     expect(new Set(Object.values(switchLabels)).size).toBe(3);
     expect(new Set(Object.values(metaLines)).size).toBe(3);
+  });
+});
+
+// ── Data load failure state (Issue #119) ───────────────────────────────────
+// The snapshot is a derived artifact served by Pages (#103), so a first load
+// can fail on a network blip, a 5xx or a mangled body. Today the user gets one
+// hardcoded French line and no way to retry. These specs pin the polished
+// version: localized wording, an actionable 44px retry button, a classified
+// console log, and a bounded backoff between manual retries.
+test.describe('Data load failure state (Issue #119)', () => {
+  const ERROR_TEXT = {
+    'zh-Hans': '数据加载错误',
+    'en-CA': 'Data loading error',
+    'fr-CA': 'Erreur de chargement des données'
+  };
+  const RETRY_TEXT = {
+    'zh-Hans': '重试',
+    'en-CA': 'Retry',
+    'fr-CA': 'Réessayer'
+  };
+
+  // Fail the first `failures` requests, then let the real snapshot through.
+  function failSnapshot(page, { status = 500, body = 'boom', contentType = 'text/plain', failures = Infinity } = {}) {
+    let served = 0;
+    const state = { count: 0 };
+    page.route('**/data/stations.json', (route) => {
+      state.count += 1;
+      if (served < failures) {
+        served += 1;
+        return route.fulfill({ status, body, contentType });
+      }
+      return route.continue();
+    });
+    return state;
+  }
+
+  async function waitForStations(page) {
+    await page.waitForFunction(
+      () => window.__qcGasMap && window.__qcGasMap.getStationFeatureCount() > 0,
+      null,
+      { timeout: 15000 }
+    );
+  }
+
+  for (const code of ['zh-Hans', 'en-CA', 'fr-CA']) {
+    test(`${code} - a 500 shows a localized error and an actionable retry`, async ({ page }) => {
+      await page.addInitScript((lang) => localStorage.setItem('language', lang), code);
+      failSnapshot(page, { status: 500 });
+      await page.goto(BASE_URL);
+
+      const status = page.locator('#data-status');
+      await expect(status).toContainText(ERROR_TEXT[code]);
+      await expect(status).toHaveClass(/error/);
+      // A screen reader must hear the failure without polling the page.
+      await expect(status).toHaveAttribute('aria-live', 'polite');
+
+      const retry = page.locator('#data-retry');
+      await expect(retry).toBeVisible();
+      await expect(retry).toHaveText(RETRY_TEXT[code]);
+
+      // Touch target: 44px in both directions.
+      const box = await retry.boundingBox();
+      expect(box.width).toBeGreaterThanOrEqual(44);
+      expect(box.height).toBeGreaterThanOrEqual(44);
+    });
+  }
+
+  test('switching language while the error is on screen re-localizes it', async ({ page }) => {
+    await page.addInitScript(() => localStorage.setItem('language', 'fr-CA'));
+    failSnapshot(page, { status: 500 });
+    await page.goto(BASE_URL);
+
+    const status = page.locator('#data-status');
+    await expect(status).toContainText(ERROR_TEXT['fr-CA']);
+
+    await page.locator('#lang-selector button[data-lang="zh-Hans"]').click();
+    await expect(status).toContainText(ERROR_TEXT['zh-Hans']);
+    expect(await status.innerText()).not.toContain(ERROR_TEXT['fr-CA']);
+    await expect(page.locator('#data-retry')).toHaveText(RETRY_TEXT['zh-Hans']);
+  });
+
+  test('the retry button is Tab reachable, Enter retries and clears the error state', async ({ page }) => {
+    await page.addInitScript(() => localStorage.setItem('language', 'fr-CA'));
+    failSnapshot(page, { status: 503, failures: 1 });
+    await page.goto(BASE_URL);
+
+    const retry = page.locator('#data-retry');
+    await expect(retry).toBeVisible();
+    await expect(page.locator('#data-status')).toContainText(ERROR_TEXT['fr-CA']);
+
+    // Not focusable by script only: the tab order must reach it.
+    let reached = false;
+    for (let i = 0; i < 60 && !reached; i += 1) {
+      await page.keyboard.press('Tab');
+      reached = await page.evaluate(() => document.activeElement?.id === 'data-retry');
+    }
+    expect(reached).toBe(true);
+
+    await page.keyboard.press('Enter');
+    await waitForStations(page);
+
+    // A success clears the error state instead of leaving a stale warning.
+    await expect(page.locator('#data-status')).not.toContainText(ERROR_TEXT['fr-CA']);
+    await expect(page.locator('#data-status')).not.toHaveClass(/error/);
+    await expect(retry).toBeHidden();
+    expect(await page.evaluate(() => window.__qcGasMap.getLastLoadError())).toBeNull();
+  });
+
+  test('failures are classified (network vs HTTP vs parse) in the log', async ({ page }) => {
+    const logs = [];
+    page.on('console', (msg) => logs.push(msg.text()));
+
+    const expectKind = async (kind) => {
+      await expect.poll(
+        () => page.evaluate(() => window.__qcGasMap.getLastLoadError()?.kind ?? null),
+        { timeout: 15000 }
+      ).toBe(kind);
+      expect(logs.join('\n')).toContain(`[data-load:${kind}]`);
+    };
+
+    // HTTP 4xx/5xx
+    await page.route('**/data/stations.json', (route) => route.fulfill({ status: 404, body: 'nope' }));
+    await page.goto(BASE_URL);
+    await expect(page.locator('#data-retry')).toBeVisible();
+    await expectKind('http');
+    await page.unroute('**/data/stations.json');
+
+    // A 200 body that is not JSON parses as garbage -> parse error.
+    await page.route('**/data/stations.json', (route) =>
+      route.fulfill({ status: 200, contentType: 'application/json', body: '<html>not json</html>' }));
+    await page.reload();
+    await expect(page.locator('#data-retry')).toBeVisible();
+    await expectKind('parse');
+    await page.unroute('**/data/stations.json');
+
+    // A dropped connection is a network error, not an HTTP one.
+    await page.route('**/data/stations.json', (route) => route.abort('failed'));
+    await page.reload();
+    await expect(page.locator('#data-retry')).toBeVisible();
+    await expectKind('network');
+  });
+
+  test('retries back off instead of hammering the network', async ({ page }) => {
+    await page.addInitScript(() => localStorage.setItem('language', 'en-CA'));
+    const requests = failSnapshot(page, { status: 500 });
+    await page.goto(BASE_URL);
+
+    const retry = page.locator('#data-retry');
+    await expect(retry).toBeVisible();
+    const afterFirstLoad = requests.count;
+
+    // First retry is immediate (the user just told us to try again).
+    await retry.click();
+    await expect.poll(() => requests.count, { timeout: 10000 }).toBeGreaterThan(afterFirstLoad);
+    const afterFirstRetry = requests.count;
+
+    // It failed again, so the button now waits out a bounded backoff: disabled,
+    // with a visible countdown, and no request no matter how often it is hit.
+    await expect(retry).toBeDisabled();
+    await expect(retry).toContainText(/\d+\s?s/);
+    await retry.click({ force: true }).catch(() => {});
+    await page.waitForTimeout(500);
+    expect(requests.count).toBe(afterFirstRetry);
+
+    // The second retry window is longer (10s after the 3s one).
+    await expect(retry).toBeEnabled({ timeout: 15000 });
+    await retry.click();
+    await expect.poll(() => requests.count, { timeout: 10000 }).toBeGreaterThan(afterFirstRetry);
+    const afterSecondRetry = requests.count;
+    // The failure is reported asynchronously, so wait for its backoff window.
+    await expect.poll(
+      () => page.evaluate(() => window.__qcGasPwa.getRetryDelayMs()),
+      { timeout: 10000 }
+    ).toBe(10000);
+    await expect(retry).toBeDisabled();
+    await page.waitForTimeout(300);
+    expect(requests.count).toBe(afterSecondRetry);
+  });
+});
+
+test.describe('UI copy hygiene (Issue #119)', () => {
+  const jsDir = path.join(path.dirname(fileURLToPath(import.meta.url)), '..', 'js');
+
+  test('no hardcoded UI text is written through textContent/innerHTML', async () => {
+    // Any literal letter after a textContent/innerHTML assignment (including
+    // backtick templates) is an i18n leak unless the value goes through t().
+    const leak = /(textContent|innerHTML)\s*=\s*['"`](?![^'"`]*t\()[A-Za-zÀ-ÿ]/;
+    const files = readdirSync(jsDir).filter((name) => name.endsWith('.js'));
+    expect(files.length).toBeGreaterThan(10);
+
+    const offenders = [];
+    for (const file of files) {
+      const lines = readFileSync(path.join(jsDir, file), 'utf8').split('\n');
+      lines.forEach((line, i) => {
+        if (leak.test(line)) offenders.push(`${file}:${i + 1}: ${line.trim()}`);
+      });
+    }
+    expect(offenders).toEqual([]);
+  });
+
+  test('the three dictionaries expose the same keys', async () => {
+    const { translations } = await import('../js/i18n.js');
+    const codes = Object.keys(translations);
+    expect(codes).toEqual(['zh-Hans', 'en-CA', 'fr-CA']);
+    const [first, ...rest] = codes;
+    for (const code of rest) {
+      expect(Object.keys(translations[code]).sort()).toEqual(Object.keys(translations[first]).sort());
+    }
+    // The polished failure state needs its own wording in every language.
+    for (const code of codes) {
+      expect(translations[code].loadingError).toBeTruthy();
+      expect(translations[code].dataErrorRetry).toBeTruthy();
+      expect(translations[code].dataErrorRetryWait).toContain('{n}');
+    }
   });
 });
