@@ -231,6 +231,7 @@ export async function initMap() {
   // minimal `light-v11`: see js/map-style.js and docs/map-style.md.
   const styleStart = typeof performance !== 'undefined' ? performance.now() : Date.now();
   let basemapStyleLoadMs = null;
+  let basemapIdleMs = null;
 
   map = new mapboxgl.Map({
     container: 'map',
@@ -252,6 +253,18 @@ export async function initMap() {
       basemapStyleLoadMs = Math.round(now - styleStart);
       window.__qcBasemapStyleLoadMs = basemapStyleLoadMs;
       console.info(`Basemap ${BASEMAP_STYLE} style.load in ${basemapStyleLoadMs} ms`);
+    }
+  });
+
+  // `idle` = every tile settled (or failed). Recorded once, only as a number for
+  // the perf baseline (issue #124 / `npm run measure:map-load`); when tiles are
+  // blocked (URL-restricted token on localhost) this simply never fires and the
+  // hook stays undefined, which the measuring script tolerates.
+  map.on('idle', () => {
+    if (basemapIdleMs === null) {
+      const now = typeof performance !== 'undefined' ? performance.now() : Date.now();
+      basemapIdleMs = Math.round(now - styleStart);
+      window.__qcBasemapIdleMs = basemapIdleMs;
     }
   });
 

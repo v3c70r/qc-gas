@@ -43,6 +43,58 @@ export const BASEMAP_PALETTE = Object.freeze({
 export const POI_MIN_ZOOM = 12;
 export const POI_MAX_ZOOM = 24;
 
+// ── Performance baseline (issue #124, completing #109 acceptance item 5) ──
+//
+// `streets-v12` is a lot heavier than the `light-v11` it replaced (134 vs 50
+// layers), so "did the basemap get slower?" must be answerable with a number,
+// not a feeling. These are real measurements produced by
+// `npm run measure:map-load -- --runs 5` (scripts/measure_map_load.mjs); the
+// prose lives in docs/map-style.md → 「性能基线」.
+//
+// Two probe columns are recorded because they answer different questions:
+//  - `app`          the app's own map, i.e. what a visitor experiences
+//                   (`window.__qcBasemapStyleLoadMs`, set in js/map.js);
+//  - `streets-v12` / `light-v11`  an off-screen probe map created inside the
+//                   already-loaded page, so both styles are measured under
+//                   identical conditions (the only honest way to compare them).
+const freezeSeries = (samples) => {
+  const sorted = [...samples].sort((a, b) => a - b);
+  const mid = Math.floor(sorted.length / 2);
+  const median = sorted.length % 2 ? sorted[mid] : (sorted[mid - 1] + sorted[mid]) / 2;
+  return Object.freeze({
+    samples: Object.freeze([...samples]),
+    median,
+    range: Object.freeze([sorted[0], sorted[sorted.length - 1]])
+  });
+};
+
+export const STYLE_LOAD_BASELINE = Object.freeze({
+  measuredAt: '2026-10-20',
+  environment:
+    'headless chromium 156 (Playwright), viewport 1280x800, Montréal z10, ' +
+    'vite dev server, 5 runs, URL-restricted token so vector tiles 403',
+  command: 'npm run measure:map-load -- --runs 5',
+  series: Object.freeze({
+    // style.load of the running app (streets-v12 + palette).
+    app: freezeSeries([152, 147, 156, 164, 153]),
+    // Probe maps, `style.load` only; compare these two with each other.
+    'streets-v12': freezeSeries([514, 512, 512, 506, 519]),
+    'light-v11': freezeSeries([498, 468, 502, 505, 483])
+  })
+});
+
+/**
+ * Budget enforced by the Playwright guard in tests/map-style.spec.js: a `style.load`
+ * slower than this fails the suite with the measured value printed.
+ *
+ * 8 s is ~50× the recorded app median (153 ms) on purpose: the guard exists to
+ * catch "someone made the basemap 10× heavier", not to police CI jitter (a busy
+ * runner plus a cold dev server easily costs a second, and a guard that flakes
+ * gets muted — which protects nothing). Bump it only together with a fresh
+ * `npm run measure:map-load` run recorded in `STYLE_LOAD_BASELINE` + the docs.
+ */
+export const STYLE_LOAD_BUDGET_MS = 8000;
+
 // ── Layer groups (all ids from `GET /styles/v1/mapbox/streets-v12`) ──
 // Any id missing from a future style is skipped by `applyBasemapPalette`.
 
