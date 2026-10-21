@@ -527,10 +527,95 @@ tmux kill-session -t probe    # 停止
 机器休眠/重启后循环自然停止，重新执行启动命令即可恢复；探针**不会**自动
 拉起，也不会修改任何 workflow。
 
-> **改脚本后必须重启循环**：`local_fetch_loop.sh` 是常驻的 bash 进程，已经启动的
-> 会话继续执行**加载时**的版本。合入改动（例如 #92 停止提交快照）后要
-> `tmux kill-session -t probe` 再按上面的命令启动，否则探针仍按旧逻辑每 15 分钟
-> 提交一次全量 `data/` 快照。
+### 探针自愈（issue #121：两个缺口的自愈）
+
+#113 在 2026-10-19T07:05 合入了「跳过 history stage + 同步冲突可解」，但**修复
+一整天都没有生效**（2026-10-19: 28 ok / 11 failed，2026-10-20: 16 ok / 36 failed）。
+两个缺口，现在都写进脚本了：
+
+#### 缺口 1：合并后的脚本没有被加载
+
+探针是**长驻 bash 进程**（`bash scripts/local_fetch_loop.sh`），脚本在启动时
+加载；`git pull` 把新版本写到磁盘，进程却继续跑旧代码（证据：新版本才会打印的
+`probe stages skipped` 在 `.agent/probe.log` 里出现 **0** 次）。
+
+现在每轮开始前（以及每个周期的 pull 之后）比对 `scripts/local_fetch_loop.sh` 的
+**内容哈希**（`sha256sum`，回退 `shasum` / `cksum`）与启动时记录的值：
+
+1. 不一致 → 先**验证新版本能启动**：`bash -n` 语法检查 + 用它自己的
+   `PROBE_CHECK_ONLY` 跑一遍启动校验（分支守卫等）；
+2. 通过 → 日志写入
+   `detected a new scripts/local_fetch_loop.sh (<旧哈希> -> <新哈希>); restarting
+   the probe automatically`，然后 `exec "$BASH_PATH" "$SCRIPT_PATH"`
+   **平滑重启**（PID 不变，tmux 会话不受影响，无需人工干预）；
+3. 不通过 / 连续 `PROBE_MAX_SELF_RESTARTS`（默认 3）次自动重启已用尽 →
+   日志写 `ALARM: …`，**保持运行**（旧版本继续探针）并停止继续重启，绝不进入
+   重启死循环。
+
+计数器保存在 `data/probe-local/self-restart.state`（gitignored，格式
+`<次数> <epoch> <指纹>`）；手工重启时若脚本已变，血缘归零重新计数。
+
+> **合并影响 `local_fetch_loop.sh` 的改动后必须重启探针；现在由自愈机制自动完成。**
+> 历史上要 `tmux kill-session -t probe` 再手动启动（否则探针仍按旧逻辑每 15 分钟
+> 跑一次旧代码 —— #113 就是这样白等了一天的）。自愈生效的判定：合入一处可见改动
+> （例如改一句日志文案）后，**1 个周期（≤ 15 分钟）内**日志出现新文案，且伴随一行
+> `restarting the probe automatically`。
+
+#### 缺口 2：同步冲突留下了未解决文件
+
+重启前克隆里有 7 个 `UU`（both modified）文件（`data/fetch-schedule.json`、
+`data/history/2026-10.json`、`data/history/index.json`、
+`data/history/station-changes.json` …），`sync_with_remote()` 解掉了一部分却
+**没有断言「结束时 unmerged 必须为 0」**，于是之后每轮都撞
+`error: Pulling is not possible because you have unmerged files`（日志出现 40 次）。
+
+现在有两道闸：
+
+- **周期开始前**先 `clear_half_merge_state`：把残留的 rebase / merge /
+  cherry-pick / revert 操作 abort 掉（日志 `cleared a leftover half-merge/rebase
+  state before syncing`），让 pull 不再被历史状态永久拒绝；
+- **`sync_with_remote()` 成功路径的最后一步**断言
+  `git diff --name-only --diff-filter=U` 为空（`assert_no_unmerged`，所有
+  pull 路径都过这一闸）。不为空时分两种形状处理：
+  - **冲突处在一个没完成的 merge/rebase 里**（被杀死的周期，就是本次事故的
+    形状）→ `abort` 后 `git fetch origin` + `git reset --hard '@{u}'`（远端权威
+    版本，`data/` 本来就归 Actions），日志写
+    `sync left N unmerged file(s) in an unfinished merge/rebase (…)` 与
+    `discarded local N file(s), the remote version wins`；
+  - **没有操作在进行、只是 `--autostash` 弹出冲突留下的未合并索引**（#113 的
+    形状）→ 逐条按归属表取远端并 `git add`（日志
+    `took the remote (Actions) version`），**保住本周期的账本提交**；只有逐条
+    解析失败才退回 `reset --hard`。
+
+  出现 `data/` 之外的脏文件时**拒绝回退**（agent 的在途改动，issue #92），仍失败
+  则如实记失败，绝不把冲突错误当成成功。
+
+#### 一次性修复：`scripts/probe_doctor.sh`
+
+上述历史遗留状态当时是人工 `git reset --hard origin/master` 修的（不可复现、
+没写下来）。现在脚本化了，**默认只体检不改动**：
+
+```bash
+# 在探针克隆里执行（脚本内 REPO_ROOT = 它所在仓库）
+bash scripts/probe_doctor.sh                  # 体检：0 = 健康，1 = 有问题
+bash scripts/probe_doctor.sh --fix            # 修复
+bash scripts/probe_doctor.sh --fix --dry-run  # 只打印将执行的 git 命令
+bash scripts/probe_doctor.sh --base-branch master --bloat-factor 2
+```
+
+检查并报告：
+
+| 检查项 | 证据 | `--fix` 动作 |
+| --- | --- | --- |
+| 未合并文件（`UU`） | `git diff --name-only --diff-filter=U` 的非空输出 | `rebase/merge/cherry-pick --abort` 后 `reset --hard <upstream>` |
+| 没有 rebase 却残留未合并索引 | 未合并条目 + 无 rebase/merge 进行 | 同上 |
+| 半合并/半 rebase 残留 | `rebase-merge` / `rebase-apply` / `MERGE_HEAD` / `CHERRY_PICK_HEAD` / `REVERT_HEAD` | `--abort` 对应操作 |
+| 数据文件膨胀 | 本地 tracked `data/` 文件 > 上游 **2×** 且差值 > 8 KiB（实测 `station-history.json` 4.2 MB vs 1.40 MB：多日 history stage 重复追加） | `reset --hard <upstream>` |
+| 分支不对 | 当前分支 ≠ `PROBE_BASE_BRANCH` | **拒绝修复**（退出码 2） |
+
+`--fix` 的硬约束与探针自身一致：**只要有一个 `data/` 之外的脏文件就拒绝**
+（退出码 2），绝不抹掉 agent 的在途改动。退出码：`0` 健康 / `1` 有问题（未修复）
+/ `2` 拒绝修复或不是 git 仓库 / `4` 用法错误。
 
 ### 可用环境变量
 
@@ -553,6 +638,8 @@ tmux kill-session -t probe    # 停止
 | `PROBE_SYNC_BACKOFF_SECONDS` | `15` | 两次 sync 尝试之间的退避 |
 | `PROBE_RETRY_BACKOFF_SECONDS` | `15` | 推送被拒后 rebase 重试之间的退避 |
 | `PROBE_CHECK_ONLY` | 未设 | 非空则只跑启动校验后退出（测试用） |
+| `PROBE_MAX_SELF_RESTARTS` | `3` | 同一条血缘里允许的自动重启次数；用尽后写 `ALARM` 并保持运行（#121） |
+| `PROBE_LIB_ONLY` | 未设 | 非空则只定义函数、不启动循环（测试用，可通过 `source` 单测某个函数） |
 
 ### 与 Actions 的并发关系
 
@@ -579,11 +666,26 @@ Actions 侧的数据提交仍在继续，所以本机推送必须让远端优先
   循环继续。
 - 任何一步失败都**不会**终止循环（脚本没有 `set -e`，每个 stage 都是
   `continue-on-error` 语义），失败与重试计数进入当天的 `days` 记录。
+- 同步**不允许**以未解决文件收场（issue #121）：`sync_with_remote()` 成功路径的
+  最后一步断言 unmerged = 0，否则取远端并丢弃本地（见上文「缺口 2」）。
 
 验收口径（#113）：连续 24 小时 `.agent/probe.log` 里 `stage history failed` = 0、
 `unmerged files` = 0、`probe cycle N finished with errors` ≤ 2，
 每日成功周期 ≥ 94（15 分钟节拍共 96），`events.jsonl` 行数 ≈ 周期数，
 且 master 上 `data/fetch-log.json` 的 `fetches` 仍在增长。
+
+验收口径（#121）：
+
+1. **自动生效**：在 master 上合入一处 `local_fetch_loop.sh` 的可见改动（例如改一行
+   日志文案），探针在 **1 个周期（≤ 15 分钟）内**自动重启并出现新文案，日志伴随
+   `restarting the probe automatically`，**无需人工干预**；
+2. **零残留**：制造一次远端/本地冲突（在探针克隆里改一个 tracked data 文件后触发
+   pull），同步结束后 `git diff --diff-filter=U` 必须为空，日志写明
+   `took the remote (Actions) version` 或 `discarded local N file(s)`；
+3. 连续 24 小时：`stage history failed` = 0、`unmerged files` = 0、
+   `probe cycle N finished with errors` ≤ 2；
+4. `events.jsonl` 无丢点（行数 ≈ 周期数），每日 #78 汇报照常；
+5. 历史遗留状态可用 `bash scripts/probe_doctor.sh` 体检，`--fix` 一键修复。
 
 ### `data/fetch-log.json`
 
