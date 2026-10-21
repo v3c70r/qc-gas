@@ -1,7 +1,12 @@
 // PWA lifecycle helpers: service-worker registration, update notice, install
 // prompt UI, iOS "Add to Home Screen" guidance, and honest offline status.
 import { t, tf, getLanguage, onLanguageChange } from './i18n.js';
-import { formatRelativeTime, subscribeFreshness } from './freshness.js';
+import {
+  formatRelativeTime,
+  subscribeFreshness,
+  classifyFreshness,
+  getFreshnessThresholds
+} from './freshness.js';
 
 const FROM_CACHE_HEADER = 'X-QCGas-From-Cache';
 // A returning user should learn about a new release quickly, but focus storms
@@ -166,6 +171,29 @@ export function clearDataError() {
   renderStatus();
 }
 
+// ── Freshness state (issue #120) ──────────────────────────────────────────
+// The label carries three states, derived from the published timetable (see
+// freshness.js): quiet, warn and stale. Colour is decoration only — an
+// aria-hidden glyph plus the localized words carry the meaning — and the
+// inherited `aria-live="polite"` announces a change without interrupting.
+const FRESHNESS_ICONS = { warn: '⚠', stale: '⛔' };
+
+function renderStatusLabel(el, text, state = 'fresh') {
+  el.dataset.freshness = state;
+  el.classList.toggle('warn', state === 'warn');
+  el.classList.toggle('stale', state === 'stale');
+  el.textContent = '';
+  const glyph = FRESHNESS_ICONS[state];
+  if (glyph) {
+    const icon = document.createElement('span');
+    icon.className = 'data-status-icon';
+    icon.setAttribute('aria-hidden', 'true');
+    icon.textContent = glyph;
+    el.appendChild(icon);
+  }
+  el.appendChild(document.createTextNode(text));
+}
+
 function renderStatus() {
   const el = document.getElementById('data-status');
   if (!el) return;
@@ -177,7 +205,7 @@ function renderStatus() {
     // and keep the retry action right next to it.
     el.classList.remove('offline');
     el.classList.add('error');
-    el.textContent = t('loadingError');
+    renderStatusLabel(el, t('loadingError'));
     el.dataset.count = String(stationCount);
     return;
   }
@@ -187,24 +215,35 @@ function renderStatus() {
   if (offline || fromCache) {
     el.classList.add('offline');
     const sync = formatSyncTime(generatedAt);
-    el.textContent = sync
+    renderStatusLabel(el, sync
       ? `${t('offlineStatus')} · ${t('lastSync')} ${sync}`
-      : t('offlineStatus');
+      : t('offlineStatus'));
   } else {
     el.classList.remove('offline');
     // Online: report how old the *displayed* snapshot is, derived from its
     // generated_at. A snapshot we cannot date is never sold as "just now".
     const generatedMs = Date.parse(generatedAt || '');
-    if (stationCount > 0) {
-      el.textContent = Number.isFinite(generatedMs)
-        ? tf('dataFreshness', {
-          n: stationCount,
-          time: formatRelativeTime(generatedMs, Date.now(), getLanguage())
-        })
-        : tf('dataLoaded', { n: stationCount });
+    const dated = Number.isFinite(generatedMs);
+    const state = dated
+      ? classifyFreshness(Date.now() - generatedMs, getFreshnessThresholds())
+      : 'fresh';
+
+    let text;
+    if (stationCount <= 0) {
+      text = t('dataLoading');
+    } else if (dated) {
+      text = tf('dataFreshness', {
+        n: stationCount,
+        time: formatRelativeTime(generatedMs, Date.now(), getLanguage())
+      });
     } else {
-      el.textContent = t('dataLoading');
+      text = tf('dataLoaded', { n: stationCount });
     }
+
+    if (state === 'warn') text += ` · ${t('freshnessWarn')}`;
+    else if (state === 'stale') text += ` · ${t('freshnessStale')} · ${t('freshnessStaleHint')}`;
+
+    renderStatusLabel(el, text, state);
   }
   el.dataset.count = String(stationCount);
 }
