@@ -216,7 +216,12 @@
     <div id="map-container">
       <div id="header">
         <h1 id="title" data-i18n="title">⛽ Essence Québec</h1>
-        <div id="data-status" class="data-status" data-i18n="dataLoading">Données: en chargement...</div>
+        <!-- pwa.js is the only #data-status writer; the retry button ships in the
+             markup so it is already in the tab order the moment a load fails. -->
+        <div class="data-status-row">
+          <div id="data-status" class="data-status" role="status" aria-live="polite" data-i18n="dataLoading">Données: en chargement...</div>
+          <button type="button" id="data-retry" class="data-retry" hidden>Réessayer</button>
+        </div>
         <button id="dashboard-trigger" class="dashboard-trigger-btn" title="Tendances">
           <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
             <polyline points="22 12 18 12 15 21 9 3 6 12 2 12"></polyline>

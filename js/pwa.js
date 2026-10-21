@@ -1,7 +1,12 @@
 // PWA lifecycle helpers: service-worker registration, update notice, install
 // prompt UI, iOS "Add to Home Screen" guidance, and honest offline status.
 import { t, tf, getLanguage, onLanguageChange } from './i18n.js';
-import { formatRelativeTime, subscribeFreshness } from './freshness.js';
+import {
+  formatRelativeTime,
+  subscribeFreshness,
+  classifyFreshness,
+  getFreshnessThresholds
+} from './freshness.js';
 
 const FROM_CACHE_HEADER = 'X-QCGas-From-Cache';
 // A returning user should learn about a new release quickly, but focus storms
@@ -49,31 +54,196 @@ function formatSyncTime(iso) {
 
 // ── #data-status rendering ────────────────────────────────────────────────
 
+// ── Load-failure state (issue #119) ───────────────────────────────────────
+// `data/stations.json` is a derived snapshot served as a Pages artifact (#103),
+// so a first load can fail on a network blip, a 4xx/5xx or a mangled body.
+// map.js classifies the failure and reports it here; this module stays the only
+// #data-status writer, so the error label and the retry action live with it.
+//
+// Retries are bounded: the first one is immediate (the user just asked for it),
+// then the button waits 3s and finally 10s, so an impulsive tap cannot turn a
+// stuck CDN into a request storm.
+const RETRY_DELAYS_MS = [0, 3000, 10000];
+const RETRY_COUNTDOWN_TICK_MS = 250;
+
+let loadError = null; // { kind: 'network' | 'http' | 'parse', status: number | null }
+let loadFailureCount = 0;
+let retryDelayMs = 0;
+let retryReadyAt = 0;
+let retryInFlight = false;
+let retryHandler = null;
+let retryCountdownTimer = null;
+
+function stopRetryCountdown() {
+  if (retryCountdownTimer === null) return;
+  clearInterval(retryCountdownTimer);
+  retryCountdownTimer = null;
+}
+
+function startRetryCountdown() {
+  if (retryCountdownTimer !== null) return;
+  retryCountdownTimer = setInterval(() => renderRetryControl(), RETRY_COUNTDOWN_TICK_MS);
+}
+
+// The button is the only actionable thing left when nothing loaded, so it is
+// always visible with the failure, disabled only while a retry is in flight or
+// while the backoff window is still open.
+function renderRetryControl() {
+  const btn = document.getElementById('data-retry');
+  if (!btn) return;
+
+  if (!loadError) {
+    stopRetryCountdown();
+    btn.hidden = true;
+    btn.disabled = false;
+    btn.textContent = t('dataErrorRetry');
+    return;
+  }
+
+  btn.hidden = false;
+  const remaining = retryReadyAt - Date.now();
+
+  if (retryInFlight) {
+    stopRetryCountdown();
+    btn.disabled = true;
+    btn.textContent = t('dataErrorRetry');
+    return;
+  }
+
+  if (remaining > 0) {
+    btn.disabled = true;
+    btn.textContent = tf('dataErrorRetryWait', { n: Math.ceil(remaining / 1000) });
+    startRetryCountdown();
+    return;
+  }
+
+  stopRetryCountdown();
+  btn.disabled = false;
+  btn.textContent = t('dataErrorRetry');
+}
+
+function requestRetry() {
+  if (!loadError || retryInFlight || Date.now() < retryReadyAt) return false;
+  if (typeof retryHandler !== 'function') return false;
+
+  retryInFlight = true;
+  renderRetryControl();
+  try {
+    retryHandler();
+  } catch (error) {
+    retryInFlight = false;
+    renderRetryControl();
+    console.error('Retry could not be started', error);
+  }
+  return true;
+}
+
+function initRetryControl() {
+  const btn = document.getElementById('data-retry');
+  if (!btn) return;
+  btn.addEventListener('click', () => requestRetry());
+}
+
+/** Register the loader that a retry should re-run (injected by map.js). */
+export function setDataRetryHandler(fn) {
+  retryHandler = typeof fn === 'function' ? fn : null;
+}
+
+/** Record a classified snapshot-load failure and expose the retry action. */
+export function setDataError({ kind = 'network', status = null } = {}) {
+  loadError = { kind, status: status ?? null };
+  loadFailureCount += 1;
+  retryInFlight = false;
+  // Index 0 = first failure (retry is immediate), then 3s, then 10s and stay there.
+  retryDelayMs = RETRY_DELAYS_MS[Math.min(loadFailureCount - 1, RETRY_DELAYS_MS.length - 1)];
+  retryReadyAt = Date.now() + retryDelayMs;
+  renderStatus();
+}
+
+/** Back to the normal status label (a load finally succeeded). */
+export function clearDataError() {
+  if (!loadError && loadFailureCount === 0) return;
+  loadError = null;
+  loadFailureCount = 0;
+  retryDelayMs = 0;
+  retryReadyAt = 0;
+  retryInFlight = false;
+  renderStatus();
+}
+
+// ── Freshness state (issue #120) ──────────────────────────────────────────
+// The label carries three states, derived from the published timetable (see
+// freshness.js): quiet, warn and stale. Colour is decoration only — an
+// aria-hidden glyph plus the localized words carry the meaning — and the
+// inherited `aria-live="polite"` announces a change without interrupting.
+const FRESHNESS_ICONS = { warn: '⚠', stale: '⛔' };
+
+function renderStatusLabel(el, text, state = 'fresh') {
+  el.dataset.freshness = state;
+  el.classList.toggle('warn', state === 'warn');
+  el.classList.toggle('stale', state === 'stale');
+  el.textContent = '';
+  const glyph = FRESHNESS_ICONS[state];
+  if (glyph) {
+    const icon = document.createElement('span');
+    icon.className = 'data-status-icon';
+    icon.setAttribute('aria-hidden', 'true');
+    icon.textContent = glyph;
+    el.appendChild(icon);
+  }
+  el.appendChild(document.createTextNode(text));
+}
+
 function renderStatus() {
   const el = document.getElementById('data-status');
   if (!el) return;
 
+  renderRetryControl();
+
+  if (loadError) {
+    // Nothing loaded, so there is no snapshot age to report: name the failure
+    // and keep the retry action right next to it.
+    el.classList.remove('offline');
+    el.classList.add('error');
+    renderStatusLabel(el, t('loadingError'));
+    el.dataset.count = String(stationCount);
+    return;
+  }
+
+  el.classList.remove('error');
+
   if (offline || fromCache) {
     el.classList.add('offline');
     const sync = formatSyncTime(generatedAt);
-    el.textContent = sync
+    renderStatusLabel(el, sync
       ? `${t('offlineStatus')} · ${t('lastSync')} ${sync}`
-      : t('offlineStatus');
+      : t('offlineStatus'));
   } else {
     el.classList.remove('offline');
     // Online: report how old the *displayed* snapshot is, derived from its
     // generated_at. A snapshot we cannot date is never sold as "just now".
     const generatedMs = Date.parse(generatedAt || '');
-    if (stationCount > 0) {
-      el.textContent = Number.isFinite(generatedMs)
-        ? tf('dataFreshness', {
-          n: stationCount,
-          time: formatRelativeTime(generatedMs, Date.now(), getLanguage())
-        })
-        : tf('dataLoaded', { n: stationCount });
+    const dated = Number.isFinite(generatedMs);
+    const state = dated
+      ? classifyFreshness(Date.now() - generatedMs, getFreshnessThresholds())
+      : 'fresh';
+
+    let text;
+    if (stationCount <= 0) {
+      text = t('dataLoading');
+    } else if (dated) {
+      text = tf('dataFreshness', {
+        n: stationCount,
+        time: formatRelativeTime(generatedMs, Date.now(), getLanguage())
+      });
     } else {
-      el.textContent = t('dataLoading');
+      text = tf('dataLoaded', { n: stationCount });
     }
+
+    if (state === 'warn') text += ` · ${t('freshnessWarn')}`;
+    else if (state === 'stale') text += ` · ${t('freshnessStale')} · ${t('freshnessStaleHint')}`;
+
+    renderStatusLabel(el, text, state);
   }
   el.dataset.count = String(stationCount);
 }
@@ -330,6 +500,7 @@ function registerServiceWorker() {
 
 export function initPWA() {
   initUpdateFlow();
+  initRetryControl();
   registerServiceWorker();
   initOfflineUI();
   initInstallUI();
@@ -348,6 +519,8 @@ if (typeof window !== 'undefined') {
     applyUpdate,
     checkForUpdate,
     setRegistration,
-    isUpdateAvailable
+    isUpdateAvailable,
+    // Current backoff window of the load-retry button (issue #119).
+    getRetryDelayMs: () => retryDelayMs
   };
 }

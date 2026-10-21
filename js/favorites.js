@@ -10,6 +10,8 @@
 // The legacy text key (`name|address|postal_code`) still matches as a fallback,
 // and a one-shot, idempotent migration rewrites resolvable text keys.
 
+import { currentStations } from './map.js';
+
 const STORAGE_KEY = 'qc-gas-favorites';
 const COORD_PREFIX = 'coord:';
 
@@ -18,8 +20,7 @@ const STAR_ICON = `<svg viewBox="0 0 24 24" width="16" height="16" fill="none" s
 let favorites = load();
 const listeners = new Set();
 // Last snapshot announced by map.js through `stations:loaded`; kept so the
-// migration can run again (backup import) without importing map.js statically
-// (that would close an import cycle: map → stats → favorites).
+// migration can run again (backup import) without re-reading map.js.
 let snapshotStations = null;
 
 function load() {
@@ -174,19 +175,20 @@ if (typeof window !== 'undefined') {
     if (event?.detail) snapshotStations = event.detail;
     migrateFromKnownSnapshot();
   });
-  // The snapshot may already be applied when this module is evaluated late
-  // (dynamic import from the backup flow, HMR): read it lazily instead of
-  // importing map.js statically, which would create an import cycle.
-  import('./map.js')
-    .then(mod => {
-      if (snapshotStations) return;
-      const stations = mod?.currentStations;
-      if (stations && Array.isArray(stations.features) && stations.features.length) {
-        snapshotStations = stations;
-        migrateFromKnownSnapshot();
-      }
-    })
-    .catch(() => {});
+  // The migration needs the station snapshot. It normally arrives through the
+  // `stations:loaded` event above, but this module can also be evaluated after
+  // the snapshot was applied (HMR). Read map.js's live binding once on a
+  // microtask: favorites.js and map.js sit in a static import cycle
+  // (map → stats → favorites → map), so the binding is still in its TDZ while
+  // this module body runs — a microtask only fires once the graph is evaluated.
+  queueMicrotask(() => {
+    if (snapshotStations) return;
+    const stations = currentStations;
+    if (stations && Array.isArray(stations.features) && stations.features.length) {
+      snapshotStations = stations;
+      migrateFromKnownSnapshot();
+    }
+  });
 }
 
 export { STAR_ICON };

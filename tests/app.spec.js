@@ -1,8 +1,9 @@
 import { test, expect } from '@playwright/test';
-import { readFileSync } from 'node:fs';
+import { readFileSync, readdirSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import path from 'node:path';
 import { derivedDataPath } from './fixtures/data-snapshots.js';
+import { contrastRatio } from '../js/map-style.js';
 
 const BASE_URL = process.env.BASE_URL || 'http://localhost:5173';
 const DEPLOY_URL = 'https://qgu.io/qc-gas/';
@@ -3113,6 +3114,275 @@ test.describe('Data freshness & auto refresh (Issue #47)', () => {
   });
 });
 
+// ── Tri-state freshness (Issue #120) ────────────────────────────────────────
+// `data/fetch-schedule.json` already publishes the expected fetch cadence per
+// local hour (`max_gap_minutes`). Two ages are derived from it instead of a
+// magic number: warn = 2× the current hour's gap, stale = 6× that gap (capped
+// at 6h). The tests pin the schedule to all-busy 20-minute slots so the
+// expected state never depends on the hour the suite happens to run at.
+test.describe('Tri-state freshness (Issue #120)', () => {
+  const isoAgo = (ms) => new Date(Date.now() - ms).toISOString();
+  const MINUTE = 60 * 1000;
+  const HOUR = 60 * MINUTE;
+
+  const gaps = (minutes) => Object.fromEntries(
+    Array.from({ length: 24 }, (_, h) => [String(h), minutes])
+  );
+  const BUSY_SCHEDULE = { v: 2, timezone: 'UTC', max_gap_minutes: gaps(20) };
+
+  const WARN_TEXT = {
+    'zh-Hans': '数据可能不是最新',
+    'en-CA': 'Data may not be the latest',
+    'fr-CA': 'Données peut-être pas les plus récentes'
+  };
+  const STALE_TEXT = {
+    'zh-Hans': '数据可能已过期',
+    'en-CA': 'Data may be stale',
+    'fr-CA': 'Données possiblement périmées'
+  };
+  const STALE_HINT = {
+    'zh-Hans': '刷新页面获取最新价格',
+    'en-CA': 'Refresh the page for the latest prices',
+    'fr-CA': 'Actualisez la page pour les prix à jour'
+  };
+  const UPDATED_RE = /更新于|updated|mis à jour/;
+
+  function snapshot({ generatedAt, regularPrice = 175.9 } = {}) {
+    const clone = JSON.parse(JSON.stringify(stationsFixture));
+    if (generatedAt) clone.metadata = { ...clone.metadata, generated_at: generatedAt };
+    clone.features.forEach((f) => {
+      if (typeof f.properties.regular_price === 'number') f.properties.regular_price = regularPrice;
+    });
+    return JSON.stringify(clone);
+  }
+
+  function serveSnapshot(page, body) {
+    return page.route('**/data/stations.json', (route) =>
+      route.fulfill({ status: 200, contentType: 'application/json', body }));
+  }
+
+  function serveSchedule(page, body = BUSY_SCHEDULE) {
+    return page.route('**/data/fetch-schedule.json', (route) =>
+      route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify(body) }));
+  }
+
+  function failSchedule(page) {
+    return page.route('**/data/fetch-schedule.json', (route) => route.fulfill({ status: 404, body: 'nope' }));
+  }
+
+  async function waitForStatus(page) {
+    await page.waitForFunction(
+      () => window.__qcGasMap && window.__qcGasMap.getStationFeatureCount() > 0 && window.__qcGasFreshness,
+      null,
+      { timeout: 15000 }
+    );
+  }
+
+  async function waitForScheduleApplied(page) {
+    await page.waitForFunction(
+      () => window.__qcGasFreshness.getFreshnessThresholds().source === 'schedule',
+      null,
+      { timeout: 15000 }
+    );
+  }
+
+  // Normalise a computed colour to opaque `#rrggbb`, compositing translucent
+  // backgrounds over white the same way the browser paints them.
+  function toHex(computed) {
+    const match = String(computed).match(/rgba?\(([^)]+)\)/);
+    expect(match).not.toBeNull();
+    const [r, g, b, a = 1] = match[1].split(',').map((v) => Number(v.trim()));
+    const over = (c) => Math.round(c * a + 255 * (1 - a));
+    return '#' + [over(r), over(g), over(b)].map((c) => c.toString(16).padStart(2, '0')).join('');
+  }
+
+  async function statusColors(page) {
+    return page.evaluate(() => {
+      const style = getComputedStyle(document.getElementById('data-status'));
+      return { color: style.color, background: style.backgroundColor };
+    });
+  }
+
+  for (const code of ['zh-Hans', 'en-CA', 'fr-CA']) {
+    test(`${code} - 45 min on a 20-minute schedule is a warn`, async ({ page }) => {
+      await page.addInitScript((lang) => localStorage.setItem('language', lang), code);
+      await serveSnapshot(page, snapshot({ generatedAt: isoAgo(45 * MINUTE) }));
+      await serveSchedule(page);
+      await page.goto(BASE_URL);
+      await waitForStatus(page);
+      await waitForScheduleApplied(page);
+
+      const status = page.locator('#data-status');
+      await expect(status).toHaveAttribute('data-freshness', 'warn');
+      await expect(status).toHaveClass(/warn/);
+      await expect(status).not.toHaveClass(/stale/);
+      await expect(status).toContainText(WARN_TEXT[code]);
+      // The snapshot's own age stays visible next to the warning.
+      await expect(status).toContainText(/45/);
+      // Colour is never the only signal: an icon ships with the warning, and
+      // the change is announced politely instead of interrupting.
+      await expect(status.locator('.data-status-icon')).toBeVisible();
+      await expect(status).toHaveAttribute('aria-live', 'polite');
+    });
+
+    test(`${code} - 3 h on a 20-minute schedule is stale and suggests a refresh`, async ({ page }) => {
+      await page.addInitScript((lang) => localStorage.setItem('language', lang), code);
+      await serveSnapshot(page, snapshot({ generatedAt: isoAgo(3 * HOUR) }));
+      await serveSchedule(page);
+      await page.goto(BASE_URL);
+      await waitForStatus(page);
+      await waitForScheduleApplied(page);
+
+      const status = page.locator('#data-status');
+      await expect(status).toHaveAttribute('data-freshness', 'stale');
+      await expect(status).toHaveClass(/stale/);
+      await expect(status).not.toHaveClass(/warn/);
+      await expect(status).toContainText(STALE_TEXT[code]);
+      await expect(status).toContainText(STALE_HINT[code]);
+      await expect(status.locator('.data-status-icon')).toBeVisible();
+      await expect(status).toHaveAttribute('aria-live', 'polite');
+    });
+  }
+
+  test('a 5 minute old snapshot keeps today\'s quiet label', async ({ page }) => {
+    await page.addInitScript(() => localStorage.setItem('language', 'en-CA'));
+    await serveSnapshot(page, snapshot({ generatedAt: isoAgo(5 * MINUTE) }));
+    await serveSchedule(page);
+    await page.goto(BASE_URL);
+    await waitForStatus(page);
+    await waitForScheduleApplied(page);
+
+    const status = page.locator('#data-status');
+    await expect(status).toHaveAttribute('data-freshness', 'fresh');
+    await expect(status).not.toHaveClass(/warn/);
+    await expect(status).not.toHaveClass(/stale/);
+    await expect(status).toContainText(UPDATED_RE);
+    await expect(status).toContainText(/5 min/);
+    await expect(status).not.toContainText(WARN_TEXT['en-CA']);
+    await expect(status).not.toContainText(STALE_TEXT['en-CA']);
+    // No icon in the quiet state: nothing changed, so nothing shouts.
+    await expect(status.locator('.data-status-icon')).toHaveCount(0);
+  });
+
+  test('a missing schedule falls back to fixed thresholds without blocking the render', async ({ page }) => {
+    const pageErrors = [];
+    page.on('pageerror', (error) => pageErrors.push(error.message));
+
+    await page.addInitScript(() => localStorage.setItem('language', 'en-CA'));
+    await failSchedule(page);
+    // 45 min is fresh under the fallback (60 min), warn only past it.
+    await serveSnapshot(page, snapshot({ generatedAt: isoAgo(45 * MINUTE) }));
+    await page.goto(BASE_URL);
+    await waitForStatus(page);
+    await page.waitForFunction(() => window.__qcGasFreshness.getFreshnessThresholds().source === 'fallback');
+
+    const status = page.locator('#data-status');
+    await expect(status).toHaveAttribute('data-freshness', 'fresh');
+    await expect(status).not.toHaveClass(/error/);
+
+    // 90 min: a warning, not stale.
+    await page.unroute('**/data/stations.json');
+    await serveSnapshot(page, snapshot({ generatedAt: isoAgo(90 * MINUTE) }));
+    await page.reload();
+    await waitForStatus(page);
+    await expect(status).toHaveAttribute('data-freshness', 'warn');
+    await expect(status).toContainText(WARN_TEXT['en-CA']);
+
+    // 7 hours: past the fixed 6h stale ceiling.
+    await page.unroute('**/data/stations.json');
+    await serveSnapshot(page, snapshot({ generatedAt: isoAgo(7 * HOUR) }));
+    await page.reload();
+    await waitForStatus(page);
+    await expect(status).toHaveAttribute('data-freshness', 'stale');
+    await expect(status).toContainText(STALE_TEXT['en-CA']);
+
+    expect(pageErrors).toEqual([]);
+  });
+
+  test('the timetable is fetched once, alongside the snapshot, and its failure stays silent', async ({ page }) => {
+    const scheduleRequests = [];
+    page.on('request', (req) => {
+      if (req.url().includes('data/fetch-schedule.json')) scheduleRequests.push(req.url());
+    });
+    const pageErrors = [];
+    page.on('pageerror', (error) => pageErrors.push(error.message));
+
+    await serveSnapshot(page, snapshot({ generatedAt: isoAgo(2 * MINUTE) }));
+    await failSchedule(page);
+    await page.goto(BASE_URL);
+    await waitForStatus(page);
+    await page.waitForTimeout(300);
+
+    expect(scheduleRequests).toHaveLength(1);
+    expect(pageErrors).toEqual([]);
+    // The snapshot still renders: a timetable the front end cannot read never
+    // costs the user the map.
+    expect(await page.evaluate(() => window.__qcGasMap.getStationFeatureCount())).toBeGreaterThan(0);
+  });
+
+  test('thresholds derive from the published gap (2x warn / 6x stale, 6h cap)', async ({ page }) => {
+    await page.goto(BASE_URL);
+    await page.waitForFunction(() => window.__qcGasFreshness, null, { timeout: 15000 });
+
+    const out = await page.evaluate(() => {
+      const f = window.__qcGasFreshness;
+      const gapsFor = (minutes) => Object.fromEntries(
+        Array.from({ length: 24 }, (_, h) => [String(h), minutes])
+      );
+      const at = Date.parse('2026-10-21T12:00:00Z');
+      return {
+        busy: f.thresholdsFromSchedule({ timezone: 'UTC', max_gap_minutes: gapsFor(20) }, at),
+        night: f.thresholdsFromSchedule({ timezone: 'UTC', max_gap_minutes: gapsFor(60) }, at),
+        capped: f.thresholdsFromSchedule({ timezone: 'UTC', max_gap_minutes: gapsFor(240) }, at),
+        broken: f.thresholdsFromSchedule({ max_gap_minutes: {} }, at),
+        fallback: f.thresholdsFromSchedule(null, at),
+        boundary: {
+          belowWarn: f.classifyFreshness(39 * 60 * 1000, { warnMs: 40 * 60 * 1000, staleMs: 120 * 60 * 1000 }),
+          atWarn: f.classifyFreshness(40 * 60 * 1000, { warnMs: 40 * 60 * 1000, staleMs: 120 * 60 * 1000 }),
+          atStale: f.classifyFreshness(120 * 60 * 1000, { warnMs: 40 * 60 * 1000, staleMs: 120 * 60 * 1000 })
+        }
+      };
+    });
+
+    expect(out.busy.warnMs).toBe(40 * MINUTE);
+    expect(out.busy.staleMs).toBe(120 * MINUTE);
+    expect(out.night.warnMs).toBe(120 * MINUTE);
+    expect(out.night.staleMs).toBe(6 * HOUR);
+    expect(out.capped.staleMs).toBe(6 * HOUR);
+    // A schedule we cannot read never yields NaN thresholds.
+    expect(out.broken.source).toBe('fallback');
+    expect(out.fallback.warnMs).toBe(60 * MINUTE);
+    expect(out.fallback.staleMs).toBe(6 * HOUR);
+    expect(out.boundary).toEqual({ belowWarn: 'fresh', atWarn: 'warn', atStale: 'stale' });
+  });
+
+  test('warn copy clears 4.5:1 against its own background', async ({ page }) => {
+    await page.addInitScript(() => localStorage.setItem('language', 'en-CA'));
+    await serveSnapshot(page, snapshot({ generatedAt: isoAgo(45 * MINUTE) }));
+    await serveSchedule(page);
+    await page.goto(BASE_URL);
+    await waitForStatus(page);
+    await waitForScheduleApplied(page);
+    await expect(page.locator('#data-status')).toHaveAttribute('data-freshness', 'warn');
+
+    const colors = await statusColors(page);
+    expect(contrastRatio(toHex(colors.color), toHex(colors.background))).toBeGreaterThanOrEqual(4.5);
+  });
+
+  test('stale copy clears 4.5:1 against its own background', async ({ page }) => {
+    await page.addInitScript(() => localStorage.setItem('language', 'en-CA'));
+    await serveSnapshot(page, snapshot({ generatedAt: isoAgo(3 * HOUR) }));
+    await serveSchedule(page);
+    await page.goto(BASE_URL);
+    await waitForStatus(page);
+    await waitForScheduleApplied(page);
+    await expect(page.locator('#data-status')).toHaveAttribute('data-freshness', 'stale');
+
+    const colors = await statusColors(page);
+    expect(contrastRatio(toHex(colors.color), toHex(colors.background))).toBeGreaterThanOrEqual(4.5);
+  });
+});
+
 // ── Station card / detail panel follow the applied snapshot (Issue #51) ──────
 // After #47 the page can apply a newer snapshot in place while a card or the
 // detail panel is open. Both must read from that SAME snapshot, so one screen
@@ -3998,6 +4268,41 @@ test.describe('Mes données backup / restore (Issue #57)', () => {
     await expect(page.locator('#databackup-status')).toContainText(/Import|导入/);
     const after = await page.evaluate(() => JSON.parse(localStorage.getItem('qc-gas-favorites')));
     expect(after).toEqual(['Only']);
+  });
+
+  // Issue #123: the post-import rehydration used to run through dynamic
+  // imports whose failures were swallowed (`Promise.all(...).catch(() => {})`).
+  // It is now synchronous, so a throwing render path (here: `updateStationList`
+  // on a missing #station-list) must stay contained: the user still gets the
+  // import result and the replace-mode dialog still closes instead of hanging.
+  test('a broken sidebar render does not abort the import flow', async ({ page }) => {
+    await seed(page);
+    await waitHook(page);
+    await page.evaluate(() => document.getElementById('station-list')?.remove());
+
+    const incoming = JSON.stringify({
+      v: 1,
+      app: 'essence-quebec',
+      exported_at: '2026-10-03T00:00:00.000Z',
+      data: { favorites: ['Only'], fillups: [], watch: [], tripPrefs: { consumption: 8, roundTrip: false }, listPrefs: { sort: 'price' } }
+    });
+
+    const direct = await page.evaluate((json) => window.__qcGasBackup.importFromText(json, 'replace'), incoming);
+    expect(direct.ok).toBe(true);
+    expect(direct.imported).toBeGreaterThan(0);
+
+    await page.locator('#databackup-toggle').click();
+    await page.locator('input[name="databackup-mode"][value="replace"]').check();
+    await page.locator('#databackup-file').setInputFiles({
+      name: 'backup.json',
+      mimeType: 'application/json',
+      buffer: Buffer.from(incoming)
+    });
+    await expect(page.locator('#databackup-confirm')).toBeVisible();
+    await page.locator('#databackup-confirm-yes').click();
+    await expect(page.locator('#databackup-confirm')).toBeHidden();
+    await expect(page.locator('#databackup-status')).toContainText(/Import|导入/);
+    expect(await page.evaluate(() => JSON.parse(localStorage.getItem('qc-gas-favorites')))).toEqual(['Only']);
   });
 
   test('round-trip: export → wipe → import (replace) restores every dataset in the UI', async ({ page }) => {
@@ -4890,5 +5195,219 @@ test.describe('Sidebar list — "Par région" summary view (Issue #87)', () => {
     });
     expect(new Set(Object.values(switchLabels)).size).toBe(3);
     expect(new Set(Object.values(metaLines)).size).toBe(3);
+  });
+});
+
+// ── Data load failure state (Issue #119) ───────────────────────────────────
+// The snapshot is a derived artifact served by Pages (#103), so a first load
+// can fail on a network blip, a 5xx or a mangled body. Today the user gets one
+// hardcoded French line and no way to retry. These specs pin the polished
+// version: localized wording, an actionable 44px retry button, a classified
+// console log, and a bounded backoff between manual retries.
+test.describe('Data load failure state (Issue #119)', () => {
+  const ERROR_TEXT = {
+    'zh-Hans': '数据加载错误',
+    'en-CA': 'Data loading error',
+    'fr-CA': 'Erreur de chargement des données'
+  };
+  const RETRY_TEXT = {
+    'zh-Hans': '重试',
+    'en-CA': 'Retry',
+    'fr-CA': 'Réessayer'
+  };
+
+  // Fail the first `failures` requests, then let the real snapshot through.
+  function failSnapshot(page, { status = 500, body = 'boom', contentType = 'text/plain', failures = Infinity } = {}) {
+    let served = 0;
+    const state = { count: 0 };
+    page.route('**/data/stations.json', (route) => {
+      state.count += 1;
+      if (served < failures) {
+        served += 1;
+        return route.fulfill({ status, body, contentType });
+      }
+      return route.continue();
+    });
+    return state;
+  }
+
+  async function waitForStations(page) {
+    await page.waitForFunction(
+      () => window.__qcGasMap && window.__qcGasMap.getStationFeatureCount() > 0,
+      null,
+      { timeout: 15000 }
+    );
+  }
+
+  for (const code of ['zh-Hans', 'en-CA', 'fr-CA']) {
+    test(`${code} - a 500 shows a localized error and an actionable retry`, async ({ page }) => {
+      await page.addInitScript((lang) => localStorage.setItem('language', lang), code);
+      failSnapshot(page, { status: 500 });
+      await page.goto(BASE_URL);
+
+      const status = page.locator('#data-status');
+      await expect(status).toContainText(ERROR_TEXT[code]);
+      await expect(status).toHaveClass(/error/);
+      // A screen reader must hear the failure without polling the page.
+      await expect(status).toHaveAttribute('aria-live', 'polite');
+
+      const retry = page.locator('#data-retry');
+      await expect(retry).toBeVisible();
+      await expect(retry).toHaveText(RETRY_TEXT[code]);
+
+      // Touch target: 44px in both directions.
+      const box = await retry.boundingBox();
+      expect(box.width).toBeGreaterThanOrEqual(44);
+      expect(box.height).toBeGreaterThanOrEqual(44);
+    });
+  }
+
+  test('switching language while the error is on screen re-localizes it', async ({ page }) => {
+    await page.addInitScript(() => localStorage.setItem('language', 'fr-CA'));
+    failSnapshot(page, { status: 500 });
+    await page.goto(BASE_URL);
+
+    const status = page.locator('#data-status');
+    await expect(status).toContainText(ERROR_TEXT['fr-CA']);
+
+    await page.locator('#lang-selector button[data-lang="zh-Hans"]').click();
+    await expect(status).toContainText(ERROR_TEXT['zh-Hans']);
+    expect(await status.innerText()).not.toContain(ERROR_TEXT['fr-CA']);
+    await expect(page.locator('#data-retry')).toHaveText(RETRY_TEXT['zh-Hans']);
+  });
+
+  test('the retry button is Tab reachable, Enter retries and clears the error state', async ({ page }) => {
+    await page.addInitScript(() => localStorage.setItem('language', 'fr-CA'));
+    failSnapshot(page, { status: 503, failures: 1 });
+    await page.goto(BASE_URL);
+
+    const retry = page.locator('#data-retry');
+    await expect(retry).toBeVisible();
+    await expect(page.locator('#data-status')).toContainText(ERROR_TEXT['fr-CA']);
+
+    // Not focusable by script only: the tab order must reach it.
+    let reached = false;
+    for (let i = 0; i < 60 && !reached; i += 1) {
+      await page.keyboard.press('Tab');
+      reached = await page.evaluate(() => document.activeElement?.id === 'data-retry');
+    }
+    expect(reached).toBe(true);
+
+    await page.keyboard.press('Enter');
+    await waitForStations(page);
+
+    // A success clears the error state instead of leaving a stale warning.
+    await expect(page.locator('#data-status')).not.toContainText(ERROR_TEXT['fr-CA']);
+    await expect(page.locator('#data-status')).not.toHaveClass(/error/);
+    await expect(retry).toBeHidden();
+    expect(await page.evaluate(() => window.__qcGasMap.getLastLoadError())).toBeNull();
+  });
+
+  test('failures are classified (network vs HTTP vs parse) in the log', async ({ page }) => {
+    const logs = [];
+    page.on('console', (msg) => logs.push(msg.text()));
+
+    const expectKind = async (kind) => {
+      await expect.poll(
+        () => page.evaluate(() => window.__qcGasMap.getLastLoadError()?.kind ?? null),
+        { timeout: 15000 }
+      ).toBe(kind);
+      expect(logs.join('\n')).toContain(`[data-load:${kind}]`);
+    };
+
+    // HTTP 4xx/5xx
+    await page.route('**/data/stations.json', (route) => route.fulfill({ status: 404, body: 'nope' }));
+    await page.goto(BASE_URL);
+    await expect(page.locator('#data-retry')).toBeVisible();
+    await expectKind('http');
+    await page.unroute('**/data/stations.json');
+
+    // A 200 body that is not JSON parses as garbage -> parse error.
+    await page.route('**/data/stations.json', (route) =>
+      route.fulfill({ status: 200, contentType: 'application/json', body: '<html>not json</html>' }));
+    await page.reload();
+    await expect(page.locator('#data-retry')).toBeVisible();
+    await expectKind('parse');
+    await page.unroute('**/data/stations.json');
+
+    // A dropped connection is a network error, not an HTTP one.
+    await page.route('**/data/stations.json', (route) => route.abort('failed'));
+    await page.reload();
+    await expect(page.locator('#data-retry')).toBeVisible();
+    await expectKind('network');
+  });
+
+  test('retries back off instead of hammering the network', async ({ page }) => {
+    await page.addInitScript(() => localStorage.setItem('language', 'en-CA'));
+    const requests = failSnapshot(page, { status: 500 });
+    await page.goto(BASE_URL);
+
+    const retry = page.locator('#data-retry');
+    await expect(retry).toBeVisible();
+    const afterFirstLoad = requests.count;
+
+    // First retry is immediate (the user just told us to try again).
+    await retry.click();
+    await expect.poll(() => requests.count, { timeout: 10000 }).toBeGreaterThan(afterFirstLoad);
+    const afterFirstRetry = requests.count;
+
+    // It failed again, so the button now waits out a bounded backoff: disabled,
+    // with a visible countdown, and no request no matter how often it is hit.
+    await expect(retry).toBeDisabled();
+    await expect(retry).toContainText(/\d+\s?s/);
+    await retry.click({ force: true }).catch(() => {});
+    await page.waitForTimeout(500);
+    expect(requests.count).toBe(afterFirstRetry);
+
+    // The second retry window is longer (10s after the 3s one).
+    await expect(retry).toBeEnabled({ timeout: 15000 });
+    await retry.click();
+    await expect.poll(() => requests.count, { timeout: 10000 }).toBeGreaterThan(afterFirstRetry);
+    const afterSecondRetry = requests.count;
+    // The failure is reported asynchronously, so wait for its backoff window.
+    await expect.poll(
+      () => page.evaluate(() => window.__qcGasPwa.getRetryDelayMs()),
+      { timeout: 10000 }
+    ).toBe(10000);
+    await expect(retry).toBeDisabled();
+    await page.waitForTimeout(300);
+    expect(requests.count).toBe(afterSecondRetry);
+  });
+});
+
+test.describe('UI copy hygiene (Issue #119)', () => {
+  const jsDir = path.join(path.dirname(fileURLToPath(import.meta.url)), '..', 'js');
+
+  test('no hardcoded UI text is written through textContent/innerHTML', async () => {
+    // Any literal letter after a textContent/innerHTML assignment (including
+    // backtick templates) is an i18n leak unless the value goes through t().
+    const leak = /(textContent|innerHTML)\s*=\s*['"`](?![^'"`]*t\()[A-Za-zÀ-ÿ]/;
+    const files = readdirSync(jsDir).filter((name) => name.endsWith('.js'));
+    expect(files.length).toBeGreaterThan(10);
+
+    const offenders = [];
+    for (const file of files) {
+      const lines = readFileSync(path.join(jsDir, file), 'utf8').split('\n');
+      lines.forEach((line, i) => {
+        if (leak.test(line)) offenders.push(`${file}:${i + 1}: ${line.trim()}`);
+      });
+    }
+    expect(offenders).toEqual([]);
+  });
+
+  test('the three dictionaries expose the same keys', async () => {
+    const { translations } = await import('../js/i18n.js');
+    const codes = Object.keys(translations);
+    expect(codes).toEqual(['zh-Hans', 'en-CA', 'fr-CA']);
+    const [first, ...rest] = codes;
+    for (const code of rest) {
+      expect(Object.keys(translations[code]).sort()).toEqual(Object.keys(translations[first]).sort());
+    }
+    // The polished failure state needs its own wording in every language.
+    for (const code of codes) {
+      expect(translations[code].loadingError).toBeTruthy();
+      expect(translations[code].dataErrorRetry).toBeTruthy();
+      expect(translations[code].dataErrorRetryWait).toContain('{n}');
+    }
   });
 });

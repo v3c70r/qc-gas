@@ -886,6 +886,71 @@ body {
   font-weight: 600;
 }
 
+/* Load-failure state (issue #119): the snapshot could not be fetched at all, so
+   the status line says so and offers an action instead of leaving a blank map. */
+.data-status-row {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+  max-width: min(72vw, 340px);
+}
+
+.data-status.error {
+  color: #991b1b;
+  background: rgba(254,226,226,0.97);
+  font-weight: 600;
+}
+
+/* Tri-state freshness (issue #120): when the snapshot is older than the
+   published cadence allows, the label turns amber then red. Colour is never the
+   only signal — an icon and localized words ship with it (WCAG 1.4.1) — and
+   both palettes clear 4.5:1 against their own background. */
+.data-status.warn {
+  color: #92400e;
+  background: rgba(254,243,199,0.97);
+  font-weight: 600;
+}
+
+.data-status.stale {
+  color: #991b1b;
+  background: rgba(254,226,226,0.97);
+  font-weight: 600;
+}
+
+.data-status-icon {
+  margin-right: 4px;
+}
+
+.data-retry {
+  min-width: 44px;
+  min-height: 44px;
+  padding: 0 14px;
+  border: none;
+  border-radius: 8px;
+  background: #1a73e8;
+  color: #fff;
+  font-size: 13px;
+  font-weight: 700;
+  cursor: pointer;
+  box-shadow: 0 2px 8px rgba(26,115,232,0.25);
+}
+
+.data-retry:hover:not(:disabled) {
+  background: #155bb5;
+}
+
+.data-retry:disabled {
+  background: #94a3b8;
+  box-shadow: none;
+  cursor: default;
+}
+
+.data-retry:focus-visible {
+  outline: 2px solid #1e293b;
+  outline-offset: 2px;
+}
+
 /* PWA install entry */
 .pwa-install {
   position: fixed;

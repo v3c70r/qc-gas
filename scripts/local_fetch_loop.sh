@@ -39,7 +39,20 @@
 #     and `data/fetch-schedule.json` are ever committed, at most once per hour,
 #     and only when they actually changed. The per-cycle truth goes to the
 #     gitignored `data/probe-local/events.jsonl` instead;
-#   * everything is appended to `.agent/probe.log` (gitignored).
+#   * everything is appended to `.agent/probe.log` (gitignored);
+#   * **self-heal (issue #121)**: the loop is a long-lived bash process, so a
+#     merged fix to *this* file used to keep running only after a manual
+#     restart — #113 landed on 2026-10-19 and `probe stages skipped` appeared 0
+#     times in the log until the container was restarted by hand. Every cycle
+#     now compares the script's content hash with the one it started with and
+#     `exec`s itself when they differ (the new version is syntax-checked and
+#     must pass its own `PROBE_CHECK_ONLY` startup checks first; a version that
+#     cannot start leaves the running loop untouched and logs an `ALARM`);
+#   * a sync may never end with an unmerged index (#121): the last step of
+#     `sync_with_remote()` asserts `git diff --name-only --diff-filter=U` is
+#     empty, and `reset --hard '@{u}'` (remote authoritative) with the number of
+#     dropped local files in the log when it is not. A leftover half-merge from
+#     a killed run is cleared at the start of the next cycle.
 #
 # Env knobs (all optional):
 #   PROBE_BASE_BRANCH        the branch the probe may run on, default `master`
@@ -59,6 +72,11 @@
 #   PROBE_LOG_FILE           default .agent/probe.log
 #   PROBE_PYTHON             default python3
 #   PROBE_CHECK_ONLY         non-empty: run the startup checks and exit (tests)
+#   PROBE_MAX_SELF_RESTARTS  automatic restarts allowed per script lineage,
+#                            default 3 (issue #121: give up and alarm instead of
+#                            restart-looping)
+#   PROBE_LIB_ONLY           non-empty: define the helpers and return without
+#                            starting the probe (tests only)
 #
 set -uo pipefail
 
@@ -108,11 +126,117 @@ SYNC_BACKOFF_SECONDS="${PROBE_SYNC_BACKOFF_SECONDS:-15}"
 PENDING_RETRIES=0
 PUSH_ATTEMPTS=0
 
+# Self-heal (issue #121). A merged change to this script must apply *without a
+# manual restart*: the fingerprint below is the version this process is running,
+# `guard_script_change` compares it with the file on disk before every cycle and
+# `exec`s into the new version when `git pull` replaced the file.
+SCRIPT_REL='scripts/local_fetch_loop.sh'
+SCRIPT_PATH="$REPO_ROOT/$SCRIPT_REL"
+BASH_PATH="${BASH:-bash}"
+MAX_SELF_RESTARTS="${PROBE_MAX_SELF_RESTARTS:-3}"
+SELF_RESTART_STATE="$REPO_ROOT/data/probe-local/self-restart.state"
+
 mkdir -p "$(dirname "$LOG_FILE")"
 mkdir -p "$(dirname "$EVENTS_FILE")"
 touch "$LOG_FILE"
 
 log() { printf '[%s] %s\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$*" >>"$LOG_FILE"; }
+
+# ── Self-heal on script change (issue #121) ─────────────────────────────────
+
+# Content hash of a file: the running script vs. the one on disk. `sha256sum`
+# is on every box that runs the probe; `shasum` and `cksum` are fallbacks so the
+# comparison never silently degrades to "always different" (which would restart
+# every cycle).
+script_fingerprint() {
+  local path="$1"
+  [ -f "$path" ] || return 1
+  if command -v sha256sum >/dev/null 2>&1; then
+    sha256sum -- "$path" 2>/dev/null | cut -d' ' -f1
+  elif command -v shasum >/dev/null 2>&1; then
+    shasum -a 256 -- "$path" 2>/dev/null | cut -d' ' -f1
+  else
+    cksum <"$path" 2>/dev/null | tr ' ' '-'
+  fi
+}
+
+STARTUP_FINGERPRINT="$(script_fingerprint "$SCRIPT_PATH" 2>/dev/null || true)"
+
+# Automatic restarts performed in this lineage: `<count> <epoch> <fingerprint>`.
+# Inherited only when the recorded fingerprint is the version *this* process
+# started with, i.e. we are the process a restart produced; a manual start with
+# a different script begins a fresh lineage.
+SELF_RESTART_COUNT=0
+SELF_RESTART_DISABLED=0
+if [ -f "$SELF_RESTART_STATE" ]; then
+  prev_count=0
+  prev_epoch=0
+  prev_fp=''
+  read -r prev_count prev_epoch prev_fp <"$SELF_RESTART_STATE" 2>/dev/null || true
+  case "${prev_count:-}" in ''|*[!0-9]*) prev_count=0 ;; esac
+  if [ -n "$STARTUP_FINGERPRINT" ] && [ "${prev_fp:-}" = "$STARTUP_FINGERPRINT" ]; then
+    SELF_RESTART_COUNT="$prev_count"
+  fi
+fi
+
+write_self_restart_state() {
+  mkdir -p "$(dirname "$SELF_RESTART_STATE")" 2>/dev/null
+  printf '%s %s %s\n' "$1" "$(date -u +%s)" "$2" >"$SELF_RESTART_STATE" 2>/dev/null || true
+}
+
+# A new version must be able to start before it replaces a working loop: a
+# syntax check first, then the script's own startup checks (`PROBE_CHECK_ONLY`,
+# a real run that honours the branch guard). Anything else would turn a broken
+# merge into a probe that exits on start and never comes back.
+verify_new_version() {
+  local path="$1" out rc
+  if ! bash -n "$path" >>"$LOG_FILE" 2>&1; then
+    return 1
+  fi
+  out="$(PROBE_CHECK_ONLY=1 PROBE_LOG_FILE="$LOG_FILE" "$BASH_PATH" "$path" 2>&1)"
+  rc=$?
+  [ -n "$out" ] && printf '%s\n' "$out" >>"$LOG_FILE"
+  [ "$rc" -eq 0 ]
+}
+
+# Restart the loop when the script on disk is no longer the version this process
+# loaded. `exec` keeps the PID, so the tmux session survives. Bounded: after
+# `PROBE_MAX_SELF_RESTARTS` automatic restarts in one lineage the loop stops
+# restarting (and logs an `ALARM`) instead of restart-looping; a version that
+# fails its startup checks is refused the same way and the running version keeps
+# probing.
+guard_script_change() {
+  local current new_count
+  [ -n "$STARTUP_FINGERPRINT" ] || return 0
+  current="$(script_fingerprint "$SCRIPT_PATH" 2>/dev/null || true)"
+  [ -n "$current" ] || return 0
+  [ "$current" = "$STARTUP_FINGERPRINT" ] && return 0
+
+  if [ "$SELF_RESTART_DISABLED" -eq 1 ]; then
+    STARTUP_FINGERPRINT="$current"
+    log "$SCRIPT_REL changed again (${current:0:12}) but self-restart disabled; ALARM: still running the previously loaded version"
+    return 0
+  fi
+
+  new_count=$((SELF_RESTART_COUNT + 1))
+  if [ "$new_count" -gt "$MAX_SELF_RESTARTS" ]; then
+    SELF_RESTART_DISABLED=1
+    STARTUP_FINGERPRINT="$current"
+    log "ALARM: self-restart disabled after $SELF_RESTART_COUNT automatic restart(s) (PROBE_MAX_SELF_RESTARTS=$MAX_SELF_RESTARTS); the probe keeps running the loaded version — check this log and scripts/probe_doctor.sh"
+    return 0
+  fi
+
+  if ! verify_new_version "$SCRIPT_PATH"; then
+    SELF_RESTART_DISABLED=1
+    STARTUP_FINGERPRINT="$current"
+    log "ALARM: the new $SCRIPT_REL (${current:0:12}) does not pass its startup checks; self-restart disabled, keeping the running version (fix it, then the next merge retries)"
+    return 0
+  fi
+
+  log "detected a new $SCRIPT_REL (${STARTUP_FINGERPRINT:0:12} -> ${current:0:12}); restarting the probe automatically"
+  write_self_restart_state "$new_count" "$current"
+  exec "$BASH_PATH" "$SCRIPT_PATH"
+}
 
 # ── Startup guard (issue #92 addendum) ───────────────────────────────────────
 
@@ -134,12 +258,17 @@ require_base_branch() {
   return 0
 }
 
-require_base_branch || exit 2
-log "probe stages skipped: '${SKIP_STAGES}' (default history: Actions owns data/history/; #113)"
-if [ -n "${PROBE_CHECK_ONLY:-}" ]; then
-  log "PROBE_CHECK_ONLY set; startup checks passed on '$BASE_BRANCH'"
-  echo "probe: startup checks passed on '$BASE_BRANCH'"
-  exit 0
+# Sourcing mode (tests only, like PROBE_CHECK_ONLY): define the helpers without
+# the startup guards, so a test can exercise a single function against a
+# scratch repository.
+if [ -z "${PROBE_LIB_ONLY:-}" ]; then
+  require_base_branch || exit 2
+  log "probe stages skipped: '${SKIP_STAGES}' (default history: Actions owns data/history/; #113)"
+  if [ -n "${PROBE_CHECK_ONLY:-}" ]; then
+    log "PROBE_CHECK_ONLY set; startup checks passed on '$BASE_BRANCH'"
+    echo "probe: startup checks passed on '$BASE_BRANCH'"
+    exit 0
+  fi
 fi
 
 # Run a stage, appending its output to the log as evidence.
@@ -256,6 +385,89 @@ rebase_in_progress() {
 
 unmerged_paths() { git diff --name-only --diff-filter=U 2>/dev/null; }
 
+# A merge (not a rebase) stopped in this worktree?
+merge_in_progress() {
+  local merge_head
+  merge_head="$(git rev-parse --git-path MERGE_HEAD 2>/dev/null)"
+  [ -n "$merge_head" ] && [ -f "$merge_head" ]
+}
+
+# Half-merge leftovers (issue #121). A killed cycle — or a conflict resolution
+# that gave up — can leave a rebase/merge in progress with a stale index. The
+# symptom is the one that poisoned 2026-10-19: `error: Pulling is not possible
+# because you have unmerged files`. on *every* following cycle, because nothing
+# ever aborted the operation. Clearing it at the start of a cycle costs nothing
+# when there is nothing to clear and makes the state self-healing otherwise.
+clear_half_merge_state() {
+  local cleared=0
+  if rebase_in_progress; then
+    if git rebase --abort >>"$LOG_FILE" 2>&1; then
+      cleared=1
+    elif git rebase --quit >>"$LOG_FILE" 2>&1; then
+      cleared=1
+    fi
+  fi
+  if merge_in_progress; then
+    git merge --abort >>"$LOG_FILE" 2>&1 && cleared=1
+  fi
+  if [ "$cleared" -eq 1 ]; then
+    log "cleared a leftover half-merge/rebase state before syncing (issue #121)"
+  fi
+  return 0
+}
+
+# Last resort of the sync gate (#121): throw the local side away and take the
+# remote. Only the probe's own footprint (`data/`) may be discarded (issue #92).
+discard_to_remote() {
+  local count="$1"
+  clear_half_merge_state
+  git fetch origin >>"$LOG_FILE" 2>&1
+  if ! probe_owns_worktree; then
+    log "refusing reset --hard '@{u}': the working tree holds non-probe changes ($(git diff --name-only 2>/dev/null | tr '\n' ' ')); leaving it untouched"
+    return 1
+  fi
+  if git reset --hard '@{u}' >>"$LOG_FILE" 2>&1; then
+    log "discarded local $count file(s), the remote version wins"
+    return 0
+  fi
+  log "reset --hard '@{u}' failed after $count unmerged file(s); the index is still dirty"
+  return 1
+}
+
+# Final gate of every sync (issue #121). Resolving path by path was not enough:
+# the 2026-10-19 clone kept 7 `UU` files (`data/fetch-schedule.json`,
+# `data/history/*`) and every following cycle died on
+# `Pulling is not possible because you have unmerged files` (40 log lines).
+#
+# Two shapes, two repairs:
+#   * the conflict sits in an **unfinished merge/rebase** (a killed cycle, the
+#     reported case) → abort it and `reset --hard '@{u}'`, logging how many local
+#     files were dropped (the remote is authoritative for `data/` anyway);
+#   * the index is unmerged but **no** operation is running (a conflicted
+#     `--autostash` pop, issue #113) → resolve each path in favour of the remote
+#     like `reconcile_failed_pull` does, which keeps the cycle's unpushed ledger
+#     commit. Only when that fails is the local side discarded.
+assert_no_unmerged() {
+  local conflicts count path failed=0
+  conflicts="$(unmerged_paths)"
+  [ -z "$conflicts" ] && return 0
+  count="$(printf '%s\n' "$conflicts" | wc -l | tr -d ' ')"
+  if rebase_in_progress || merge_in_progress; then
+    log "sync left $count unmerged file(s) in an unfinished merge/rebase ($(printf '%s' "$conflicts" | tr '\n' ' ')); taking the remote (Actions) version"
+    discard_to_remote "$count"
+    return $?
+  fi
+  log "sync left $count unmerged file(s) ($(printf '%s' "$conflicts" | tr '\n' ' ')); taking the remote (Actions) version"
+  for path in $conflicts; do
+    resolve_conflict_path "$path" || failed=1
+  done
+  if [ "$failed" -eq 0 ] && [ -z "$(unmerged_paths)" ]; then
+    return 0
+  fi
+  log "could not resolve every unmerged path; discarding the local side"
+  discard_to_remote "$count"
+}
+
 # Resolve one conflicted path and stage the result, logging which side won.
 resolve_conflict_path() {
   local path="$1" side label
@@ -341,12 +553,17 @@ reconcile_failed_pull() {
 }
 
 # `pull --rebase`, resolving conflicts instead of aborting. This is the single
-# path both the start-of-cycle sync and a rejected push use.
+# path both the start-of-cycle sync and a rejected push use. Every path out of it
+# is gated by `assert_no_unmerged` (issue #121): a sync may not leave a
+# half-merged index behind.
 pull_rebase_resolving() {
   if git pull --rebase --autostash >>"$LOG_FILE" 2>&1; then
+    assert_no_unmerged || return 1
     return 0
   fi
-  reconcile_failed_pull
+  reconcile_failed_pull || return 1
+  assert_no_unmerged || return 1
+  return 0
 }
 
 # Last resort: the rebase cannot be completed, so throw the local state away —
@@ -377,6 +594,9 @@ sync_with_remote() {
   while [ "$attempt" -le "$SYNC_ATTEMPTS" ]; do
     if pull_rebase_resolving; then
       [ "$attempt" -gt 1 ] && log "synced with remote on attempt $attempt/$SYNC_ATTEMPTS"
+      # Last step of the success path (#121): zero unmerged paths, or the remote
+      # version is taken and the loss is logged.
+      assert_no_unmerged || return 1
       return 0
     fi
     log "sync with remote failed (attempt $attempt/$SYNC_ATTEMPTS)"
@@ -540,10 +760,17 @@ send_daily_summary() {
 
 cycle() {
   local failed=0 now
+  # A killed cycle may have left a half-merge behind; clear it before anything
+  # else so the pull below is not refused (issue #121).
+  clear_half_merge_state
   # A killed pre-#92 loop may have left a half-finished staging of the whole
   # `data/` tree in the index; drop it first so no snapshot can ride a commit.
   unstage_foreign_paths
   sync_with_remote || log "start-of-cycle sync failed; continuing on the current tree"
+  # `git pull` above is what brings a merged change of this very script onto
+  # disk: re-check the fingerprint now so the fix applies within *this* cycle
+  # instead of after the next one (issue #121).
+  guard_script_change
 
   run_stage download "$PYTHON" scripts/download_data.py || failed=1
   run_stage process "$PYTHON" scripts/process_data.py || failed=1
@@ -597,8 +824,15 @@ cycle() {
 }
 
 cycles=0
+# Sourced for its helpers only (tests): stop before the loop.
+if [ -n "${PROBE_LIB_ONLY:-}" ]; then
+  return 0 2>/dev/null || exit 0
+fi
 while :; do
   cycles=$((cycles + 1))
+  # A merge that changed this script must apply on its own, within one cycle
+  # (issue #121): nothing else can reload a long-lived bash process.
+  guard_script_change
   cycle_start="$SECONDS"
   log "probe cycle $cycles start (interval ${INTERVAL_SECONDS}s, max_push_retries ${MAX_PUSH_RETRIES})"
   cycle || log "probe cycle $cycles finished with errors"

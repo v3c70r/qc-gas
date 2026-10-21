@@ -2,9 +2,10 @@
 import { t, onLanguageChange } from './i18n.js';
 import { BASEMAP_STYLE, applyBasemapPalette } from './map-style.js';
 import { brandColor, brandAbbr, isMembershipBrand } from './constants.js';
-import { updateStats } from './stats.js';
-import { setDataSnapshot, isResponseFromCache } from './pwa.js';
+import { updateStats, showPopup } from './stats.js';
+import { setDataSnapshot, isResponseFromCache, setDataError, clearDataError, setDataRetryHandler } from './pwa.js';
 import { startFreshness, setAppliedSnapshot } from './freshness.js';
+import { debugLog } from './debug.js';
 
 const mapboxToken = import.meta.env.VITE_MAPBOX_ACCESS_TOKEN;
 
@@ -230,6 +231,7 @@ export async function initMap() {
   // minimal `light-v11`: see js/map-style.js and docs/map-style.md.
   const styleStart = typeof performance !== 'undefined' ? performance.now() : Date.now();
   let basemapStyleLoadMs = null;
+  let basemapIdleMs = null;
 
   map = new mapboxgl.Map({
     container: 'map',
@@ -251,6 +253,18 @@ export async function initMap() {
       basemapStyleLoadMs = Math.round(now - styleStart);
       window.__qcBasemapStyleLoadMs = basemapStyleLoadMs;
       console.info(`Basemap ${BASEMAP_STYLE} style.load in ${basemapStyleLoadMs} ms`);
+    }
+  });
+
+  // `idle` = every tile settled (or failed). Recorded once, only as a number for
+  // the perf baseline (issue #124 / `npm run measure:map-load`); when tiles are
+  // blocked (URL-restricted token on localhost) this simply never fires and the
+  // hook stays undefined, which the measuring script tolerates.
+  map.on('idle', () => {
+    if (basemapIdleMs === null) {
+      const now = typeof performance !== 'undefined' ? performance.now() : Date.now();
+      basemapIdleMs = Math.round(now - styleStart);
+      window.__qcBasemapIdleMs = basemapIdleMs;
     }
   });
 
@@ -458,7 +472,7 @@ export function applyStations(data, { fromCache = false } = {}) {
   currentStations = { ...data, features: validFeatures };
   stationCount = validFeatures.length;
 
-  console.log('Loaded', validFeatures.length, 'stations (excluded', rawFeatures.length - validFeatures.length, 'invalid coordinates)');
+  debugLog('Loaded', validFeatures.length, 'stations (excluded', rawFeatures.length - validFeatures.length, 'invalid coordinates)');
 
   syncBrandFilters(validFeatures);
   syncRegionOptions(validFeatures);
@@ -488,21 +502,67 @@ export function applyStations(data, { fromCache = false } = {}) {
   window.dispatchEvent(new CustomEvent('stations:loaded', { detail: currentStations }));
 }
 
-// Load stations data (first paint only — later updates go through applyStations)
-export async function loadStations() {
-  document.getElementById('loading').classList.add('active');
+// ── Station snapshot loading (with classified failures, issue #119) ──
+// `data/stations.json` is a derived artifact served by Pages, so the first load
+// can fail for three very different reasons. Each gets its own tag: the user
+// sees one localized message, while the console keeps the distinction that
+// makes the failure diagnosable (bad URL vs flaky network vs mangled body).
+let lastLoadError = null;
+
+function loadErrorWithKind(kind, { status = null, message = '', cause = null } = {}) {
+  const error = new Error(message || kind);
+  error.kind = kind;
+  error.status = status;
+  if (cause) error.cause = cause;
+  return error;
+}
+
+async function fetchStationsSnapshot() {
+  let response;
+  try {
+    response = await fetch('data/stations.json');
+  } catch (error) {
+    // fetch() rejects (TypeError) only for transport-level failures.
+    throw loadErrorWithKind('network', { message: 'network request failed', cause: error });
+  }
+
+  if (!response.ok) {
+    throw loadErrorWithKind('http', { status: response.status, message: `HTTP ${response.status}` });
+  }
 
   try {
-    const response = await fetch('data/stations.json');
-    const data = await response.json();
-    applyStations(data, { fromCache: isResponseFromCache(response) });
+    return { data: await response.json(), response };
   } catch (error) {
-    console.error('Error loading stations:', error);
-    document.getElementById('data-status').textContent = 'Erreur de chargement des données';
-  } finally {
-    document.getElementById('loading').classList.remove('active');
+    throw loadErrorWithKind('parse', { message: 'response body is not valid JSON', cause: error });
   }
 }
+
+// Load stations data (first paint only — later updates go through applyStations).
+// `showLoading: false` is used by the retry button: the map stays usable while
+// a second attempt runs instead of flashing the full-screen spinner.
+export async function loadStations({ showLoading = true } = {}) {
+  const loadingEl = document.getElementById('loading');
+  if (showLoading && loadingEl) loadingEl.classList.add('active');
+
+  try {
+    const { data, response } = await fetchStationsSnapshot();
+    lastLoadError = null;
+    clearDataError();
+    applyStations(data, { fromCache: isResponseFromCache(response) });
+  } catch (error) {
+    const kind = error?.kind || 'network';
+    const status = error?.status ?? null;
+    lastLoadError = { kind, status };
+    console.error(`[data-load:${kind}]${status ? ` ${status}` : ''} station snapshot failed`, error);
+    setDataError({ kind, status });
+  } finally {
+    if (showLoading && loadingEl) loadingEl.classList.remove('active');
+  }
+}
+
+// The retry button lives in pwa.js (sole #data-status writer); it calls back
+// into this module so a retry re-enters the exact same load path.
+setDataRetryHandler(() => loadStations({ showLoading: false }));
 
 // Automatic refresh triggers (issue #47): re-apply a newer snapshot in place
 // when the tab becomes visible again and every 10 minutes while it stays so.
@@ -621,7 +681,7 @@ function addStationLayers() {
   // Individual point click event
   map.on('click', 'unclustered-points', (e) => {
     if (e.features && e.features.length > 0) {
-      showPopup(e.features[0]);
+      showStationPopup(e.features[0]);
     }
   });
 
@@ -853,9 +913,9 @@ function toRad(deg) { return deg * Math.PI / 180; }
 function toDeg(rad) { return rad * 180 / Math.PI; }
 
 // Show popup (called from unclustered-points click)
-function showPopup(feature) {
-  // Delegate to shared popup in stats.js
-  import('./stats.js').then(mod => mod.showPopup(feature));
+function showStationPopup(feature) {
+  // Delegate to the shared popup in stats.js
+  showPopup(feature);
 }
 
 // Test hook: expose the current number of features in the station source.
@@ -881,7 +941,9 @@ window.__qcGasMap = {
     return [[b.getWest(), b.getSouth()], [b.getEast(), b.getNorth()]];
   },
   getView: () => (map && map.getCenter ? { center: map.getCenter(), zoom: map.getZoom() } : null),
-  getBasemapStyleLoadMs: () => (typeof window !== 'undefined' ? window.__qcBasemapStyleLoadMs ?? null : null)
+  getBasemapStyleLoadMs: () => (typeof window !== 'undefined' ? window.__qcBasemapStyleLoadMs ?? null : null),
+  // Last classified snapshot-load failure (issue #119); null after a success.
+  getLastLoadError: () => lastLoadError
 };
 
 export { map, currentStations, MONTREAL_CENTER, addRangeCircle };

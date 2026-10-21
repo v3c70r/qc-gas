@@ -10,6 +10,7 @@ import { initWatch } from './watch.js';
 import { initDataBackup } from './databackup.js';
 import { initSearch, clearSearch, isSearchActive } from './search.js';
 import { initPWA } from './pwa.js';
+import { debugLog } from './debug.js';
 
 function initKeyboardShortcuts() {
   document.addEventListener('keydown', (e) => {
@@ -59,7 +60,7 @@ function initKeyboardShortcuts() {
 }
 
 function initApp() {
-  console.log('Initializing Gas Price Quebec App...');
+  debugLog('Initializing Gas Price Quebec App...');
 
   const lang = getStoredLanguage();
   createLanguageSelector();
@@ -92,7 +93,6 @@ function initApp() {
   } else {
     document.getElementById('sidebar').classList.add('collapsed');
   }
-  console.log('App initialized!');
 }
 
 document.addEventListener('DOMContentLoaded', initApp);

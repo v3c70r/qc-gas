@@ -19,6 +19,8 @@ import { translations, getLanguage } from './i18n.js';
 
 // Relative path so the app works both at the domain root and under a sub-path.
 export const DATA_URL = 'data/stations.json';
+// The published fetch timetable (#91/#93), read only for its cadence (#120).
+export const SCHEDULE_URL = 'data/fetch-schedule.json';
 // Background check cadence while the tab stays visible.
 export const CHECK_INTERVAL_MS = 10 * 60 * 1000;
 // Never hit the network more often than this, whatever the trigger was.
@@ -27,6 +29,113 @@ export const MIN_REFRESH_GAP_MS = 5 * 60 * 1000;
 export const LABEL_TICK_MS = 60 * 1000;
 // A snapshot younger than this is simply "just now".
 const JUST_NOW_THRESHOLD_S = 45;
+const MINUTE_MS = 60 * 1000;
+
+// ── Staleness thresholds (issue #120) ─────────────────────────────────────
+// The timetable already states how often a snapshot is expected: every local
+// hour maps to the maximum gap it allows (`max_gap_minutes`). Two ages are
+// derived from it instead of hard-coded magic numbers:
+//   warn  = 2× the gap allowed in the current hour (busy 20 min → 40 min)
+//   stale = 6× that same gap, capped at 6 h so a quiet night can never label a
+//           day-old snapshot as merely "not the latest".
+export const WARN_FACTOR = 2;
+export const STALE_FACTOR = 6;
+export const STALE_CAP_MS = 6 * 60 * MINUTE_MS;
+// Used until the timetable arrives, and whenever it cannot be read at all.
+export const FALLBACK_WARN_MS = 60 * MINUTE_MS;
+export const FALLBACK_STALE_MS = 6 * 60 * MINUTE_MS;
+export const FALLBACK_THRESHOLDS = Object.freeze({
+  warnMs: FALLBACK_WARN_MS,
+  staleMs: FALLBACK_STALE_MS,
+  gapMinutes: null,
+  source: 'fallback'
+});
+
+// The timetable is keyed by *local* hour in Québec, whatever the visitor's
+// timezone is. `hourCycle: 'h23'` avoids the "24" that some engines return.
+function hourInTimeZone(nowMs, timeZone) {
+  try {
+    const parts = new Intl.DateTimeFormat('en-US', {
+      hour: 'numeric',
+      hourCycle: 'h23',
+      timeZone: timeZone || undefined
+    }).formatToParts(new Date(nowMs));
+    const hour = Number(parts.find((part) => part.type === 'hour')?.value);
+    if (Number.isInteger(hour)) return hour % 24;
+  } catch {
+    // Unknown timezone or missing Intl: fall through to the host clock.
+  }
+  return new Date(nowMs).getHours();
+}
+
+function gapForHour(schedule, hour) {
+  const gaps = schedule?.max_gap_minutes;
+  if (!gaps || typeof gaps !== 'object') return null;
+  const minutes = Number(gaps[String(hour)]);
+  return Number.isFinite(minutes) && minutes > 0 ? minutes : null;
+}
+
+/**
+ * Derive the two staleness thresholds from a published timetable.
+ *
+ * @param {object|null} schedule parsed `data/fetch-schedule.json`
+ * @param {number} [nowMs] instant whose local hour picks the gap
+ * @returns {{warnMs: number, staleMs: number, gapMinutes: number|null, source: string}}
+ */
+export function thresholdsFromSchedule(schedule, nowMs = Date.now()) {
+  const timeZone = typeof schedule?.timezone === 'string' ? schedule.timezone : null;
+  const gapMinutes = gapForHour(schedule, hourInTimeZone(nowMs, timeZone));
+  if (gapMinutes === null) return FALLBACK_THRESHOLDS;
+  return {
+    warnMs: WARN_FACTOR * gapMinutes * MINUTE_MS,
+    staleMs: Math.min(STALE_FACTOR * gapMinutes * MINUTE_MS, STALE_CAP_MS),
+    gapMinutes,
+    source: 'schedule'
+  };
+}
+
+/** 'fresh' | 'warn' | 'stale' for a snapshot of the given age. */
+export function classifyFreshness(ageMs, thresholds = FALLBACK_THRESHOLDS) {
+  const age = Number(ageMs);
+  if (!Number.isFinite(age) || age < 0) return 'fresh';
+  if (age >= thresholds.staleMs) return 'stale';
+  if (age >= thresholds.warnMs) return 'warn';
+  return 'fresh';
+}
+
+// Last successfully parsed timetable; null means "use the fallback".
+let schedule = null;
+
+/** Thresholds that apply right now (the gap depends on the current hour). */
+export function getFreshnessThresholds(nowMs = Date.now()) {
+  return schedule ? thresholdsFromSchedule(schedule, nowMs) : FALLBACK_THRESHOLDS;
+}
+
+/** The parsed timetable currently in use, or null while falling back. */
+export function getFreshnessSchedule() {
+  return schedule;
+}
+
+/** Install a timetable (tests / console); `null` restores the fallback. */
+export function setFreshnessSchedule(next) {
+  schedule = next && typeof next === 'object' && !Array.isArray(next) ? next : null;
+  notify();
+}
+
+/**
+ * Read the published timetable without ever blocking the first paint.
+ * Any failure (404, offline, mangled JSON) keeps the fixed fallback in place.
+ */
+export async function loadFreshnessSchedule(url = SCHEDULE_URL) {
+  try {
+    const response = await fetch(url, { cache: 'no-store' });
+    if (!response || !response.ok) return null;
+    setFreshnessSchedule(await response.json());
+    return schedule;
+  } catch {
+    return null;
+  }
+}
 
 // ── Relative time formatting (pure) ───────────────────────────────────────
 
@@ -217,6 +326,9 @@ export function startFreshness({ applyStations } = {}) {
   if (started || typeof document === 'undefined') return;
   started = true;
   lastCheckAt = Date.now();
+  // Requested alongside the snapshot, never awaited: a missing or slow
+  // timetable only delays the thresholds, never the map (#120).
+  loadFreshnessSchedule();
 
   document.addEventListener('visibilitychange', () => {
     // Coming back from the background is the moment a stale price matters most.
@@ -247,6 +359,13 @@ if (typeof window !== 'undefined') {
     getLastAppliedAt,
     getLastCheckAt,
     setLastCheckAt,
-    tick
+    tick,
+    // Tri-state thresholds (issue #120).
+    thresholdsFromSchedule,
+    classifyFreshness,
+    getFreshnessThresholds,
+    getFreshnessSchedule,
+    setFreshnessSchedule,
+    loadFreshnessSchedule
   };
 }
