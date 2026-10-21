@@ -1,1 +1,1 @@
-{"v":1,"last_fetch_at":"2026-10-21T16:34:37Z","fetches":405,"last_reason":"event \"push\": fetching unconditionally","event":"push"}
+{"v":1,"last_fetch_at":"2026-10-21T16:45:10Z","fetches":406,"last_reason":"event \"repository_dispatch\" (not budget-counted): slot 16:40 due (5 min ago)","event":"repository_dispatch"}
