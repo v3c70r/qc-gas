@@ -138,7 +138,7 @@ jobs:
             [ -f "$f" ] || continue
             brotli -fZ "$f" -o "$f.br"
           done
-          for f in data/history/*.json; do
+          for f in data/history/*.json data/history/station-history/*.json; do
             [ -f "$f" ] || continue
             brotli -fZ "$f" -o "$f.br"
           done

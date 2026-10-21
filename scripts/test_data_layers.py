@@ -48,7 +48,7 @@ PERSISTENT_STATE = (
     'history/2026-10.json',
     'history/monthly.json',
     'history/daily.json',
-    'history/station-history.json',
+    'history/station-history/2026-10.json',
     'history/station-changes.json',
 )
 
@@ -75,6 +75,7 @@ def seed_data_dir(data_dir):
         'history/index.json.br': 'br',
         'history/2026-10.json': '{}',
         'history/station-changes.json': '{}',
+        'history/station-history/2026-10.json': '{}',
         'probe-local/events.jsonl': '{}\n',
     }
     data_dir = Path(data_dir)
@@ -134,6 +135,7 @@ class ClassificationTest(unittest.TestCase):
             'data/history/2026-10.json',
             'data/history/index.json',
             'data/history/station-changes.json',
+            'data/history/station-history/2026-10.json',
             'data/update-profile.json',
         ])
         # The latency ledger is persistent even when this workspace has not

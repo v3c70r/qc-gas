@@ -7,6 +7,9 @@ computes region-level aggregations for regular/super/diesel (avg/min/max/count),
 then stores them in a compact, sharded, tiered layout under ``data/history/``:
 
   * ``data/history/YYYY-MM.json``  -- raw 6h buckets, kept for the last 14 days
+  * ``data/history/station-history/YYYY-MM.json`` -- station daily tier (issue
+    #114: one shard per month, so a fetch rewrites one file instead of the whole
+    1.36 MB table)
   * ``data/history/daily.json``    -- daily aggregation, kept for 12 months
   * ``data/history/monthly.json``  -- monthly aggregation, kept long-term
   * ``data/history/index.json``    -- small metadata manifest
@@ -39,7 +42,12 @@ INDEX_FILE = HISTORY_DIR / 'index.json'
 DAILY_FILE = HISTORY_DIR / 'daily.json'
 MONTHLY_FILE = HISTORY_DIR / 'monthly.json'
 MERGED_FILE = DATA_DIR / 'history.json'
-STATION_HISTORY_FILE = HISTORY_DIR / 'station-history.json'
+# Issue #114: the station daily tier used to be one 1.36 MB file that every
+# fetch rewrote, so each data commit added a full new blob (the last volume
+# lever after #92/#103). It is now sharded by month and only the shard of the
+# current month is rewritten, and only when its content actually changes.
+STATION_HISTORY_DIR = HISTORY_DIR / 'station-history'
+STATION_HISTORY_FILE = HISTORY_DIR / 'station-history.json'  # legacy, migrated then deleted
 
 BUCKET_SECONDS = 6 * 3600
 STATION_DAILY_DAYS = 180  # keep one station-level daily snapshot per day for 6 months
@@ -67,6 +75,18 @@ def save_json(path, obj, compact=True):
         else:
             json.dump(obj, f, ensure_ascii=False, indent=2)
         f.write('\n')
+
+
+def save_json_if_changed(path, obj, compact=True):
+    """Write ``obj`` only when it differs from what is already on disk (issue #114).
+
+    An unchanged file is an unchanged blob, so skipping the write keeps a fetch
+    from adding bytes to git history for nothing.
+    """
+    if load_json(path) == obj:
+        return False
+    save_json(path, obj, compact)
+    return True
 
 
 def parse_iso(value):
@@ -231,6 +251,213 @@ def update_station_history(store, snapshot, today, cutoff_day):
             'monthly': 'none',
         },
     }
+
+
+# ── Station history month shards (issue #114) ────────────────────────────────
+
+def month_of_day(day_key):
+    """``2026-10-19`` -> ``2026-10``."""
+    return str(day_key)[:7]
+
+
+def month_shard_name(month):
+    return f'{month}.json'
+
+
+def _shard_store(shard):
+    """The single-store view of one shard (what ``update_station_history`` wants)."""
+    return {'v': 1, 't': list(shard.get('t') or []), 's': shard.get('s') or {}}
+
+
+def _shard(month, days, sites):
+    return {'v': 1, 'm': month, 't': list(days), 's': sites}
+
+
+def split_station_store(store):
+    """Split the legacy single store into ``{YYYY-MM: shard}`` (one-off migration)."""
+    days = [str(d) for d in ((store or {}).get('t') or [])]
+    sites = (store or {}).get('s') or {}
+    shards = {}
+    for month in sorted({month_of_day(d) for d in days}):
+        idx = [i for i, d in enumerate(days) if month_of_day(d) == month]
+        out_sites = {}
+        for key, site in sites.items():
+            new_site = {}
+            for short, arr in (site or {}).items():
+                values = [arr[i] if i < len(arr) else None for i in idx]
+                if any(v is not None for v in values):
+                    new_site[short] = values
+            if new_site:
+                out_sites[key] = new_site
+        shards[month] = _shard(month, [days[i] for i in idx], out_sites)
+    return shards
+
+
+def merge_station_shards(shards):
+    """Merge ``{YYYY-MM: shard}`` back into the day-aligned single store."""
+    days = sorted({d for shard in (shards or {}).values()
+                   for d in (shard.get('t') or [])})
+    index = {day: i for i, day in enumerate(days)}
+    sites = {}
+    for month in sorted(shards or {}):
+        shard = shards[month]
+        shard_days = shard.get('t') or []
+        for key, site in (shard.get('s') or {}).items():
+            target = sites.setdefault(key, {})
+            for short, arr in (site or {}).items():
+                out = target.setdefault(short, [None] * len(days))
+                for i, day in enumerate(shard_days):
+                    value = arr[i] if i < len(arr) else None
+                    if value is not None:
+                        out[index[day]] = value
+    return {'v': 1, 't': days, 's': sites}
+
+
+def merge_month_shard(primary, secondary):
+    """Union two shards of the **same** month; ``primary`` wins on shared days.
+
+    Used for the legacy-file migration (issue #114 review round 1): a checkout
+    can carry a legacy ``station-history.json`` *and* a partly populated shard
+    directory, so neither source may be dropped on the floor.
+    """
+    days = sorted(set(primary.get('t') or []) | set(secondary.get('t') or []))
+    index = {day: i for i, day in enumerate(days)}
+    sites = {}
+    for shard in (secondary, primary):  # primary applied last -> wins
+        shard_days = shard.get('t') or []
+        for key, site in (shard.get('s') or {}).items():
+            target = sites.setdefault(key, {})
+            for short, arr in (site or {}).items():
+                out = target.setdefault(short, [None] * len(days))
+                for i, day in enumerate(shard_days):
+                    value = arr[i] if i < len(arr) else None
+                    if value is not None:
+                        out[index[day]] = value
+    month = primary.get('m') or secondary.get('m') or (month_of_day(days[0]) if days else '')
+    return _shard(month, days, sites)
+
+
+def _prune_shard(shard, cutoff_day):
+    """Drop days older than ``cutoff_day`` from one shard (keeps arrays aligned)."""
+    days = shard.get('t') or []
+    keep = [i for i, day in enumerate(days) if day >= cutoff_day]
+    if len(keep) == len(days):
+        return shard
+    sites = {}
+    for key, site in (shard.get('s') or {}).items():
+        new_site = {}
+        for short, arr in (site or {}).items():
+            values = [arr[i] if i < len(arr) else None for i in keep]
+            if any(v is not None for v in values):
+                new_site[short] = values
+        if new_site:
+            sites[key] = new_site
+    name = shard.get('m') or (month_of_day(days[0]) if days else '')
+    return _shard(name, [days[i] for i in keep], sites)
+
+
+def update_station_shards(shards, snapshot, today, cutoff_day):
+    """Upsert one day into its month shard; prune expired days/shards.
+
+    Returns ``(shards, changed_months)``. ``changed_months`` is exactly the set
+    of files the caller has to write (or delete, when the month is no longer in
+    ``shards``): the whole point of #114 is that a fetch touches one shard.
+    """
+    current = {month: dict(shard) for month, shard in (shards or {}).items()}
+    changed = set()
+
+    month = month_of_day(today)
+    base = current.get(month) or _shard(month, [], {})
+    # One recorded day is final: the daily tier is a once-per-day snapshot, and
+    # freezing it is what keeps the shard append-only: a fetch that sees today
+    # already recorded must not rewrite the month at all.
+    if today not in (base.get('t') or []):
+        updated = update_station_history(_shard_store(base), snapshot, today, cutoff_day)
+        new_shard = _shard(month, updated['t'], updated['s'])
+        if new_shard != base:
+            current[month] = new_shard
+            changed.add(month)
+
+    for name, shard in list(current.items()):
+        pruned = _prune_shard(shard, cutoff_day)
+        if not pruned.get('t'):
+            del current[name]
+            changed.add(name)
+        elif pruned != shard:
+            current[name] = pruned
+            changed.add(name)
+
+    return current, sorted(changed)
+
+
+def load_station_shards():
+    """Read ``data/history/station-history/YYYY-MM.json`` shards.
+
+    A legacy ``station-history.json`` (pre-#114) is split into the same shards on
+    read and unioned with any shard the directory already holds (the disk copy is
+    the source of truth for a day both layouts carry). ``save_station_shards()``
+    deletes the legacy file only once every month is safely on disk.
+    """
+    shards = {}
+    if STATION_HISTORY_DIR.is_dir():
+        for path in sorted(STATION_HISTORY_DIR.glob('*.json')):
+            month = path.stem
+            if len(month) != 7 or month[4] != '-':
+                continue
+            data = load_json(path)
+            if data:
+                shards[month] = data
+    legacy = load_json(STATION_HISTORY_FILE)
+    if legacy:
+        for month, shard in split_station_store(legacy).items():
+            if month in shards:
+                # Both layouts carry this month: union the days, disk wins.
+                shards[month] = merge_month_shard(shards[month], shard)
+            else:
+                shards[month] = shard
+    return shards
+
+
+def save_station_shards(shards, changed_months):
+    """Write the shards the store changed, then retire the legacy file.
+
+    ``changed_months`` is the *update* delta, but the store can also differ from
+    what is on disk for reasons the update does not report — most importantly a
+    month that only existed in the legacy single file (migration). Writing just
+    ``changed_months`` and then deleting the legacy file would lose that month
+    permanently, so every in-memory shard whose on-disk copy differs is written
+    too, and the legacy file is only removed once all months are safely on disk.
+    """
+    STATION_HISTORY_DIR.mkdir(parents=True, exist_ok=True)
+    to_delete = set()
+    to_write = set()
+    for month in changed_months:
+        if shards.get(month) is None:
+            to_delete.add(month)
+        else:
+            to_write.add(month)
+    for month, shard in shards.items():
+        if month in to_write:
+            continue
+        if load_json(STATION_HISTORY_DIR / month_shard_name(month)) != shard:
+            to_write.add(month)
+
+    for month in sorted(to_write):
+        save_json(STATION_HISTORY_DIR / month_shard_name(month), shards[month])
+    for month in sorted(to_delete):
+        (STATION_HISTORY_DIR / month_shard_name(month)).unlink(missing_ok=True)
+    # Drop any shard file that is no longer part of the store (e.g. left over
+    # from a previous retention window or an interrupted run).
+    for path in STATION_HISTORY_DIR.glob('*.json'):
+        if path.stem not in shards:
+            path.unlink(missing_ok=True)
+
+    # Retire the legacy single file only once every month of the store exists on
+    # disk: `data/history/**` is the only copy that exists (#114 review).
+    if STATION_HISTORY_FILE.exists():
+        on_disk = {path.stem for path in STATION_HISTORY_DIR.glob('*.json')}
+        if set(shards) <= on_disk:
+            STATION_HISTORY_FILE.unlink()
 
 
 # ── Snapshot merging (weighted avg / min / max / count) ─────────────────────
@@ -432,17 +659,26 @@ def main():
         print(f'Source unchanged ({src}); skipping duplicate snapshot')
 
     # ── Station-level daily history (real per-station prices) ──
-    station_store = load_json(STATION_HISTORY_FILE) or {'v': 1, 't': [], 's': {}}
+    # Issue #114: one shard per month, and only the shard(s) that actually
+    # changed are written, so a fetch no longer rewrites the full table.
     station_cutoff_day = day_key_of(src_dt - timedelta(days=STATION_DAILY_DAYS))
-    station_store = update_station_history(
-        station_store,
+    station_shards = load_station_shards()
+    station_shards, changed_months = update_station_shards(
+        station_shards,
         build_station_snapshot(stations),
         day_key_of(src_dt),
         station_cutoff_day,
     )
-    save_json(STATION_HISTORY_FILE, station_store)
-    print(f'Station history: {len(station_store["t"])} days, '
-          f'{len(station_store["s"])} stations')
+    save_station_shards(station_shards, changed_months)
+    index['station_history'] = {
+        'months': sorted(station_shards),
+        'retention_days': STATION_DAILY_DAYS,
+        'stations': sum(len(shard.get('s') or {}) for shard in station_shards.values()),
+        'days': sum(len(shard.get('t') or []) for shard in station_shards.values()),
+    }
+    print(f'Station history: {index["station_history"]["days"]} days, '
+          f'{index["station_history"]["stations"]} stations, '
+          f'{len(station_shards)} month shard(s); wrote {len(changed_months)}')
 
     # ── Retention: raw (last RAW_DAYS) → daily → monthly ──
     cutoff_raw_day = day_key_of(src_dt - timedelta(days=RAW_DAYS))
@@ -470,7 +706,7 @@ def main():
 
     # Persist raw shards now so a later failure can't lose the rolled tiers.
     for month, shard in shards.items():
-        save_json(HISTORY_DIR / f'{month}.json', shard)
+        save_json_if_changed(HISTORY_DIR / f'{month}.json', shard)
 
     # Delete month shards that are now empty/expired so stale files don't linger.
     retained_months = set(shards.keys())
@@ -495,9 +731,9 @@ def main():
 
     roll_days_to_monthly(expired_days, monthly)
 
-    save_json(DAILY_FILE, daily)
-    save_json(MONTHLY_FILE, monthly)
-    save_json(INDEX_FILE, index)
+    save_json_if_changed(DAILY_FILE, daily)
+    save_json_if_changed(MONTHLY_FILE, monthly)
+    save_json_if_changed(INDEX_FILE, index)
 
     merged = build_merged(index['regions'], shards, daily, monthly, src, src_dt)
     save_json(MERGED_FILE, merged, compact=False)

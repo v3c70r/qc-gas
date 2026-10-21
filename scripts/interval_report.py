@@ -14,7 +14,7 @@
 * ``data/fetch-log.json`` —— 探针台账（#74）：实际抓取次数、实际间隔分布、
   已覆盖天数，用来判断样本够不够、以及「当前实际间隔下的陈旧度」。
 * ``data/stations.json`` —— 坐标键 → 区域/品牌 映射（分组统计用）。
-* ``data/history/station-history.json``（可选）—— 日分辨率站点价格，用来做
+* ``data/history/station-history/YYYY-MM.json``（可选）—— 日分辨率站点价格，用来做
   区域/品牌分组的**粗估**（日分辨率，与 15 分钟精细分析分开标注）。
 
 产出：
@@ -57,6 +57,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
+from append_history import merge_month_shard, merge_station_shards, split_station_store  # noqa: E402
 from fetch_log import SAMPLE_MIN_DAYS, load_log, summary as probe_summary  # noqa: E402
 from fetch_strategy import PRICE_EPSILON, diff_stations, prices_from_row  # noqa: E402
 from metrics import load_json, parse_iso, percentile, to_iso  # noqa: E402
@@ -65,6 +66,9 @@ ROOT = Path(__file__).resolve().parent.parent
 DEFAULT_DATA_DIR = ROOT / 'data'
 
 STATION_CHANGES_REL = Path('history') / 'station-changes.json'
+# Issue #114: the station daily tier is sharded by month. The legacy single file
+# is still read when present (old checkouts / older agents).
+STATION_HISTORY_DIR_REL = Path('history') / 'station-history'
 STATION_HISTORY_REL = Path('history') / 'station-history.json'
 GIT_CHANGES_PATH = 'data/history/station-changes.json'
 PROBE_EVENTS_REL = Path('probe-local') / 'events.jsonl'
@@ -320,8 +324,44 @@ def grouped_stats(intervals):
     }
 
 
+def load_station_history(data_dir):
+    """读取站点日分辨率存储（issue #114：按月分片，兼容旧的单文件）。
+
+    磁盘上是 ``history/station-history/YYYY-MM.json`` 分片；过渡态（迁移未完成）
+    还会同时存在旧的单文件，两者按「分片为准、按天并集」合并（与
+    ``append_history.load_station_shards()`` 同一语义），再合并成报告一直使用的
+    同一形状（``t`` = 排序后的日键列表，``s[key][fuel]`` = 与之对齐的数组），
+    所以 ``daily_change_intervals`` 不需要知道分片存在。
+    """
+    data_dir = Path(data_dir)
+    shard_dir = data_dir / STATION_HISTORY_DIR_REL
+    shards = {}
+    if shard_dir.is_dir():
+        for path in sorted(shard_dir.glob('*.json')):
+            month = path.stem
+            if len(month) != 7 or month[4] != '-':
+                continue
+            shard = load_json(path)
+            if shard:
+                shards[month] = shard
+    # A checkout can carry both layouts (migration in flight): union them the
+    # same way `append_history.load_station_shards()` does, so the report never
+    # reads less history than the repository actually holds.
+    legacy = load_json(data_dir / STATION_HISTORY_REL)
+    if legacy:
+        for month, shard in split_station_store(legacy).items():
+            if month in shards:
+                shards[month] = merge_month_shard(shards[month], shard)
+            else:
+                shards[month] = shard
+    if not shards:
+        return {'v': 1, 't': [], 's': {}}
+
+    return merge_station_shards(shards)
+
+
 def daily_change_intervals(store, labels=None, epsilon=PRICE_EPSILON):
-    """``station-history.json``（日分辨率）-> 站点级变更间隔（秒）。
+    """站点日分辨率存储（`history/station-history/YYYY-MM.json`，已合并）-> 站点级变更间隔（秒）。
 
     值的可比性规则是**同一个燃料**：某天该燃料有新值、且前一天（同一燃料）也有
     值、且差 ≥ ``epsilon``，才算一次变更。``null``（当天没有观测到该站）把基线
@@ -522,7 +562,7 @@ def build_report(data_dir, root, now, observations=None, events=None,
     stations = load_json(data_dir / STATIONS_FILE)
     labels = station_labels(stations)
     change_store = load_json(data_dir / STATION_CHANGES_REL) or {}
-    history_store = load_json(data_dir / STATION_HISTORY_REL) or {}
+    history_store = load_station_history(data_dir)
 
     if observations is None:
         observations = load_git_observations(root)
@@ -569,7 +609,7 @@ def build_report(data_dir, root, now, observations=None, events=None,
         'source': {
             'observations': observations_source,
             'probe': 'data/fetch-log.json',
-            'daily_history': 'data/history/station-history.json',
+            'daily_history': 'data/history/station-history/YYYY-MM.json',
             'revisions_used': len(observations),
             'change_store_generated_at': change_store.get('generated_at'),
         },
@@ -728,7 +768,7 @@ def format_report(payload):
 
     daily = payload['change_arrival_daily']
     lines += [
-        '### 2b. 日分辨率粗估（`data/history/station-history.json`，'
+        '### 2b. 日分辨率粗估（`data/history/station-history/YYYY-MM.json`，'
         f"{daily.get('days_covered')} 天）",
         '',
         '一天之内发生多次变更只能看到一次，间隔必然是整数天的倍数，仅作量级参考。',

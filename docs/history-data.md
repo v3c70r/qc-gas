@@ -24,7 +24,9 @@ everything is committed back into this repository.
    `last_seen_at`, issue #68) and `data/fetch-schedule.json` (plan for the next
    runs).
 5. `scripts/append_history.py` appends one **region-level** 6h bucket and one
-   **station-level daily** snapshot to the history store.
+   **station-level daily** snapshot to the history store. The station tier is
+   sharded by month (`data/history/station-history/YYYY-MM.json`, issue #114)
+   and a fetch only writes a shard when that day is not recorded yet.
 6. `scripts/metrics.py` folds the station change store, the snapshot and the
    previous ledger into `data/metrics.json` — the latency / freshness numbers
    below.
@@ -45,7 +47,7 @@ The measured pack growth was ≈24.5 MiB/day (`git count-objects -vH` after
 | --- | --- | --- |
 | **Derived snapshots** | `data/stations.json`, `data/stats.json`, `data/metrics.json`, `data/history.json` | written by the pipeline, uploaded as the `data-snapshot` workflow artifact, restored into `data/` by the Pages build — **never committed** |
 | **Build output** | every `*.json.br` sibling | artifact only, never committed (nothing reads them; see [Storage format](#storage-format--sharding)) |
-| **Persistent state** | `data/history/**` (`YYYY-MM` raw shards, `daily.json`, `monthly.json`, `index.json`, `station-history.json`, `station-changes.json`), `data/update-profile.json`, `data/fetch-log.json`, `data/fetch-schedule.json`, `data/fetch-state.json`, `data/metrics-ledger.json`, `data/regie-margin.json`, `data/fetch-interval.json`, `data/trigger-interval.json` | committed on every fetch — this is the only copy that exists |
+| **Persistent state** | `data/history/**` (`YYYY-MM` raw shards, `daily.json`, `monthly.json`, `index.json`, `station-history/YYYY-MM.json` shards, `station-changes.json`), `data/update-profile.json`, `data/fetch-log.json`, `data/fetch-schedule.json`, `data/fetch-state.json`, `data/metrics-ledger.json`, `data/regie-margin.json`, `data/fetch-interval.json`, `data/trigger-interval.json` | committed on every fetch — this is the only copy that exists |
 
 Why each derived file is derived:
 
@@ -101,6 +103,35 @@ Half of the old growth was the `.br` siblings, which is why the fix is "stop
 committing them" rather than "compress the text better". `data/stations.json` is
 still ~886 KB per snapshot in the workspace and in the artifact — it is simply
 no longer in git history 65 times a day.
+
+### Measured effect of #114 (station daily shards)
+
+Same method (`git verify-pack -v` after `git gc --prune=now`), attributed to the
+blobs each commit actually added, over the 126 data commits of
+**2026-10-17 22:20Z → 2026-10-19 07:00Z** (32.7 h, post-#103):
+
+| File | Pack bytes/day | Share |
+| --- | --- | --- |
+| `data/history/station-changes.json` | 1056.3 KiB | 69 % |
+| `data/history/station-history.json` | **366.8 KiB** | 24 % |
+| `data/history/2026-10.json` (raw 6h) | 71.2 KiB | 5 % |
+| `data/update-profile.json` | 29.8 KiB | 2 % |
+| everything else in `data/` | ≈ 27 KiB | < 2 % |
+| **`data/` total** | **1522 KiB/day ≈ 1.52 MiB/day** | |
+
+The station daily tier is the **second** largest per-commit cost, not the
+largest (the issue's estimate assumed it was almost all of the growth): a
+one-line JSON cannot delta, so each of the ~92 daily commits paid ~5.5 KiB for
+the same table. With month shards + the frozen-day rule the tier now costs one
+write per day instead of ~92: the replay of the same window measures
+**≈ 10 KiB/day** (2 shard files, ~9.8 KiB per rewrite), i.e. `data/` total goes
+from 1.52 to **≈ 1.16 MiB/day**. Both numbers are far below the
+`< 2.5 MiB/day` criterion of #114.
+
+Follow-up (not in #114's scope): `data/history/station-changes.json` is now the
+dominant per-commit cost by a wide margin (69 % of the remaining `data/`
+growth) because `last_seen_at` changes on every fetch while the file is one
+compact line.
 
 ### Why the site still shows the newest snapshot
 
@@ -485,7 +516,7 @@ p50 257 分钟，见 [Fetch rhythm](#fetch-rhythm-final)），而外部触发器
 
 | 文件 | 归属 | 探针提交 | 冲突裁决 |
 | --- | --- | --- | --- |
-| `data/history/**`（`YYYY-MM.json` / `daily` / `monthly` / `station-history` / `station-changes` / `index`） | **Actions**（每次 admitted run 的 `append_history.py`） | 否（`history` stage 默认跳过） | 远端 |
+| `data/history/**`（`YYYY-MM.json` / `daily` / `monthly` / `station-history/YYYY-MM.json` / `station-changes` / `index`） | **Actions**（每次 admitted run 的 `append_history.py`；站点日档按月分片，一次抓取最多写 1 个分片，见 #114） | 否（`history` stage 默认跳过） | 远端 |
 | derived 快照 `data/stations.json`、`data/stats.json`、`data/metrics.json`、`data/history.json` | **两者都写、都不提交**（#103：只随 Pages artifact 走） | 否 | 远端 |
 | `data/update-profile.json`（学习到的 profile 计数） | **两者都写**（`update_profile.py`），两边都提交 | 是（账本） | 远端 |
 | `data/fetch-schedule.json`（时刻表 / 预算） | **两者都写**（`update_profile.py`），两边都提交 | 是（账本） | 远端 |
@@ -833,7 +864,7 @@ weighted average (`count` weighted), plus the bucket's `min`/`max` extremes.
 | Tier | File(s) | Granularity | Retention | Purpose |
 | --- | --- | --- | --- | --- |
 | raw | `data/history/YYYY-MM.json` | 6h bucket | last **14 days** | intraday region dashboard |
-| station daily | `data/history/station-history.json` | 1 day (12:00 UTC) | last **180 days** | station card real history |
+| station daily | `data/history/station-history/YYYY-MM.json` (one shard per month, #114) | 1 day (recorded at its **first** observation, then frozen) | last **180 days** (days older than the cutoff are pruned, whole month shards disappear with them) | station card real history |
 | station changes | `data/history/station-changes.json` | last change / last observation | last **180 days seen** | station freshness (`last_changed_at`) + station card "observed X ago" / "price changed X ago" (#70 / #96) |
 | metrics | `data/metrics.json` | summary (derived, not committed since #103) | overwritten on every run | CI / PM agent freshness evidence |
 | latency ledger | `data/metrics-ledger.json` | rolling latency samples (persistent since #103) | last **300** samples | p50/p90/p95 over more than the current run |
@@ -842,7 +873,7 @@ weighted average (`count` weighted), plus the bucket's `min`/`max` extremes.
 | daily | `data/history/daily.json` | 1 day (12:00 UTC) | **12 months** | 30–365 day region trend views |
 | monthly | `data/history/monthly.json` | 1 month (day 1, 12:00 UTC) | **forever** | long-term trend view |
 | merged | `data/history.json` | mixed (raw+daily+monthly) | mirror of above | frontend single-file read |
-| index | `data/history/index.json` | — | — | regions, last source, tier config |
+| index | `data/history/index.json` | — | — | regions, last source, tier config, `station_history.months` (the shard list the frontend reads) |
 
 Tiers are **non-overlapping**: raw covers the newest 14 days, daily covers the
 remainder of the 12-month window, and monthly covers everything older than
@@ -851,8 +882,9 @@ frontend format, so the dashboard and station cards keep working unchanged.
 
 ## Storage format & sharding
 
-Raw snapshots are sharded by month (`data/history/YYYY-MM.json`) and use short
-keys to keep repository growth small:
+Raw snapshots **and the station daily tier** are sharded by month
+(`data/history/YYYY-MM.json`, `data/history/station-history/YYYY-MM.json`) and
+use short keys to keep repository growth small:
 
 - `t` = bucket timestamp (UTC ISO 8601)
 - `src` = exact source `generated_at` timestamp
@@ -889,7 +921,8 @@ The frontend-facing `data/history.json` uses the longer, original field names:
 ```
 
 Every JSON file under `data/` also gets a `.br` (Brotli) sibling during the
-workflow (`data/*.json.br`, `data/history/*.json.br`). Those siblings are
+workflow (`data/*.json.br`, `data/history/*.json.br`,
+`data/history/station-history/*.json.br`). Those siblings are
 **build output for the Pages artifact only**: nothing in `js/` fetches a
 `*.json.br`, GitHub Pages does not negotiate precompressed files, and each one
 is a full new blob per commit — so since issue #103 **no** `.br` file is
@@ -900,15 +933,19 @@ committed to git (see below).
 Stations have no stable id in the source data, so the recorder keys each
 station by its coordinates rounded to 5 decimals
 (`lng,lat`, e.g. `-79.01957,48.24676`). Each day it stores one scalar price
-per fuel (the latest snapshot of that UTC day) using the same short fuel keys
-as the region store (`g`/`s`/`d`). The payload is column-oriented so the
-coordinate key is written only once, not once per day:
+per fuel (the **first** snapshot of that UTC day, see below) using the same
+short fuel keys as the region store (`g`/`s`/`d`). The payload is
+column-oriented so the coordinate key is written only once, not once per day,
+and it is **sharded by month** (issue #114) instead of being one 1.36 MB table
+that every fetch rewrote:
+
+`data/history/station-history/2026-10.json`:
 
 ```json
 {
   "v": 1,
-  "tiers": {"daily_days": 180, "monthly": "none"},
-  "t": ["2026-09-10", "2026-09-11"],
+  "m": "2026-10",
+  "t": ["2026-10-01", "2026-10-02"],
   "s": {
     "-79.01957,48.24676": {
       "g": [179.9, 180.4],
@@ -919,16 +956,50 @@ coordinate key is written only once, not once per day:
 }
 ```
 
-`t` is the sorted list of retained day keys. Each fuel array is aligned with
-`t`; `null` means that station did not report on that day. Older than 180 days
-is **pruned** (not rolled up), so the file reaches a steady size and does not
-grow indefinitely.
+`t` is the sorted list of retained day keys **inside that month**; each fuel
+array is aligned with `t`, and `null` means that station did not report on that
+day. Older than 180 days is **pruned** (not rolled up): expired days are
+dropped from their shard and a month whose days are all expired is deleted
+outright, so the store reaches a steady size (~6 shards) and does not grow
+indefinitely.
 
-`js/history.js` loads this file through `loadStationHistoryData()` and
+`data/history/index.json` carries the shard list the frontend uses
+(`station_history.months`, plus `days` / `stations` / `retention_days`
+counters). `js/history.js` reads the index and then fetches the newest
+≤ 7 shards concurrently, merging them back into the single
+`{v, t, s}` shape through `mergeStationHistoryShards()` — the chart code
+(`getStationHistory()`, `getStationHistoryCoverage()`) is unchanged.
 `getStationHistory()` matches the currently rendered station to the same
-coordinate key. It returns `null` when no recorded history exists, and the
-station card shows the empty `noHistory` placeholder with no change percentage
-and no extrapolated tail.
+coordinate key, returns `null` when no recorded history exists, and the station
+card then shows the empty `noHistory` placeholder with no change percentage and
+no extrapolated tail.
+
+### Why month shards + a frozen day (issue #114)
+
+Two measurements drove the shape:
+
+1. the file was **one compact single line**, so git could not delta it well:
+   every commit that touched the day's snapshot stored a fresh ~5.5 KiB blob
+   (after a full `git gc --prune=now`, summed over 91 commits in 32.7 h:
+   499.7 KiB ≈ **367 KiB/day** of pack growth);
+2. it was rewritten on **every admitted fetch** (~92 data commits/day), while
+   it only gains *one* new value per station per day.
+
+Sharding alone does not reduce the per-commit delta (a delta is proportional to
+the *changed content*, not to the file size), so the shard is combined with a
+retention rule: **a recorded day is final**. `update_station_shards()` only
+touches the current month's shard on the first observation of a day, which turns
+~92 rewrites/day into ≤ 1, and the previous months are never opened at all.
+`save_json_if_changed()` additionally keeps an unchanged file from being
+rewritten at all (raw shards, `daily.json`, `monthly.json`, `index.json`).
+
+The one-off migration from the single file is loss-safe: `load_station_shards()`
+unions a legacy `station-history.json` with whatever the shard directory already
+holds (disk wins for a day both carry), `save_station_shards()` writes every
+shard whose on-disk copy differs — not just the months the daily update touched
+— and the legacy file is unlinked **only after** every month of the store exists
+on disk. A partial migration (legacy file + a partly populated shard directory)
+therefore cannot drop history.
 
 ## Station-level change detection
 
@@ -942,16 +1013,19 @@ key last actually moved.
 
 ### Why a separate file (tradeoff)
 
-The alternative was to append the change columns to `station-history.json`.
-A separate store was chosen because:
+The alternative was to append the change columns to the station daily tier
+(`data/history/station-history/YYYY-MM.json`). A separate store was chosen
+because:
 
-- `station-history.json` is a **column-oriented, day-aligned** matrix whose
+- the station daily tier is a **column-oriented, day-aligned** matrix whose
   insertion logic reindexes every existing array when an out-of-order source
   day arrives; adding two per-station scalars per row would have to ride that
   reindexing and would bloat every one of the ~2.5k station rows.
 - the change store has a different retention rule (prune by *last seen*, not by
-day) and a different reader (freshness queries, not charting), so keeping it
-  apart means the station card path cannot regress when this schema changes.
+  day), a different write cadence (rewritten on every fetch, while a station
+  day is frozen after its first observation) and a different reader (freshness
+  queries, not charting), so keeping it apart means the station card path
+  cannot regress when this schema changes.
 - the row layout lets a single entry answer both questions without scanning the
   whole matrix: `t` is freshness, `p` is the diff baseline.
 
@@ -1125,8 +1199,11 @@ per-file hard limit is 100 MB). This prevents silent repository bloat.
 
 `js/history.js` still parses the region shape (`regions[region].points` /
 `overall.points`) and tolerates date-only strings for daily/monthly entries.
-`loadStationHistoryData()` tolerates a missing
-`data/history/station-history.json` (404 → no station chart). If either
+`loadStationHistoryData()` tolerates a missing store (404 → no station chart)
+in both layouts: it reads `data/history/index.json` →
+`data/history/station-history/YYYY-MM.json` shards, and falls back to the
+legacy single `data/history/station-history.json` when the index carries no
+`station_history.months` (old checkout / older agent worktree). If either
 history file is missing or empty, the dashboard and station cards degrade
 gracefully (empty chart / "no history" message) instead of throwing.
 
