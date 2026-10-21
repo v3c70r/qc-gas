@@ -159,13 +159,16 @@
           <div class="control-group">
             <label data-i18n="priceRange">Plage de prix (¢/L)</label>
             <div class="price-range-wrap">
-              <input type="range" class="price-slider" id="min-price" min="150" max="240" value="150" step="1">
+              <!-- Bounds are derived from the selected fuel's real prices in JS
+                   (issue #118). The permissive placeholder range keeps the
+                   first paint unfiltered instead of hardcoding regular prices. -->
+              <input type="range" class="price-slider" id="min-price" min="0" max="1000" value="0" step="1">
               <div class="price-range-values">
-                <span id="min-price-val">1.50$</span>
+                <span id="min-price-val">—</span>
                 <span>—</span>
-                <span id="max-price-val">2.40$</span>
+                <span id="max-price-val">—</span>
               </div>
-              <input type="range" class="price-slider" id="max-price" min="150" max="240" value="240" step="1">
+              <input type="range" class="price-slider" id="max-price" min="0" max="1000" value="1000" step="1">
             </div>
           </div>
 

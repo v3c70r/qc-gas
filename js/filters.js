@@ -1,5 +1,6 @@
 import { updateStats, updateStationList } from './stats.js';
-import { setRadiusKm, setReferencePoint, setRadiusMode, fitRegionBounds, isRadiusMode, updateFuelPriceLayer } from './map.js';
+import { setRadiusKm, setReferencePoint, setRadiusMode, fitRegionBounds, isRadiusMode, updateFuelPriceLayer, getFuelPriceBounds } from './map.js';
+import { effectivePriceBounds } from './price-scale.js';
 import { t } from './i18n.js';
 
 // ── Debounce helper ──
@@ -12,6 +13,72 @@ function debounce(fn, delay) {
 }
 
 let filterPanelOpen = false;
+
+// ── Price range follows the selected fuel (issue #118) ──
+// `lastPriceFuelKey` tells a fuel switch (reset the window) apart from a
+// same-fuel snapshot refresh (keep the user's narrowed window).
+let lastPriceFuelKey = null;
+
+function activeFuelPriceKey() {
+  return (document.querySelector('.fuel-filter:checked')?.value || 'regular') + '_price';
+}
+
+function writePriceLabels(min, max) {
+  const minVal = document.getElementById('min-price-val');
+  const maxVal = document.getElementById('max-price-val');
+  if (minVal) minVal.textContent = (min / 100).toFixed(2) + '$';
+  if (maxVal) maxVal.textContent = (max / 100).toFixed(2) + '$';
+}
+
+/**
+ * Point the price sliders at the selected fuel's real price window, so choosing
+ * Diesel does not keep filtering with the regular-price 150–240¢ range.
+ *
+ * @param {{reset?: boolean}} options `reset: true` on a fuel switch (and on the
+ *   first snapshot): the window is always the full range. Otherwise the user's
+ *   narrower choice survives a data refresh, clamped into the new bounds — and
+ *   widened back to the full range if it no longer contains any price.
+ */
+export function applyPriceBounds({ reset = false } = {}) {
+  const minSlider = document.getElementById('min-price');
+  const maxSlider = document.getElementById('max-price');
+  if (!minSlider || !maxSlider) return;
+
+  const fuelKey = activeFuelPriceKey();
+  const bounds = effectivePriceBounds(getFuelPriceBounds(fuelKey));
+  const sameFuel = fuelKey === lastPriceFuelKey;
+  lastPriceFuelKey = fuelKey;
+
+  const previousMin = parseFloat(minSlider.value);
+  const previousMax = parseFloat(maxSlider.value);
+
+  minSlider.min = String(bounds.min);
+  minSlider.max = String(bounds.max);
+  maxSlider.min = String(bounds.min);
+  maxSlider.max = String(bounds.max);
+
+  let nextMin = bounds.min;
+  let nextMax = bounds.max;
+  const keepWindow = !reset && sameFuel
+    && Number.isFinite(previousMin) && Number.isFinite(previousMax)
+    && previousMin <= previousMax;
+  if (keepWindow) {
+    nextMin = Math.min(Math.max(previousMin, bounds.min), bounds.max);
+    nextMax = Math.min(Math.max(previousMax, bounds.min), bounds.max);
+    // A window that misses the new price window entirely (e.g. the user's
+    // 150–240¢ vs a refreshed diesel 240–380¢ range) would silently empty the
+    // list, so widen it back to the whole range instead.
+    if (previousMax < bounds.min || previousMin > bounds.max || nextMin > nextMax) {
+      nextMin = bounds.min;
+      nextMax = bounds.max;
+    }
+  }
+
+  minSlider.value = String(nextMin);
+  maxSlider.value = String(nextMax);
+  writePriceLabels(nextMin, nextMax);
+  updateStats();
+}
 
 function initFilters() {
   const filterToggle = document.getElementById('filter-toggle');
@@ -38,7 +105,9 @@ function initFilters() {
         const cb = chip.querySelector('input');
         chip.classList.toggle('active', cb && cb.checked);
       });
-      updateStats();
+      // The price window belongs to the selected fuel: reset it before the
+      // stats are recomputed, then recolour the dots with the new ramp.
+      applyPriceBounds({ reset: true });
       updateFuelPriceLayer();
     }
   });
@@ -79,21 +148,21 @@ function initFilters() {
 
   const minSlider = document.getElementById('min-price');
   const maxSlider = document.getElementById('max-price');
-  const minVal = document.getElementById('min-price-val');
-  const maxVal = document.getElementById('max-price-val');
 
   function updatePriceLabels() {
-    let min = parseInt(minSlider.value);
-    let max = parseInt(maxSlider.value);
-    if (min > max) [min, max] = [max, min];
-    minVal.textContent = (min / 100).toFixed(2) + '$';
-    maxVal.textContent = (max / 100).toFixed(2) + '$';
+    const min = parseFloat(minSlider.value);
+    const max = parseFloat(maxSlider.value);
+    writePriceLabels(Math.min(min, max), Math.max(min, max));
     updateStats();
   }
 
   const debouncedPriceUpdate = debounce(updatePriceLabels, 150);
   minSlider.addEventListener('input', debouncedPriceUpdate);
   maxSlider.addEventListener('input', debouncedPriceUpdate);
+
+  // Every new snapshot gets its own price window; `applyPriceBounds` keeps a
+  // user-narrowed window when the fuel did not change (issue #118).
+  window.addEventListener('stations:loaded', () => applyPriceBounds());
 
   const showMoreBtn = document.getElementById('show-more-brands');
   const moreBrands = document.getElementById('more-brands');
@@ -111,6 +180,10 @@ function initFilters() {
       setRadiusKm(parseFloat(btn.dataset.radius));
     });
   });
+
+  // Seed the sliders with the fallback window right away; `stations:loaded`
+  // swaps in the selected fuel's real bounds once the snapshot arrives.
+  applyPriceBounds({ reset: true });
 }
 
 function requestGeolocation(btn) {

@@ -3002,7 +3002,10 @@ test.describe('Data freshness & auto refresh (Issue #47)', () => {
     // The checkbox itself is display:none in the UI; the label toggles it.
     await page.locator('#brand-filters .brand-filter-item').first().click();
     await expect(brandInput).not.toBeChecked();
-    await page.locator('#max-price').fill('200');
+    // The snapshot pins every regular price at 175.9¢, so the slider window is
+    // 175–180¢ (issue #118 derives it from the data); 178¢ narrows it while
+    // still keeping the stations visible.
+    await page.locator('#max-price').fill('178');
     await page.waitForTimeout(400);
     const region = await page.locator('#region-filter option').nth(1).getAttribute('value');
     await page.locator('#region-filter').selectOption(region);
@@ -3029,6 +3032,10 @@ test.describe('Data freshness & auto refresh (Issue #47)', () => {
     expect(await page.locator('.brand-toggle-row').count()).toBe(before.toggleRows);
     expect(await page.locator('#region-filter option').count()).toBe(before.regionOptions);
     expect(await page.locator('#brand-filters .brand-filter[value="' + brand + '"]').isChecked()).toBe(false);
+    // The refreshed snapshot moved every regular price to 199.9¢, so the window
+    // is now 195–200¢. The user's 175–178¢ window no longer overlaps it and is
+    // widened back to the full range instead of leaving an empty list (#118).
+    expect(await page.locator('#min-price').inputValue()).toBe('195');
     expect(await page.locator('#max-price').inputValue()).toBe('200');
     expect(await page.locator('#region-filter').inputValue()).toBe(region);
     expect(await page.locator('.radius-btn[data-radius="10"]')).toHaveClass(/active/);
@@ -5409,5 +5416,217 @@ test.describe('UI copy hygiene (Issue #119)', () => {
       expect(translations[code].dataErrorRetry).toBeTruthy();
       expect(translations[code].dataErrorRetryWait).toContain('{n}');
     }
+  });
+});
+// ── Price range & colour scale follow the selected fuel (Issue #118) ────────
+// The range slider bounds used to be hardcoded to the *regular* price window
+// (150–240¢) while the filter dropped every station outside it, so picking
+// Diesel — median 289.9¢ — left the app empty. The map ramp had the same
+// problem: its top stop was 200¢, so every diesel point rendered the same
+// "most expensive" red.
+test.describe('Price range & colour scale follow the selected fuel (Issue #118)', () => {
+  const PALETTE = ['#16a34a', '#eab308', '#dc2626'];
+
+  // The app drops records with out-of-Québec coordinates and stations without a
+  // brand (they match no brand checkbox), so expectations mirror that.
+  const QUEBEC_BOUNDS = [[-79.5, 44.9], [-57.1, 62.4]];
+  const visibleFeatures = stationsFixture.features.filter((f) => {
+    const [lng, lat] = f.geometry?.coordinates || [];
+    return Number.isFinite(lng) && Number.isFinite(lat)
+      && lng >= QUEBEC_BOUNDS[0][0] && lng <= QUEBEC_BOUNDS[1][0]
+      && lat >= QUEBEC_BOUNDS[0][1] && lat <= QUEBEC_BOUNDS[1][1]
+      && Boolean(f.properties.brand);
+  });
+
+  function boundsFrom(boundsSource, fuel) {
+    const key = `${fuel}_price`;
+    let min = Infinity;
+    let max = -Infinity;
+    boundsSource.features.forEach((f) => {
+      const value = f.properties[key];
+      if (typeof value !== 'number') return;
+      if (value < min) min = value;
+      if (value > max) max = value;
+    });
+    return { min: Math.floor(min / 5) * 5, max: Math.ceil(max / 5) * 5 };
+  }
+
+  function countWithin(boundsSource, fuel, lo, hi) {
+    const key = `${fuel}_price`;
+    return boundsSource.features.filter((f) => {
+      const value = f.properties[key];
+      return typeof value === 'number' && value >= lo && value <= hi;
+    }).length;
+  }
+
+  function hexToRgb(hex) {
+    const n = parseInt(hex.slice(1), 16);
+    return [(n >> 16) & 255, (n >> 8) & 255, n & 255];
+  }
+
+  // Replays the Mapbox `interpolate linear` ramp the app hands to the layer, so
+  // the spec can assert on real colours instead of trusting the stop values.
+  function sampleColor(expression, value) {
+    const stops = [];
+    for (let i = 3; i < expression.length; i += 2) stops.push({ at: expression[i], color: expression[i + 1] });
+    if (value <= stops[0].at) return stops[0].color;
+    for (let i = 1; i < stops.length; i += 1) {
+      if (value <= stops[i].at) {
+        const from = hexToRgb(stops[i - 1].color);
+        const to = hexToRgb(stops[i].color);
+        const span = stops[i].at - stops[i - 1].at || 1;
+        const t = (value - stops[i - 1].at) / span;
+        return '#' + from.map((c, idx) => Math.round(c + (to[idx] - c) * t).toString(16).padStart(2, '0')).join('');
+      }
+    }
+    return stops[stops.length - 1].color;
+  }
+
+  async function waitForStations(page) {
+    await page.waitForFunction(
+      () => window.__qcGasMap && window.__qcGasMap.getStationFeatureCount() > 0 && window.__qcGasFreshness,
+      null,
+      { timeout: 15000 }
+    );
+  }
+
+  async function selectFuel(page, fuel) {
+    // The fuel chips live inside the collapsible filter panel.
+    const panel = page.locator('#filter-panel');
+    if (!(await panel.evaluate((el) => el.classList.contains('open')))) {
+      await page.locator('#filter-toggle').click();
+      await page.waitForTimeout(300);
+    }
+    await page.locator(`.fuel-chip:has(.fuel-chip-label[data-fuel="${fuel}"])`).click();
+    await page.waitForTimeout(600);
+  }
+
+  function sliderBounds(page) {
+    return page.evaluate(() => ({
+      minAttr: Number(document.getElementById('min-price').min),
+      maxAttr: Number(document.getElementById('max-price').max),
+      minValue: Number(document.getElementById('min-price').value),
+      maxValue: Number(document.getElementById('max-price').value)
+    }));
+  }
+
+  test('the slider range follows the selected fuel, so Diesel is not filtered to nothing', async ({ page }) => {
+    await page.goto(BASE_URL);
+    await waitForStations(page);
+
+    const regular = boundsFrom(stationsFixture, 'regular');
+    const regularBounds = await sliderBounds(page);
+    expect(regularBounds.minAttr).toBe(regular.min);
+    expect(regularBounds.maxAttr).toBe(regular.max);
+    expect(regularBounds.minValue).toBe(regular.min);
+    expect(regularBounds.maxValue).toBe(regular.max);
+
+    // Diesel: the live data no longer fits in the old 150–240¢ window at all.
+    const diesel = boundsFrom(stationsFixture, 'diesel');
+    await selectFuel(page, 'diesel');
+
+    const dieselBounds = await sliderBounds(page);
+    expect(dieselBounds.minAttr).toBe(diesel.min);
+    expect(dieselBounds.maxAttr).toBe(diesel.max);
+    expect(dieselBounds.minValue).toBe(diesel.min);
+    expect(dieselBounds.maxValue).toBe(diesel.max);
+    // Outward rounding to 5¢ keeps the default window a round number.
+    expect(dieselBounds.maxAttr % 5).toBe(0);
+    expect(dieselBounds.minAttr % 5).toBe(0);
+
+    // The whole diesel fleet is visible again, not just the one station that
+    // used to sneak under 240¢.
+    const visible = await page.evaluate(() =>
+      Number(document.getElementById('sidebar-station-count').dataset.count));
+    expect(visible).toBeGreaterThanOrEqual(countWithin({ features: visibleFeatures }, 'diesel', diesel.min, diesel.max) - 5);
+    expect(visible).toBeGreaterThan(1900);
+    expect(await page.evaluate(() => window.__qcGasMap.getStationFeatureCount())).toBeGreaterThan(1900);
+    await expect(page.locator('#quick-diesel')).not.toHaveText('—');
+  });
+
+  test('the colour ramp is derived from the selected fuel range', async ({ page }) => {
+    await page.goto(BASE_URL);
+    await waitForStations(page);
+
+    const regularExpr = await page.evaluate(() => window.__qcGasMap.getPriceColorExpression('regular'));
+    await selectFuel(page, 'diesel');
+    const dieselExpr = await page.evaluate(() => window.__qcGasMap.getPriceColorExpression());
+
+    const diesel = boundsFrom(stationsFixture, 'diesel');
+    const stops = [dieselExpr[3], dieselExpr[5], dieselExpr[7]];
+    expect(stops[0]).toBe(diesel.min);
+    expect(stops[1]).toBeGreaterThan(stops[0]);
+    expect(stops[2]).toBeGreaterThan(stops[1]);
+    expect(stops[2]).toBeLessThan(diesel.max);
+    expect([dieselExpr[4], dieselExpr[6], dieselExpr[8]]).toEqual(PALETTE);
+    // NaN/Infinity would break the Mapbox expression; assert the payload is clean.
+    expect(JSON.stringify(dieselExpr)).not.toMatch(/NaN|Infinity/);
+
+    // The live layer really uses that ramp.
+    expect(await page.evaluate(() =>
+      window.__qcMap.getPaintProperty('unclustered-points', 'circle-color'))).toEqual(dieselExpr);
+
+    // Diesel points span several colours instead of one flat red.
+    const dieselColors = new Set(
+      [diesel.min + 1, (diesel.min + diesel.max) / 2, diesel.max - 1].map((v) => sampleColor(dieselExpr, v))
+    );
+    expect(dieselColors.size).toBeGreaterThanOrEqual(2);
+
+    // Same price, different fuel → different colour on the map.
+    const shared = (diesel.min + diesel.max) / 2;
+    expect(sampleColor(dieselExpr, shared)).not.toBe(sampleColor(regularExpr, shared));
+    expect(dieselExpr).not.toEqual(regularExpr);
+  });
+
+  test('a manually narrowed range is applied, then reset when the fuel changes', async ({ page }) => {
+    await page.goto(BASE_URL);
+    await waitForStations(page);
+    await page.locator('#filter-toggle').click();
+    await selectFuel(page, 'diesel');
+
+    await page.locator('#min-price').fill('280');
+    await page.locator('#max-price').fill('300');
+    await page.waitForTimeout(600);
+
+    const visible = await page.evaluate(() =>
+      Number(document.getElementById('sidebar-station-count').dataset.count));
+    expect(visible).toBe(countWithin({ features: visibleFeatures }, 'diesel', 280, 300));
+    expect(visible).toBeGreaterThan(0);
+    expect(visible).toBeLessThan(countWithin({ features: visibleFeatures }, 'diesel', 240, 380));
+
+    // Back to regular: the 280–300¢ window would hide every regular station, so
+    // it must be reset to the regular bounds instead of being inherited.
+    await selectFuel(page, 'regular');
+    const regular = boundsFrom(stationsFixture, 'regular');
+    const bounds = await sliderBounds(page);
+    expect(bounds.minAttr).toBe(regular.min);
+    expect(bounds.maxAttr).toBe(regular.max);
+    expect(bounds.minValue).toBe(regular.min);
+    expect(bounds.maxValue).toBe(regular.max);
+    expect(await page.evaluate(() =>
+      Number(document.getElementById('sidebar-station-count').dataset.count))).toBeGreaterThan(2000);
+  });
+
+  test('a fuel with no usable price falls back to the 150–240¢ window and the legacy ramp', async ({ page }) => {
+    const emptySuper = JSON.parse(JSON.stringify(stationsFixture));
+    emptySuper.features.forEach((f) => { f.properties.super_price = null; });
+    await page.route('**/data/stations.json', (route) =>
+      route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify(emptySuper) }));
+
+    await page.goto(BASE_URL);
+    await waitForStations(page);
+    await selectFuel(page, 'super');
+
+    const bounds = await sliderBounds(page);
+    expect(bounds.minAttr).toBe(150);
+    expect(bounds.maxAttr).toBe(240);
+    expect(bounds.minValue).toBe(150);
+    expect(bounds.maxValue).toBe(240);
+
+    const expr = await page.evaluate(() => window.__qcGasMap.getPriceColorExpression());
+    expect([expr[3], expr[5], expr[7]]).toEqual([165, 180, 200]);
+    expect([expr[4], expr[6], expr[8]]).toEqual(PALETTE);
+    expect(JSON.stringify(expr)).not.toMatch(/NaN|Infinity/);
+    await expect(page.locator('#quick-super')).toHaveText('—');
   });
 });

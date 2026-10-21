@@ -2,6 +2,7 @@
 import { t, onLanguageChange } from './i18n.js';
 import { BASEMAP_STYLE, applyBasemapPalette } from './map-style.js';
 import { brandColor, brandAbbr, isMembershipBrand } from './constants.js';
+import { computeFuelBounds, priceColorExpression, priceKeyFor } from './price-scale.js';
 import { updateStats, showPopup } from './stats.js';
 import { setDataSnapshot, isResponseFromCache, setDataError, clearDataError, setDataRetryHandler } from './pwa.js';
 import { startFreshness, setAppliedSnapshot } from './freshness.js';
@@ -185,16 +186,18 @@ function getActiveFuelPriceKey() {
   return activeFuel + '_price';
 }
 
-// Price → color gradient shared by the unclustered dots and price labels.
-function priceColorExpression(priceKey) {
-  return [
-    'interpolate',
-    ['linear'],
-    ['get', priceKey],
-    165, '#16a34a',  // Green - cheap
-    180, '#eab308',  // Yellow - medium
-    200, '#dc2626'   // Red - expensive
-  ];
+// Price window of the currently loaded snapshot for one fuel (issue #118).
+// The slider bounds and the map ramp are both derived from it, so Diesel no
+// longer inherits the regular-price window. Returns null when the fuel has no
+// usable price; `price-scale.js` then falls back to the legacy 150–240¢ ramp.
+export function getFuelPriceBounds(fuelKey = getActiveFuelPriceKey()) {
+  return computeFuelBounds(currentStations, fuelKey);
+}
+
+// Active-fuel colour ramp: cheap→expensive relative to the selected fuel.
+function activePriceColorExpression() {
+  const priceKey = getActiveFuelPriceKey();
+  return priceColorExpression(priceKey, computeFuelBounds(currentStations, priceKey));
 }
 
 // Initialize map with modern light style
@@ -641,7 +644,7 @@ function addStationLayers() {
         source: 'stations',
         filter: ['!', ['has', 'point_count']],
         paint: {
-          'circle-color': priceColorExpression(getActiveFuelPriceKey()),
+          'circle-color': activePriceColorExpression(),
           'circle-radius': [
             'interpolate',
             ['linear'],
@@ -757,7 +760,7 @@ export function updateFuelPriceLayer() {
     map.setPaintProperty(
       'unclustered-points',
       'circle-color',
-      priceColorExpression(getActiveFuelPriceKey())
+      activePriceColorExpression()
     );
   }
 }
@@ -930,6 +933,15 @@ window.__qcGasMap = {
     return source?._data?.features ?? [];
   },
   hasRangeCircle: () => Boolean(map && map.getSource && map.getSource('range-circle')),
+  // Issue #118: the ramp must follow the selected fuel, not a fixed regular one.
+  getPriceColorExpression: (fuel) => {
+    const priceKey = fuel ? priceKeyFor(fuel) : getActiveFuelPriceKey();
+    return priceColorExpression(priceKey, computeFuelBounds(currentStations, priceKey));
+  },
+  getPriceBounds: (fuel) => {
+    const priceKey = fuel ? priceKeyFor(fuel) : getActiveFuelPriceKey();
+    return computeFuelBounds(currentStations, priceKey);
+  },
   isValidQuebecCoordinate,
   isRadiusMode,
   getReferencePoint,
