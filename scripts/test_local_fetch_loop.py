@@ -157,6 +157,48 @@ class LocalFetchLoopTest(unittest.TestCase):
         self.assertRegex(self.text, r'PROBE_SYNC_ATTEMPTS:-2')
         self.assertIn('discarded local', self.text)
 
+    # ── issue #121: self-heal on script change + a clean sync ───────────────
+
+    def test_detects_its_own_update_and_re_execs_itself(self):
+        """Gap 1: a long-lived bash process keeps running the old script.
+
+        #113 was merged on 2026-10-19 and never ran (`probe stages skipped`
+        appeared 0 times in `.agent/probe.log` until a manual restart), so the
+        fix has to reload the loop on its own within one cycle.
+        """
+        self.assertIn('script_fingerprint', self.text)
+        self.assertIn('guard_script_change', self.text)
+        self.assertIn('restarting the probe automatically', self.text)
+        # `exec`, not a child process: the tmux session must keep its PID.
+        self.assertRegex(self.text, r'exec\s+"\$BASH_PATH"')
+        self.assertRegex(self.text, r'PROBE_MAX_SELF_RESTARTS:-3')
+        self.assertIn('self-restart disabled', self.text)
+
+    def test_the_new_version_is_verified_before_the_restart(self):
+        # A broken merge must never take a working loop down: syntax check first,
+        # then the script's own startup checks (`PROBE_CHECK_ONLY`).
+        self.assertIn('verify_new_version', self.text)
+        self.assertIn('bash -n', self.text)
+        self.assertIn('PROBE_CHECK_ONLY=1', self.text)
+        self.assertIn('ALARM', self.text)
+
+    def test_every_sync_ends_with_an_empty_unmerged_index(self):
+        """Gap 2: 7 `UU` files survived `sync_with_remote()` on 2026-10-19.
+
+        The following cycles then died on `Pulling is not possible because you
+        have unmerged files` (40 log lines), so the last step of a sync must
+        assert an empty unmerged index and reset to the remote when it is not.
+        """
+        self.assertIn('assert_no_unmerged', self.text)
+        self.assertIn('--diff-filter=U', self.text)
+        self.assertRegex(self.text, r'discarded local \$?\{?\w*\}? ?file')
+        self.assertIn('clear_half_merge_state', self.text)
+
+    def test_helpers_can_be_sourced_without_running_the_loop(self):
+        # Unit-test hook (tests only, like PROBE_CHECK_ONLY): `PROBE_LIB_ONLY`
+        # defines the helpers and returns instead of starting the probe.
+        self.assertIn('PROBE_LIB_ONLY', self.text)
+
 
 class ProbeRepoTestCase(unittest.TestCase):
     """Hermetic probe harness: a throwaway bare remote + clone + stubs."""
@@ -625,6 +667,162 @@ class ProbeBranchGuardTest(unittest.TestCase):
         self.assertEqual(result.returncode, 0, result.stderr)
 
 
+class ProbeSelfHealingTest(ProbeRepoTestCase):
+    """Issue #121 gap 1: a merged fix to this very script never ran.
+
+    The probe is a long-lived bash process, so `git pull` rewriting
+    `scripts/local_fetch_loop.sh` left it executing the version it started with.
+    The loop must notice at the start of a cycle, verify the new version can
+    start, and `exec` itself — no human, <= 1 cycle.
+    """
+
+    MARKER = 'probe v2 script loaded'
+
+    def _v2_text(self, marker=None):
+        text = SCRIPT.read_text(encoding='utf-8')
+        anchor = 'log "probe stages skipped:'
+        self.assertIn(anchor, text)
+        return text.replace(anchor, f'log "{marker or self.MARKER}"\n{anchor}', 1)
+
+    def _swap_hook(self, new_text):
+        """Replace the clone's probe the way `git checkout` does (rename).
+
+        An in-place truncate would invalidate the read offset of the *running*
+        bash process; git writes a lockfile and renames, so the test does too.
+        """
+        target = self.clone / 'scripts' / 'local_fetch_loop.sh'
+        source = Path(self._tmp.name) / 'v2-local_fetch_loop.sh'
+        source.write_text(new_text, encoding='utf-8')
+        hook = Path(self._tmp.name) / 'swap-script.sh'
+        hook.write_text(
+            'set -e\n'
+            f'cp {shlex.quote(str(source))} {shlex.quote(str(target))}.new\n'
+            f'chmod +x {shlex.quote(str(target))}.new\n'
+            f'mv {shlex.quote(str(target))}.new {shlex.quote(str(target))}\n',
+            encoding='utf-8')
+        return f'bash {shlex.quote(str(hook))}'
+
+    def test_a_merged_script_change_is_applied_without_a_manual_restart(self):
+        hook = self._swap_hook(self._v2_text())
+        result = self._run_probe(cycles='2', PROBE_TEST_REMOTE_COMMIT=hook)
+        self.assertEqual(result.returncode, 0, result.stderr)
+
+        log = self._probe_log()
+        self.assertIn('restarting the probe automatically', log)
+        self.assertIn(self.MARKER, log)
+        # The new version really is the one running: both processes logged a
+        # first cycle, and the restarted one then ran its full quota.
+        self.assertEqual(log.count('probe cycle 1 start'), 2, log)
+        self.assertIn('probe cycle 2 done', log)
+
+    def test_an_update_that_exits_at_startup_keeps_the_running_version(self):
+        # Valid syntax, but the startup itself fails (`exit 3`): the pre-flight
+        # `PROBE_CHECK_ONLY` run catches it, so the old loop keeps working.
+        hook = self._swap_hook('#!/usr/bin/env bash\nexit 3\n')
+        result = self._run_probe(cycles='2', PROBE_TEST_REMOTE_COMMIT=hook)
+        self.assertEqual(result.returncode, 0, result.stderr)
+
+        log = self._probe_log()
+        self.assertIn('ALARM', log)
+        self.assertNotIn('restarting the probe automatically', log)
+        self.assertIn('probe cycle 2 done', log)
+
+    def test_an_update_with_a_syntax_error_keeps_the_running_version(self):
+        hook = self._swap_hook('#!/usr/bin/env bash\nif then\n')
+        result = self._run_probe(cycles='2', PROBE_TEST_REMOTE_COMMIT=hook)
+        self.assertEqual(result.returncode, 0, result.stderr)
+
+        log = self._probe_log()
+        self.assertIn('ALARM', log)
+        self.assertNotIn('restarting the probe automatically', log)
+        self.assertIn('probe cycle 2 done', log)
+
+    def test_self_restart_gives_up_after_the_configured_number_of_restarts(self):
+        import hashlib
+        import time
+
+        target = self.clone / 'scripts' / 'local_fetch_loop.sh'
+        digest = hashlib.sha256(target.read_bytes()).hexdigest()
+        state = self.clone / 'data' / 'probe-local' / 'self-restart.state'
+        state.parent.mkdir(parents=True, exist_ok=True)
+        # Three automatic restarts already happened in this lineage.
+        state.write_text(f'3 {int(time.time())} {digest}\n', encoding='utf-8')
+
+        hook = self._swap_hook(self._v2_text())
+        result = self._run_probe(cycles='2', PROBE_TEST_REMOTE_COMMIT=hook,
+                                 PROBE_MAX_SELF_RESTARTS='3')
+        self.assertEqual(result.returncode, 0, result.stderr)
+
+        log = self._probe_log()
+        self.assertIn('self-restart disabled', log)
+        self.assertIn('ALARM', log)
+        self.assertNotIn(self.MARKER, log)
+        self.assertIn('probe cycle 2 done', log)
+
+
+class ProbeUnmergedRepairTest(ProbeRepoTestCase):
+    """Issue #121 gap 2: a half-merged probe clone kept poisoning every cycle."""
+
+    def _tracked_data_file(self):
+        seed = Path(self._tmp.name) / 'seed'
+        path = seed / 'data' / 'history' / 'station-changes.json'
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text('{"v": 1, "last": {"at": "seed"}, "s": {}}\n',
+                        encoding='utf-8')
+        self._git('add', '-A', cwd=seed)
+        self._commit(seed, 'seed data store')
+        self._git('push', '-q', 'origin', 'master', cwd=seed)
+        self._git('pull', '-q', '--rebase', 'origin', 'master', cwd=self.clone)
+
+    def _half_merged_clone(self):
+        """Leave the clone exactly like the reported one: `UU` data files."""
+        self._tracked_data_file()
+        target = self.clone / 'data' / 'history' / 'station-changes.json'
+        self._git('checkout', '-q', '-b', 'conflicting-writer', cwd=self.clone)
+        target.write_text('{"v": 1, "last": {"at": "local"}, "s": {}}\n',
+                         encoding='utf-8')
+        self._git('commit', '-q', '-am', 'local data write', cwd=self.clone)
+        self._git('checkout', '-q', 'master', cwd=self.clone)
+        target.write_text('{"v": 1, "last": {"at": "probe"}, "s": {}}\n',
+                         encoding='utf-8')
+        self._git('commit', '-q', '-am', 'probe data write', cwd=self.clone)
+        merge = subprocess.run(['git', 'merge', 'conflicting-writer'], cwd=str(self.clone),
+                               capture_output=True, text=True)
+        self.assertNotEqual(merge.returncode, 0, 'expected a merge conflict')
+        self.assertNotEqual(
+            self._git('diff', '--name-only', '--diff-filter=U',
+                      cwd=self.clone).stdout.strip(), '')
+        return target
+
+    def test_the_final_assertion_resets_to_the_remote_and_counts_the_loss(self):
+        import os
+        self._half_merged_clone()
+        log_file = self.clone / '.agent' / 'probe.log'
+        env = dict(os.environ, PROBE_LIB_ONLY='1', PROBE_LOG_FILE=str(log_file))
+        result = subprocess.run(
+            ['bash', '-c', 'source scripts/local_fetch_loop.sh; assert_no_unmerged'],
+            cwd=str(self.clone), env=env, capture_output=True, text=True, timeout=120)
+        self.assertEqual(result.returncode, 0, result.stderr)
+
+        self.assertEqual(self._git('diff', '--name-only', '--diff-filter=U',
+                                   cwd=self.clone).stdout.strip(), '')
+        self.assertEqual(self._git('ls-files', '-u', cwd=self.clone).stdout.strip(), '')
+        log = log_file.read_text(encoding='utf-8')
+        self.assertIn('unmerged', log)
+        self.assertIn('discarded local 1 file(s)', log)
+
+    def test_a_half_merged_clone_never_blocks_the_next_cycle(self):
+        self._half_merged_clone()
+        result = self._run_probe(cycles='2')
+        self.assertEqual(result.returncode, 0, result.stderr)
+
+        log = self._probe_log()
+        self.assertNotIn('Pulling is not possible', log)
+        self.assertNotIn('finished with errors', log)
+        self.assertEqual(self._git('ls-files', '-u', cwd=self.clone).stdout.strip(), '')
+        self.assertIn('probe cycle 2 done', log)
+
+
 class ProbeDocsTest(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
@@ -662,6 +860,15 @@ class ProbeDocsTest(unittest.TestCase):
         self.assertIn('data/fetch-log.json', self.text)
         self.assertIn('--ours', self.text)
         self.assertIn('PROBE_SYNC_ATTEMPTS', self.text)
+
+    def test_documents_the_self_heal_and_the_doctor(self):
+        """Issue #121: nobody may believe a manual restart is still needed."""
+        self.assertIn('probe_doctor.sh', self.text)
+        self.assertIn('PROBE_MAX_SELF_RESTARTS', self.text)
+        self.assertIn('自动重启', self.text)
+        self.assertIn('--fix', self.text)
+        # The final sync assertion (zero unmerged paths) is written down too.
+        self.assertIn('unmerged', self.text)
 
 
 if __name__ == '__main__':
