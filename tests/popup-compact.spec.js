@@ -31,12 +31,30 @@ const DETAILS_LABEL = {
   'fr-CA': /détails/i
 };
 
+// `data/stations.json` is a ~900 KB derived artifact: a single first-paint
+// fetch. On a busy dev server that fetch occasionally loses the race with the
+// test, so retry it once the way the app's own retry button would, and report
+// the classified load failure instead of a bare timeout (issue #119 kinds).
 const waitForStations = async (page) => {
-  await page.waitForFunction(
-    () => window.__qcGasMap && window.__qcGasMap.getStationFeatureCount() > 0,
-    null,
-    { timeout: 20000 }
-  );
+  for (let attempt = 0; attempt < 2; attempt += 1) {
+    try {
+      await page.waitForFunction(
+        () => window.__qcGasMap && window.__qcGasMap.getStationFeatureCount() > 0,
+        null,
+        { timeout: 10000 }
+      );
+      return;
+    } catch (error) {
+      if (attempt === 1) {
+        const loadError = await page.evaluate(
+          () => window.__qcGasMap?.getLastLoadError?.() ?? null
+        ).catch(() => null);
+        throw new Error(`station snapshot never loaded (lastLoadError=${JSON.stringify(loadError)})`);
+      }
+      await page.reload();
+      await page.waitForLoadState('networkidle', { timeout: 15000 }).catch(() => {});
+    }
+  }
 };
 
 /**
