@@ -27,7 +27,6 @@ let activePopup = null;        // mapboxgl Popup instance
 let currentFeature = null;     // feature displayed in popup
 let popupFuel = 'regular';
 let popupRange = 7;
-let popupUpdated = '';
 
 // Transient, localized notice shown when the displayed station is no longer in
 // the officially published snapshot.
@@ -100,7 +99,6 @@ function fuelLabel(fuel) {
 function fmt(v) { return v.toFixed(1); }
 function fmtMoney(v) { return Math.abs(v).toFixed(2); }
 function sign(v) { return v > 0 ? '+' : v < 0 ? '−' : ''; }
-function centsToDollar(cents) { return (cents / 100).toFixed(2); }
 
 // Direction: gas price rising = red (cost up), falling = green (cheap)
 function trendColor(series) {
@@ -117,53 +115,6 @@ function changeInfo(series) {
   const diff = last - first;
   const pct = first !== 0 ? (diff / first) * 100 : 0;
   return { diff, pct, up: diff > 0, flat: diff === 0 };
-}
-
-// ── Smooth SVG sparkline (catmull-rom → bezier) ──
-function sparklinePath(series, w, h) {
-  if (!series || series.length < 2) return '';
-  const prices = series.map(s => s.price);
-  const min = Math.min(...prices), max = Math.max(...prices);
-  const span = max - min || 1;
-  const pad = 4;
-  const stepX = (w - pad * 2) / (series.length - 1);
-  const pts = prices.map((p, i) => [
-    pad + i * stepX,
-    h - pad - ((p - min) / span) * (h - pad * 2)
-  ]);
-  // Catmull-Rom smoothing
-  let d = `M ${pts[0][0].toFixed(1)} ${pts[0][1].toFixed(1)}`;
-  for (let i = 0; i < pts.length - 1; i++) {
-    const p0 = pts[Math.max(0, i - 1)], p1 = pts[i], p2 = pts[i + 1], p3 = pts[Math.min(pts.length - 1, i + 2)];
-    const cp1x = p1[0] + (p2[0] - p0[0]) / 6, cp1y = p1[1] + (p2[1] - p0[1]) / 6;
-    const cp2x = p2[0] - (p3[0] - p1[0]) / 6, cp2y = p2[1] - (p3[1] - p1[1]) / 6;
-    d += ` C ${cp1x.toFixed(1)} ${cp1y.toFixed(1)}, ${cp2x.toFixed(1)} ${cp2y.toFixed(1)}, ${p2[0].toFixed(1)} ${p2[1].toFixed(1)}`;
-  }
-  return d;
-}
-
-function sparklineSVG(series, color) {
-  const w = 260, h = 72;
-  if (series.length === 1) {
-    return `
-    <svg viewBox="0 0 ${w} ${h}" width="100%" height="72" preserveAspectRatio="none" aria-hidden="true">
-      <circle cx="${w / 2}" cy="${h / 2}" r="3.5" fill="${color}"/>
-    </svg>`;
-  }
-  const path = sparklinePath(series, w, h);
-  const area = `${path} L ${w - 4} ${h - 1} L 4 ${h - 1} Z`;
-  const gid = 'sl_' + Math.random().toString(36).slice(2, 8);
-  return `
-    <svg viewBox="0 0 ${w} ${h}" width="100%" height="72" preserveAspectRatio="none" aria-hidden="true">
-      <defs>
-        <linearGradient id="${gid}" x1="0" y1="0" x2="0" y2="1">
-          <stop offset="0%" stop-color="${color}" stop-opacity="0.22"/>
-          <stop offset="100%" stop-color="${color}" stop-opacity="0"/>
-        </linearGradient>
-      </defs>
-      <path d="${area}" fill="url(#${gid})"/>
-      <path d="${path}" fill="none" stroke="${color}" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>
-    </svg>`;
 }
 
 // ── Same-day regional benchmark (full snapshot, filter-independent) ──
@@ -318,7 +269,24 @@ function coverageHTML(prefix, coverage) {
   return `<div class="${prefix}-coverage">${escapeHtml(tf('dataCoverage', { n: coverage.days, date: coverage.firstDate }))}</div>`;
 }
 
+// Directions URL for a station. Shared by the popup and the detail panel, and
+// platform-aware: iOS opens Apple Maps, everything else Google Maps (#132).
+function navUrlFor(feature) {
+  const isIOS = /iPhone|iPad|iPod/.test(navigator.userAgent);
+  const [lng, lat] = feature.geometry.coordinates;
+  return isIOS
+    ? `https://maps.apple.com/?daddr=${lat},${lng}&dirflg=d`
+    : `https://www.google.com/maps/dir/?api=1&destination=${lat},${lng}`;
+}
+
 // ── Build compact card HTML for the Mapbox popup ──
+// Issue #132: the popup is what a driver reads at a glance — often on a phone,
+// where a bottom-anchored popup must fit above the marker. It therefore keeps
+// only name, favourite, quote + change chip, fuel switcher, freshness and two
+// actions (navigate / details). Everything else (address, regional benchmark,
+// Régie margin, range pills, coverage, sparkline, min/high/≈$/L, "record a
+// fill-up here") lives in the detail panel, which is the "show me everything"
+// surface.
 function cardHTML(feature) {
   const props = feature.properties;
   if (props[popupFuel + '_price'] == null) {
@@ -331,27 +299,13 @@ function cardHTML(feature) {
   const coverage = getStationHistoryCoverage(feature, popupFuel);
   if (coverage.days > 0) popupRange = Math.min(popupRange, coverage.days);
   const series = getStationHistory(feature, popupFuel, popupRange) || [];
-  const color = trendColor(series);
   const hasTrend = series.length >= 2;
   const { diff, pct, up, flat } = changeInfo(series);
   const priceVal = props[popupFuel + '_price'];
   const available = FUEL_KEYS.filter(f => props[f + '_price'] != null);
-  const bench = benchmarkFor(feature, popupFuel);
-  const benchHTML = bench ? benchmarkBlockHTML(bench, 'sc') : '';
-  const regieHTML = regieMarginLineHTML('sc', feature, popupFuel);
 
   const fuelPills = available.map(f => `
     <button class="sc-pill ${f === popupFuel ? 'on' : ''}" data-fuel="${f}">${fuelLabel(f)}</button>`).join('');
-
-  const rangePills = rangePillsHTML('sc', popupRange, coverage.days);
-
-  // mini stats
-  const prices = series.map(s => s.price);
-  const hi = prices.length ? Math.max(...prices) : null;
-  const lo = prices.length ? Math.min(...prices) : null;
-  const fewSamples = series.length > 0 && series.length <= 2;
-  const highLabel = fewSamples ? tf('highRecent', { n: coverage.days }) : t('high');
-  const lowLabel = fewSamples ? tf('lowRecent', { n: coverage.days }) : t('low');
 
   const arrow = flat ? '' : (up ? '▲' : '▼');
   const sign = flat ? '' : (up ? '+' : '−');
@@ -365,13 +319,12 @@ function cardHTML(feature) {
       </div>` : '';
 
   const fav = isFavorite(feature);
+  const name = props.name || props.brand || '';
+  const freshness = stationFreshnessHTML(feature, 'sc');
   return `
   <div class="sc-card" data-sc-card>
     <div class="sc-top">
-      <div class="sc-title">
-        <div class="sc-name">${escapeHtml(props.name || props.brand || '')}</div>
-        <div class="sc-sub">${escapeHtml(props.brand || '')}${props.address ? ' · ' + escapeHtml(props.address) : ''}</div>
-      </div>
+      <div class="sc-name" title="${escapeHtml(name)}">${escapeHtml(name)}</div>
       <button class="sc-fav ${fav ? 'on' : ''}" data-sc-fav aria-label="${fav ? t('unfavorite') : t('favorite')}" aria-pressed="${fav}">${STAR_ICON}</button>
     </div>
     ${available.length > 1 ? `<div class="sc-pills">${fuelPills}</div>` : ''}
@@ -379,23 +332,11 @@ function cardHTML(feature) {
       <div class="sc-price">${priceVal != null ? fmt(priceVal) : '—'}<span class="sc-unit">¢</span></div>
       ${changeHTML}
     </div>
-    ${(benchHTML || regieHTML) ? `<div class="sc-bench">${benchHTML}${regieHTML}</div>` : ''}
-    <div class="sc-range">${rangePills}</div>
-    ${coverageHTML('sc', coverage)}
-    ${series.length ? `<div class="sc-chart">${sparklineSVG(series, color)}</div>` : `<div class="sc-empty">${t('noHistory')}</div>`}
-    ${priceVal != null ? `
-    <div class="sc-mini-stats">
-      <div class="sc-mini"><span>${highLabel}</span><b>${hi != null ? fmt(hi) : '—'}</b></div>
-      <div class="sc-mini"><span>${lowLabel}</span><b>${lo != null ? fmt(lo) : '—'}</b></div>
-      <div class="sc-mini"><span>≈ $/L</span><b>${centsToDollar(priceVal)}</b></div>
-    </div>` : ''}
-    <button class="sc-expand" data-expand>
-      <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M8 3H5a2 2 0 0 0-2 2v3m18 0V5a2 2 0 0 0-2-2h-3m0 18h3a2 2 0 0 0 2-2v-3M3 16v3a2 2 0 0 0 2 2h3"/></svg>
-      ${t('expand')}
-    </button>
-    <button class="sc-fillup" data-fillup-add>⛽ ${t('fillupRecordHere')}</button>
-    ${stationFreshnessHTML(feature, 'sc')}
-    ${popupUpdated ? `<div class="sc-updated">${popupUpdated}</div>` : ''}
+    ${freshness ? `<div class="sc-fresh" role="status" aria-live="polite">${freshness}</div>` : ''}
+    <div class="sc-actions">
+      <a class="sc-nav" href="${escapeHtml(navUrlFor(feature))}" target="_blank" rel="noopener" aria-label="${t('navigate')}">🧭 ${t('navigate')}</a>
+      <button class="sc-expand" data-expand aria-label="${t('detailsAria')}" aria-haspopup="dialog">${t('details')} <span class="sc-chevron" aria-hidden="true">›</span></button>
+    </div>
   </div>`;
 }
 
@@ -404,9 +345,8 @@ function escapeHtml(s) {
 }
 
 // ── Open the popup card for a station ──
-export async function showStationCard(feature, map, updatedText = '') {
+export async function showStationCard(feature, map) {
   const props = feature.properties;
-  popupUpdated = updatedText || '';
   // Respect the fuel chosen in the sidebar filter
   const checkedFuel = document.querySelector('.fuel-filter:checked');
   popupFuel = checkedFuel && props[checkedFuel.value + '_price'] != null ? checkedFuel.value
@@ -456,23 +396,13 @@ function wireCardEvents(feature, map) {
       activePopup.setHTML(cardHTML(currentFeature));
       return;
     }
-    const rangeBtn = e.target.closest('[data-days]');
-    if (rangeBtn && activePopup && currentFeature) {
-      popupRange = parseInt(rangeBtn.dataset.days, 10);
-      activePopup.setHTML(cardHTML(currentFeature));
-      return;
-    }
     const expand = e.target.closest('[data-expand]');
     if (expand && activePopup && currentFeature) {
-      if (activePopup) activePopup.remove();
+      activePopup.remove();
       activePopup = null;
-      openStationDetail(currentFeature, map);
-    }
-    const fillup = e.target.closest('[data-fillup-add]');
-    if (fillup && activePopup && currentFeature) {
-      if (activePopup) activePopup.remove();
-      activePopup = null;
-      openStationDetail(currentFeature, map).then(() => openFillupForm());
+      // The popup no longer prints the snapshot timestamp (#132): hand it to the
+      // panel so "updated at" is not lost when the card is expanded from the map.
+      openStationDetail(currentFeature, map, updatedTextFor(currentStations));
     }
   });
 }
@@ -506,7 +436,6 @@ function handleSnapshotApplied(snapshot) {
     const next = findByStationId(stations, stationId(currentFeature));
     if (next) {
       currentFeature = next;
-      if (nextUpdated) popupUpdated = nextUpdated;
       activePopup.setHTML(cardHTML(next));
     } else {
       // The station is gone from the official data: never keep stale numbers.
@@ -1046,13 +975,8 @@ async function renderDetail() {
   updateFillupLabels();
 
   // Navigate + updated
-  const isIOS = /iPhone|iPad|iPod/.test(navigator.userAgent);
-  const [lng, lat] = detailFeature.geometry.coordinates;
-  const navUrl = isIOS
-    ? `https://maps.apple.com/?daddr=${lat},${lng}&dirflg=d`
-    : `https://www.google.com/maps/dir/?api=1&destination=${lat},${lng}`;
   detailEl.querySelector('.sd-nav').innerHTML = `🧭 ${t('navigate')}`;
-  detailEl.querySelector('.sd-nav').onclick = () => window.open(navUrl, '_blank', 'noopener');
+  detailEl.querySelector('.sd-nav').onclick = () => window.open(navUrlFor(detailFeature), '_blank', 'noopener');
 
   const upd = detailUpdated;
   detailEl.querySelector('.sd-updated').textContent = upd;

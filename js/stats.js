@@ -284,6 +284,9 @@ function updateQuickStat(elementId, prices) {
 let pulseAnimationId = null;
 
 function updateLowestPriceHighlight(filteredStations) {
+  // The price-range sliders are seeded before Mapbox finishes loading (issue
+  // #118), so `updateStats` can legitimately run without a map instance.
+  if (!map || typeof map.getLayer !== 'function') return;
   if (map.getLayer('lowest-price')) map.removeLayer('lowest-price');
   if (map.getLayer('lowest-price-border')) map.removeLayer('lowest-price-border');
   if (map.getSource('lowest-price')) map.removeSource('lowest-price');
@@ -803,17 +806,12 @@ export function showPopup(feature) {
 }
 
 function updatePopup(feature) {
-  // Delegate to the Apple-stock style station card (popup + expandable panel)
-  const ts = currentStations?.metadata?.generated_at;
-  let updatedText = '';
-  if (ts) {
-    const d = new Date(ts);
-    const timeStr = d.toLocaleString(getLanguage(), { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' });
-    updatedText = tf('dataUpdated', { time: timeStr });
-  }
+  // Delegate to the Apple-stock style station card (compact popup + expandable
+  // panel). The popup itself no longer prints the snapshot timestamp — the
+  // freshness line covers "how old is this" (#132).
   loadHistoryData().catch(() => null)
     .then(() => import('./station-card.js'))
-    .then(mod => mod.showStationCard(feature, map, updatedText));
+    .then(mod => mod.showStationCard(feature, map));
 }
 
 export function openStationDetail(feature) {
