@@ -941,6 +941,11 @@ window.__qcGasMap = {
     return [[b.getWest(), b.getSouth()], [b.getEast(), b.getNorth()]];
   },
   getView: () => (map && map.getCenter ? { center: map.getCenter(), zoom: map.getZoom() } : null),
+  // Test hook (issue #132): centre the map on a station so the popup's box can
+  // be measured without the marker pinned to a viewport edge.
+  flyTo: (center, zoom = 14) => {
+    if (map && map.flyTo) map.flyTo({ center, zoom, duration: 0 });
+  },
   getBasemapStyleLoadMs: () => (typeof window !== 'undefined' ? window.__qcBasemapStyleLoadMs ?? null : null),
   // Last classified snapshot-load failure (issue #119); null after a success.
   getLastLoadError: () => lastLoadError

@@ -1652,17 +1652,26 @@ select:focus-visible {
 .sc-popup .mapboxgl-popup-close-button:hover { background: #f1f5f9; color: #475569; }
 
 /* Card layout */
-.sc-card { padding: 14px 14px 12px; width: 292px; user-select: none; }
-.sc-top { display: flex; align-items: flex-start; gap: 8px; padding-right: 24px; }
-.sc-title { flex: 1; min-width: 0; }
-.sc-name { font-size: 15px; font-weight: 700; color: #0f172a; line-height: 1.25; }
-.sc-sub { font-size: 11px; color: #64748b; margin-top: 2px; }
+.sc-card { padding: 8px 12px 6px; width: 292px; user-select: none; }
+.sc-top { display: flex; align-items: center; gap: 8px; padding-right: 20px; }
+.sc-name {
+  flex: 1;
+  min-width: 0;
+  font-size: 14px;
+  font-weight: 700;
+  color: #0f172a;
+  line-height: 1.2;
+  /* One line, always: a long corporate name must never push the price down. */
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
 .sc-fav {
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  width: 26px;
-  height: 26px;
+  width: 24px;
+  height: 24px;
   border: none;
   background: transparent;
   color: #cbd5e1;
@@ -1677,14 +1686,14 @@ select:focus-visible {
 .sc-fav.on svg { fill: currentColor; }
 
 /* Fuel pills */
-.sc-pills { display: flex; gap: 4px; margin: 12px 0 8px; }
+.sc-pills { display: flex; gap: 4px; margin-top: 5px; }
 .sc-pill {
   flex: 1;
-  min-height: 44px;
+  min-height: 28px;
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  padding: 5px 6px;
+  padding: 1px 6px;
   font-size: 11px;
   font-weight: 600;
   border-radius: 8px;
@@ -1702,24 +1711,24 @@ select:focus-visible {
 }
 
 /* Quote — the Apple-stock big number */
-.sc-quote { display: flex; align-items: baseline; gap: 10px; margin: 2px 0 2px; }
+.sc-quote { display: flex; align-items: baseline; gap: 8px; margin-top: 2px; }
 .sc-price {
-  font-size: 34px;
+  font-size: 24px;
   font-weight: 700;
   letter-spacing: -0.02em;
   color: #0f172a;
   font-variant-numeric: tabular-nums;
   line-height: 1;
 }
-.sc-price .sc-unit { font-size: 15px; font-weight: 600; color: #64748b; margin-left: 2px; }
+.sc-price .sc-unit { font-size: 13px; font-weight: 600; color: #64748b; margin-left: 2px; }
 .sc-change {
   display: inline-flex;
   align-items: center;
-  gap: 4px;
-  font-size: 12px;
+  gap: 3px;
+  font-size: 11px;
   font-weight: 600;
   border-radius: 999px;
-  padding: 2px 9px;
+  padding: 2px 7px;
   font-variant-numeric: tabular-nums;
   white-space: nowrap;
 }
@@ -1728,73 +1737,54 @@ select:focus-visible {
 .sc-change.up { background: #fef2f2; color: #dc2626; }
 .sc-change.flat { background: #f1f5f9; color: #64748b; }
 
-/* Range switcher */
-.sc-range { display: flex; gap: 2px; margin: 10px 0 4px; background: #f1f5f9; padding: 3px; border-radius: 9px; }
-.sc-rangepill {
-  flex: 1;
-  min-height: 44px;
+/* Freshness (issues #70/#96/#120): the only "when" the popup shows — the
+   snapshot timestamp used to be repeated right below it (#132). */
+/* Two lines at most: the whole popup has to stay inside a 190px budget, and
+   the full wording (including the stale hint) is always in the detail panel. */
+.sc-fresh {
+  display: -webkit-box;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 2;
+  line-clamp: 2;
+  overflow: hidden;
+  margin-top: 4px;
+  font-size: 10px;
+  line-height: 12px;
+  color: #94a3b8;
+  text-align: center;
+}
+.sc-fresh > div { display: inline; }
+.sc-fresh > div + div::before { content: ' · '; }
+.sc-observed, .sc-changed { font-size: 10px; color: #94a3b8; }
+.sc-stale { font-size: 9px; color: #b45309; opacity: 0.85; }
+
+/* Actions: a real link (keyboard, middle-click, "open in new tab") plus the
+   way into the detail panel. Both are 44px tall touch targets. */
+.sc-actions { display: flex; gap: 8px; margin-top: 3px; }
+.sc-nav,
+.sc-expand {
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  border: none;
-  background: transparent;
-  padding: 4px 0;
-  font-size: 11px;
-  font-weight: 600;
-  color: #64748b;
-  border-radius: 7px;
-  cursor: pointer;
-  transition: all 0.15s;
-}
-.sc-rangepill.on { background: #fff; color: #0f172a; box-shadow: 0 1px 3px rgba(15,23,42,0.12); }
-.sc-rangepill.is-disabled,
-.sc-rangepill:disabled { opacity: 0.42; cursor: not-allowed; box-shadow: none; background: transparent; color: #94a3b8; }
-
-/* Sparkline */
-.sc-chart { margin: 6px 0 2px; }
-.sc-empty { font-size: 12px; color: #94a3b8; text-align: center; padding: 18px 0; }
-.sd-empty { display: flex; align-items: center; justify-content: center; height: 100%; font-size: 12px; color: #94a3b8; text-align: center; padding: 18px 0; }
-[hidden].sd-empty { display: none; }
-
-/* Mini stats under chart */
-.sc-mini-stats {
-  display: grid;
-  grid-template-columns: repeat(3, 1fr);
-  gap: 1px;
-  background: #f1f5f9;
-  border-radius: 10px;
-  overflow: hidden;
-  margin-top: 6px;
-}
-.sc-mini { background: #f8fafc; padding: 7px 8px; text-align: center; }
-.sc-mini span { display: block; font-size: 9px; color: #94a3b8; text-transform: uppercase; letter-spacing: 0.04em; margin-bottom: 2px; }
-.sc-mini b { font-size: 12px; color: #0f172a; font-variant-numeric: tabular-nums; }
-
-/* Expand + updated */
-.sc-expand {
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  gap: 6px;
-  width: 100%;
-  margin-top: 10px;
-  padding: 8px 0;
+  gap: 5px;
+  flex: 1;
+  min-height: 44px;
+  padding: 0 8px;
   border: 1px solid #e2e8f0;
   border-radius: 9px;
   background: #fff;
   color: #334155;
   font-size: 12px;
   font-weight: 600;
+  text-decoration: none;
   cursor: pointer;
   transition: all 0.15s;
 }
+.sc-nav:hover,
 .sc-expand:hover { border-color: #1a73e8; color: #1a73e8; background: #f0f7ff; }
-.sc-updated { margin-top: 8px; font-size: 9px; color: #cbd5e1; text-align: center; }
-/* Station-level observation age (issue #70): honest, low-key. */
-.sc-observed { margin-top: 6px; font-size: 10px; color: #94a3b8; text-align: center; }
-/* When this price last moved, per our own ledger (issue #96). */
-.sc-changed { margin-top: 2px; font-size: 10px; color: #94a3b8; text-align: center; }
-.sc-stale { margin-top: 2px; font-size: 9px; color: #b45309; text-align: center; opacity: 0.85; }
+.sc-nav:focus-visible,
+.sc-expand:focus-visible { outline: 2px solid #1e293b; outline-offset: 2px; }
+.sc-chevron { font-size: 13px; }
 
 /* ══════════════════════════════════════
    Station Detail Panel (expanded card)
@@ -1936,6 +1926,8 @@ select:focus-visible {
 .sd-rangepill:disabled { opacity: 0.42; cursor: not-allowed; box-shadow: none; background: transparent; color: #94a3b8; }
 
 /* Chart */
+.sd-empty { display: flex; align-items: center; justify-content: center; height: 100%; font-size: 12px; color: #94a3b8; text-align: center; padding: 18px 0; }
+[hidden].sd-empty { display: none; }
 .sd-chart { position: relative; height: 240px; margin-top: 10px; }
 
 /* Stats grid */
@@ -2089,8 +2081,7 @@ select:focus-visible {
 .sd-changed { margin-top: 1px; font-size: 11px; color: #94a3b8; }
 .sd-stale { margin-top: 1px; font-size: 10px; color: #b45309; opacity: 0.85; }
 
-/* ── Same-day regional benchmark (popup + detail) ── */
-.sc-bench,
+/* ── Same-day regional benchmark (detail panel) ── */
 .sd-bench {
   margin-top: 12px;
   padding: 10px;
@@ -2099,7 +2090,6 @@ select:focus-visible {
   border-radius: 11px;
 }
 [hidden].sd-bench { display: none; }
-.sc-bench-head,
 .sd-bench-head {
   font-size: 10px;
   font-weight: 700;
@@ -2108,17 +2098,11 @@ select:focus-visible {
   letter-spacing: 0.05em;
   margin-bottom: 8px;
 }
-.sc-bench-grid {
-  display: grid;
-  grid-template-columns: repeat(3, 1fr);
-  gap: 6px;
-}
 .sd-bench-grid {
   display: grid;
   grid-template-columns: repeat(3, 1fr);
   gap: 8px;
 }
-.sc-bench-item,
 .sd-bench-item {
   background: #fff;
   border: 1px solid #f1f5f9;
@@ -2127,7 +2111,6 @@ select:focus-visible {
   text-align: center;
   min-width: 0;
 }
-.sc-bench-item span,
 .sd-bench-item span {
   display: block;
   font-size: 9px;
@@ -2139,27 +2122,21 @@ select:focus-visible {
   overflow: hidden;
   text-overflow: ellipsis;
 }
-.sc-bench-item b,
 .sd-bench-item b {
   font-size: 13px;
   color: #0f172a;
   font-variant-numeric: tabular-nums;
 }
 .sd-bench-item b { font-size: 15px; }
-.sc-bench-item.bench-pos b,
 .sd-bench-item.bench-pos b { color: #059669; }
-.sc-bench-item.bench-neg b,
 .sd-bench-item.bench-neg b { color: #dc2626; }
-.sc-bench-item.bench-zero b,
 .sd-bench-item.bench-zero b { color: #64748b; }
-.sc-bench-insufficient,
 .sd-bench-insufficient {
   font-size: 12px;
   color: #94a3b8;
   text-align: center;
   padding: 8px 0 4px;
 }
-.sc-bench-note,
 .sd-bench-note {
   margin-top: 8px;
   font-size: 10px;
@@ -2168,7 +2145,6 @@ select:focus-visible {
 }
 
 /* Official Régie weekly retail margin (region-level, before taxes) */
-.sc-regie,
 .sd-regie {
   display: flex;
   align-items: baseline;
@@ -2182,22 +2158,14 @@ select:focus-visible {
   color: #64748b;
 }
 .sd-regie { font-size: 12px; }
-.sc-regie span,
 .sd-regie span { min-width: 0; }
-.sc-regie b,
 .sd-regie b {
   white-space: nowrap;
   color: #0f172a;
   font-variant-numeric: tabular-nums;
 }
 
-/* Data coverage hint under the range switcher */
-.sc-coverage {
-  margin: 6px 0 0;
-  font-size: 10px;
-  color: #94a3b8;
-  text-align: center;
-}
+/* Data coverage hint under the range switcher (detail panel only, #132) */
 .sd-coverage {
   margin: 8px 0 0;
   font-size: 11px;
@@ -2224,7 +2192,7 @@ select:focus-visible {
     cursor: grab;
     touch-action: none;
   }
-  .sc-card { width: 260px; }
+  .sc-card { width: 268px; }
   .sd-bigprice { font-size: 42px; }
   .sd-chart { height: 190px; }
 }
@@ -2440,28 +2408,8 @@ select:focus-visible {
 .fillup-delete:hover { background: #fef2f2; color: #dc2626; }
 
 /* ══════════════════════════════════════
-   Fill-ups — popup + detail panel form
+   Fill-ups — detail panel form
    ══════════════════════════════════════ */
-.sc-fillup {
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  gap: 6px;
-  width: 100%;
-  margin-top: 8px;
-  min-height: 44px;
-  padding: 8px 0;
-  border: 1px solid #e2e8f0;
-  border-radius: 9px;
-  background: #fff;
-  color: #334155;
-  font-size: 12px;
-  font-weight: 600;
-  cursor: pointer;
-  transition: all 0.15s;
-}
-.sc-fillup:hover { border-color: #1a73e8; color: #1a73e8; background: #f0f7ff; }
-
 .sd-fillups {
   margin-top: 14px;
   padding: 14px;

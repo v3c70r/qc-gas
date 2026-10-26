@@ -34,11 +34,14 @@
 //                                   runs shell commands via sh(), not pi).
 //    AGENT_PI_HEARTBEAT_MS          heartbeat period logged while pi runs
 //                                   (default 60000, 0 = off)
+//    AGENT_PI_TIMEOUT_RETRIES       automatic retries of the SAME phase after a
+//                                   pi timeout (default 1; 0 = never retry).
+//                                   Timeouts are transient in practice (#130).
 // ══════════════════════════════════════════════════════════════════
 import { mkdirSync, readFileSync, writeFileSync, existsSync, copyFileSync, symlinkSync, rmSync } from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { PiTimeoutError, acquireWatchLock, clearBlockedState, detectBase, formatPiHeartbeat, isRejectedIssue, markPiTimeout, mergeIssueState, piTimeoutLogLine, piTimeoutNote, prepareImplementerBranch, releaseWatchLock, resolvePi, resolvePiHeartbeatMs, resolvePiTimeoutMs, resolveTesterCommands, runPiWithTimeout, selectPendingIssues, sh, syncRemoteHead } from './lib.mjs';
+import { PiTimeoutError, acquireWatchLock, clearBlockedState, cleanupPiTimeoutLeftovers, detectBase, formatPiHeartbeat, isRejectedIssue, markPiTimeout, mergeIssueState, mergeWithConflictHeal, piTimeoutLogLine, piTimeoutNote, piTimeoutRetryLogLine, prepareImplementerBranch, releaseWatchLock, resolvePi, resolvePiHeartbeatMs, resolvePiTimeoutMs, resolvePiTimeoutRetries, resolveTesterCommands, runPiWithTimeout, selectPendingIssues, sh, syncRemoteHead } from './lib.mjs';
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const AGENT = path.join(ROOT, '.agent');
@@ -175,6 +178,8 @@ async function runImplementer(issue, roundNote = '') {
   const out = await runPi(`agent-issue-${issue.number}`, prompt, branch, IMPL, {
     phase: 'impl',
     onHeartbeat: hb => log(issue.number, `A: ${formatPiHeartbeat(hb)}`),
+    onTimeoutRetry: line => log(issue.number, `A: ${line}`),
+    onRetrySuccess: () => log(issue.number, 'A: 超时后重试成功（同一阶段）'),
   });
   log(issue.number, `A: pi 输出（尾）:\n${out.split('\n').slice(-40).join('\n')}`);
 
@@ -241,7 +246,12 @@ function isModelUnavailable(err) {
 
 async function runReviewRound(issueNum, prNum) {
   const prompt = buildPrompt('reviewer', { issue: { number: issueNum }, pr: prNum });
-  const heartbeatNote = { phase: 'review', onHeartbeat: hb => log(issueNum, `B: ${formatPiHeartbeat(hb)}`) };
+  const heartbeatNote = {
+    phase: 'review',
+    onHeartbeat: hb => log(issueNum, `B: ${formatPiHeartbeat(hb)}`),
+    onTimeoutRetry: line => log(issueNum, `B: ${line}`),
+    onRetrySuccess: () => log(issueNum, 'B: 超时后重试成功（同一阶段）'),
+  };
   let out;
   try {
     out = await runPi(`agent-review-${prNum}`, prompt, null, REVIEW, heartbeatNote);
@@ -337,7 +347,7 @@ const IMPL = {
 };
 function describeModel(m) { return m.provider && m.model ? `${m.provider}/${m.model}` : '(pi default)'; }
 
-function runPi(sessionId, prompt, branchHint, model = {}, { phase = 'impl', onHeartbeat } = {}) {
+async function runPi(sessionId, prompt, branchHint, model = {}, { phase = 'impl', onHeartbeat, onTimeoutRetry, onRetrySuccess } = {}) {
   const cwdNote = branchHint ? `当前分支应为 agent 分支（已在本地 checkout）。` : '';
   const extra = prompt; // full system prompt already assembled by buildPrompt
   mkdirSync(TMP, { recursive: true });
@@ -358,8 +368,27 @@ function runPi(sessionId, prompt, branchHint, model = {}, { phase = 'impl', onHe
   // needs_human + an issue comment instead of blocking the whole pass forever
   // (issue #104). Nonzero exit with stdout still resolves to that stdout, so the
   // success/failure semantics of the old execFileSync call are unchanged.
-  return runPiWithTimeout({ bin, args, cwd: ROOT, timeoutMs, heartbeatMs, onHeartbeat })
-    .then(res => res.stdout);
+  //
+  // A timeout is TRANSIENT (issues #96/#118/#121 all succeeded on retry), so the
+  // SAME phase is retried once before escalating to a human (issue #130). The
+  // killed process may have left a git index.lock / half-built worktree behind,
+  // so those are cleared first — a retry must not reuse broken state.
+  const maxRetries = resolvePiTimeoutRetries();
+  for (let attempt = 1; ; attempt++) {
+    try {
+      const res = await runPiWithTimeout({ bin, args, cwd: ROOT, timeoutMs, heartbeatMs, onHeartbeat });
+      if (attempt > 1) onRetrySuccess?.();
+      return res.stdout;
+    } catch (err) {
+      const isTimeout = err instanceof PiTimeoutError || err?.code === 'PI_TIMEOUT';
+      if (!isTimeout || attempt > maxRetries) throw err;
+      const line = piTimeoutRetryLogLine(err.timeoutMs, attempt, maxRetries);
+      console.warn(`[pi] ${line}`);
+      try { onTimeoutRetry?.(line, err); } catch { /* logging must never break the run */ }
+      const cleaned = cleanupPiTimeoutLeftovers();
+      if (cleaned.removed.length) console.warn(`[pi] 已清理残留：${cleaned.removed.join(', ')}`);
+    }
+  }
 }
 
 // ── prompt builders ──
@@ -523,14 +552,14 @@ async function processIssueInner(issue, force = false) {
 
   if (process.env.TEST_SKIP === '1') {
     commentOnIssue(issue.number, `🧪 TEST_SKIP=1，跳过功能测试。`);
-    return await finishMerge(issue.number, s2[issue.number].pr || pr.number);
+    return await finishMerge(issue.number, s2[issue.number].pr || pr.number, s2[issue.number].branch || branch);
   }
 
   const maxFixes = parseInt(process.env.MAX_TEST_FIXES || '2', 10);
   for (let f = 0; f <= maxFixes; f++) {
     const t = runTester(issue.number, s2[issue.number].pr || pr.number, s2[issue.number].branch);
     if (t.pass) {
-      return await finishMerge(issue.number, s2[issue.number].pr || pr.number);
+      return await finishMerge(issue.number, s2[issue.number].pr || pr.number, s2[issue.number].branch || branch);
     }
     if (f === maxFixes) {
       commentOnIssue(issue.number, `❌ 功能测试在 ${maxFixes + 1} 次尝试后仍失败，PR 保持开放，请人工处理。`);
@@ -547,7 +576,7 @@ async function processIssueInner(issue, force = false) {
   }
 }
 
-async function finishMerge(issueNum, prNum) {
+async function finishMerge(issueNum, prNum, branch = null) {
   // 合并不可逆 —— 在真正 `gh pr merge` 之前重新取一次 issue 标签确认 /reject。
   // review + test 窗口长达数十分钟，正是用户最想反悔的时候；只在取活时检查
   // 无法覆盖"实现已经在跑"的 in-flight 路径（issue #14 明确承诺"PR 不会被
@@ -578,22 +607,59 @@ async function finishMerge(issueNum, prNum) {
   } catch (e) {
     commentOnPr(prNum, '🤖 Agent B 已批准（同一 GitHub 账号无法提交正式 approve review，以本评论作为批准记录）+ Agent C 测试通过。');
   }
-  try {
-    gh(['pr', 'merge', String(prNum), '--squash', '--delete-branch']);
-  } catch (e) {
-    console.warn('merge failed:', e.message);
-    commentOnIssue(issueNum, `❌ 自动合并失败（可能受分支保护限制）：${e.message}. 请手动合并 PR #${prNum}。`);
+  const mergeBefore = state.load()[issueNum] || {};
+  const mergeBranch = branch || mergeBefore.branch || `agent/${issueNum}`;
+  // Merge can be blocked by conflicts that are PURELY generated data (master gets
+  // a data/ commit every 15–60 min, so any branch touching data/ conflicts).
+  // Those are mechanical → heal once and retry; code conflicts stay human (#130).
+  const res = await mergeWithConflictHeal({
+    pr: prNum,
+    branch: mergeBranch,
+    base: BASE,
+    cwd: ROOT,
+    mergeFn: async () => gh(['pr', 'merge', String(prNum), '--squash', '--delete-branch']),
+    // idempotent: the same PR is never healed twice, so repeat passes cannot
+    // produce a second merge attempt or a duplicate comment
+    allowHeal: mergeBefore.dataConflictHealedPr !== prNum,
+    onLog: msg => log(issueNum, msg),
+  });
+  if (!res.merged) {
+    console.warn('merge failed:', res.error?.message || res.reason);
     const sf = state.load();
+    if (!sf[issueNum]) sf[issueNum] = {};
     sf[issueNum].status = 'needs_human';
+    sf[issueNum].mergeFailure = {
+      pr: prNum,
+      reason: res.reason,
+      files: res.files || [],
+      at: new Date().toISOString(),
+    };
+    const notified = mergeBefore.mergeConflictNotifiedPr === prNum;
+    if (!notified) sf[issueNum].mergeConflictNotifiedPr = prNum;
     state.save(sf);
-    log(issueNum, '状态: needs_human (merge blocked)');
+    log(issueNum, `状态: needs_human (merge blocked: ${res.reason}${(res.files || []).length ? ` files=${res.files.join(',')}` : ''})`);
+    if (notified) return { skipped: 'needs_human' };  // already told the human — no duplicate comment
+    const detail = String(res.error?.message || res.error || res.reason).slice(0, 600);
+    const fileList = (res.files || []).length
+      ? `\n\n冲突文件（${res.files.length} 个）：\n${res.files.map(f => `- \`${f}\``).join('\n')}`
+      : '';
+    const hint = res.reason === 'code-conflict' || res.reason === 'merge-retry-failed'
+      ? '\n\n这些文件不在 `data/` 下（真实代码冲突），流水线不会自动解冲突，需要人工合并。'
+      : res.reason === 'already-healed'
+        ? '\n\n`data/` 冲突自愈此前已尝试过（幂等），不再重复尝试合并。'
+        : '';
+    try { commentOnIssue(issueNum, `❌ 自动合并失败：${detail}${fileList}${hint}\n\n请手动合并 PR #${prNum}。`); } catch (e) { log(issueNum, `合并失败评论发送失败: ${e.message}`); }
     return { skipped: 'needs_human' };
   }
   const s = state.load();
   if (!s[issueNum]) s[issueNum] = {};
+  if (res.healed) {
+    s[issueNum].dataConflictHealedPr = prNum;
+    log(issueNum, `data/ 冲突自愈后合并成功（PR #${prNum}，取远端的文件：${(res.files || []).join(', ')}）`);
+  }
   s[issueNum].status = 'merged';
   state.save(s);
-  commentOnIssue(issueNum, `🎉 已合并 (PR #${prNum})。issue 将被自动关闭。`);
+  commentOnIssue(issueNum, `🎉 已合并 (PR #${prNum})${res.healed ? '（`data/` 冲突已自动解决）' : ''}。issue 将被自动关闭。`);
   log(issueNum, '状态: merged');
   return { merged: true };
 }

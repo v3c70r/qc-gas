@@ -777,17 +777,19 @@ test.describe('Station History (real data only)', () => {
     await expect(page.locator('.mapboxgl-popup').first()).toBeVisible();
 
     const popup = page.locator('.mapboxgl-popup').first();
-    await expect(popup.locator('.sc-empty')).toBeVisible();
+    // The compact popup (#132) shows the quote but never a made-up change chip.
     await expect(popup.locator('.sc-change')).toHaveCount(0);
     await expect(popup).not.toContainText('0.0%');
-    await expect(popup.locator('.sc-mini-stats .sc-mini').nth(0).locator('b')).toHaveText('—');
-    await expect(popup.locator('.sc-mini-stats .sc-mini').nth(1).locator('b')).toHaveText('—');
 
-    // Expanded panel also shows an empty state, not an empty axis.
+    // Expanded panel also shows an empty state, not an empty axis — and the
+    // min/high grid it owns still degrades to em dashes.
     await popup.locator('[data-expand]').click();
     await expect(page.locator('#station-panel')).toHaveClass(/open/);
     await expect(page.locator('#station-chart-empty')).toBeVisible();
     await expect(page.locator('.sd-change-row')).toBeEmpty();
+    const stats = page.locator('#station-panel .sd-stats .sd-stat b');
+    await expect(stats.nth(0)).toHaveText('—');
+    await expect(stats.nth(1)).toHaveText('—');
   });
 });
 
@@ -1881,10 +1883,14 @@ test.describe('Same-day regional benchmark', () => {
 
     await stationHistoryShardRoute({ '2026-09': history })(page);
 
+    // Range pills and the coverage line live in the detail panel (#132).
     const popup = await openFirstStation(page);
-    await expect(popup.locator('.sc-rangepill[aria-disabled="true"]')).toHaveCount(5);
-    await expect(popup.locator('.sc-coverage')).toContainText('2');
-    await expect(popup.locator('.sc-coverage')).toContainText('2026-09-18');
+    await popup.locator('[data-expand]').click();
+    const panel = page.locator('#station-panel');
+    await expect(panel).toHaveClass(/open/);
+    await expect(panel.locator('.sd-rangepill[aria-disabled="true"]')).toHaveCount(5);
+    await expect(panel.locator('.sd-coverage').last()).toContainText('2');
+    await expect(panel.locator('.sd-coverage').last()).toContainText('2026-09-18');
   });
 
   test('reads the last 90 days from the month shards', async ({ page }) => {
@@ -1915,14 +1921,17 @@ test.describe('Same-day regional benchmark', () => {
     await stationHistoryShardRoute(reversed)(page);
 
     const popup = await openFirstStation(page);
-    await expect(popup.locator('.sc-coverage')).toContainText(String(days.length));
-    await expect(popup.locator('.sc-coverage')).toContainText(days[0]);
-    await expect(popup.locator('.sc-chart')).toBeVisible();
+    await popup.locator('[data-expand]').click();
+    const panel = page.locator('#station-panel');
+    await expect(panel).toHaveClass(/open/);
+    await expect(panel.locator('.sd-coverage').last()).toContainText(String(days.length));
+    await expect(panel.locator('.sd-coverage').last()).toContainText(days[0]);
+    await expect(panel.locator('.sd-chart canvas')).toBeVisible();
     // 7 / 30 / 90 stay selectable, 180 / 365 are beyond the recorded window.
-    await expect(popup.locator('.sc-rangepill[aria-disabled="true"]')).toHaveCount(2);
+    await expect(panel.locator('.sd-rangepill[aria-disabled="true"]')).toHaveCount(2);
   });
 
-  test('station card and detail panel show the same-day benchmark block', async ({ page }) => {
+  test('the detail panel shows the same-day benchmark block the popup dropped', async ({ page }) => {
     await page.goto(BASE_URL);
     await page.waitForLoadState('networkidle', { timeout: 15000 }).catch(() => {});
     await page.waitForTimeout(3000);
@@ -1933,14 +1942,14 @@ test.describe('Same-day regional benchmark', () => {
     await expect(page.locator('.mapboxgl-popup').first()).toBeVisible();
 
     const popup = page.locator('.mapboxgl-popup').first();
-    await expect(popup.locator('.sc-bench')).toBeVisible();
-    await expect(popup.locator('.sc-bench-grid .sc-bench-item')).toHaveCount(5);
-    await expect(popup.locator('.sc-bench-note')).toContainText(/are cheaper|moins chères|比本站便宜/);
+    // The compact popup keeps only the at-a-glance rows (#132).
+    await expect(popup.locator('.sc-bench')).toHaveCount(0);
 
     await popup.locator('[data-expand]').click();
     await expect(page.locator('#station-panel')).toHaveClass(/open/);
     await expect(page.locator('.sd-bench')).toBeVisible();
     await expect(page.locator('.sd-bench-grid .sd-bench-item')).toHaveCount(5);
+    await expect(page.locator('.sd-bench-note')).toContainText(/are cheaper|moins chères|比本站便宜/);
   });
 });
 
@@ -3443,7 +3452,7 @@ test.describe('Station card follows the applied snapshot (Issue #51)', () => {
     }, { name, address, fuelKey });
   }
 
-  test('a refresh updates the open card price, $/L, benchmark and timestamp', async ({ page }) => {
+  test('a refresh updates the open card price and the panel benchmark + timestamp', async ({ page }) => {
     let body = uniformSnapshot({ generatedAt: isoAgo(40 * 60 * 1000), regular: 175.9 });
     await serveSnapshot(page, () => body);
 
@@ -3452,23 +3461,31 @@ test.describe('Station card follows the applied snapshot (Issue #51)', () => {
     await selectLang(page, 'fr-CA');
 
     const station = await openFirstCard(page);
-    const popup = page.locator('.mapboxgl-popup').first();
+    let popup = page.locator('.mapboxgl-popup').first();
     await expect(popup.locator('.sc-price')).toHaveText('175.9¢');
-    const updatedBefore = await popup.locator('.sc-updated').innerText();
+
+    // The benchmark and the snapshot timestamp moved to the detail panel (#132).
+    await popup.locator('[data-expand]').click();
+    const panel = page.locator('#station-panel');
+    await expect(panel).toHaveClass(/open/);
+    await expect(panel.locator('.sd-bigprice')).toContainText('175.9');
+    const updatedBefore = await panel.locator('.sd-updated').innerText();
     expect(updatedBefore.length).toBeGreaterThan(0);
 
     body = uniformSnapshot({ generatedAt: isoAgo(20 * 1000), regular: 199.9 });
     expect(await page.evaluate(() => window.__qcGasFreshness.refreshNow())).toBe(true);
 
-    await expect(popup.locator('.sc-price')).toHaveText('199.9¢');
-    await expect(popup.locator('.sc-mini').filter({ hasText: '$/L' }).locator('b')).toHaveText('2.00');
+    await expect(panel.locator('.sd-bigprice')).toContainText('199.9');
     // Station price and regional median come from the SAME snapshot ⇒ at median.
-    await expect(popup.locator('.sc-bench-item').nth(1).locator('b')).toHaveText('0.0¢');
-    await expect(popup.locator('.sc-updated')).not.toHaveText(updatedBefore);
+    await expect(panel.locator('.sd-bench-item').nth(1).locator('b')).toHaveText('0.0¢');
+    await expect(panel.locator('.sd-updated')).not.toHaveText(updatedBefore);
 
-    // One screen, one truth: the map source holds the same price as the card.
+    // One screen, one truth: the map source, the reopened card and the panel
+    // hold the same price.
     const sourcePrice = await mapSourcePrice(page, station);
     expect(sourcePrice).toBe(199.9);
+    await page.locator('#station-list .list-item').first().click();
+    popup = page.locator('.mapboxgl-popup').first();
     await expect(popup.locator('.sc-price')).toHaveText(sourcePrice.toFixed(1) + '¢');
   });
 
@@ -4026,9 +4043,7 @@ test.describe('Régie weekly retail margin', () => {
     await expect(page.locator('.mapboxgl-popup').first()).toBeVisible();
 
     const popup = page.locator('.mapboxgl-popup').first();
-    await expect(popup.locator('.sc-regie')).toBeVisible();
-    await expect(popup.locator('.sc-regie')).toContainText('5.0');
-    await expect(popup.locator('.sc-regie')).toContainText('¢/L');
+    await expect(popup.locator('.sc-regie')).toHaveCount(0);
 
     await popup.locator('[data-expand]').click();
     await expect(page.locator('#station-panel')).toHaveClass(/open/);

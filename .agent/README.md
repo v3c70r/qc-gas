@@ -135,20 +135,33 @@ PI_BIN=/path/to/pi npm run agent:watch    # 显式指定 pi 二进制
 AGENT_PI_TIMEOUT_MS=1800000 npm run agent:watch   # 单次 pi 调用硬超时 (默认 3000000 = 50 分钟；0 = 关闭)
 AGENT_PI_TIMEOUT_IMPL_MS=600000 AGENT_PI_TIMEOUT_REVIEW_MS=300000 npm run agent:watch  # 分阶段覆盖
 AGENT_PI_HEARTBEAT_MS=30000 npm run agent:watch # 心跳日志间隔 (默认 60000；0 = 关闭)
+AGENT_PI_TIMEOUT_RETRIES=0 npm run agent:watch  # 超时后同阶段自动重试次数 (默认 1；0 = 不重试)
 ```
 
-### pi 超时与心跳（issue #104）
+### pi 超时与心跳（issue #104 / #130）
 
-单次 pi 调用受硬超时约束（`AGENT_PI_TIMEOUT_MS`，默认 50 分钟），超时后：
+单次 pi 调用受硬超时约束（`AGENT_PI_TIMEOUT_MS`，默认 50 分钟）。超时后：
 
 - 整个进程组被 SIGTERM/SIGKILL 终止（不止直接子进程——否则孙进程仍握着管道，`close` 永不触发）；
 - `.agent/logs/issue-<N>.md` 记录 `pi 超时（N 分钟）`；
-- 该 issue 置 `needs_human`，并在 issue 上留评论说明「可能是模型 API 挂起，请重试 `/approve` 或人工检查」。
+- **先自愈**：清掉落残留（`.git/index.lock`、半成品 `wt-*`/`merge-*` worktree），
+  在**同一阶段**自动重试 1 次（`AGENT_PI_TIMEOUT_RETRIES`，默认 1），日志写
+  `pi 超时，自动重试 1/1`；实测 #96/#118/#121 都是「重试一次就成功」的瞬时挂起；
+- **两次都超时**才置 `needs_human`，并在 issue 上留评论说明「可能是模型 API 挂起，请重试 `/approve` 或人工检查」。
 
 运行期间每 `AGENT_PI_HEARTBEAT_MS`（默认 60s）打印一行
 `pi 心跳：已运行 N 分钟，最近输出 T 秒前`。判读：`T` ≈ 总运行时长 → 大概率在等 API（挂起）；
 `T` 明显小于总时长 → 更像在等子进程（测试）。这条心跳是区分「长测试」与「API 挂起」的唯一线索。
-```
+
+### 合并冲突自愈（issue #130）
+
+master 上探针/Actions 每 15–60 分钟提交一次 `data/`，所以任何碰过 `data/` 的分支必然冲突
+（#93/#103/#114/#124 四次都是全 `data/`）。`gh pr merge` 失败且**冲突文件全部在 `data/` 下**时：
+
+- 在临时 worktree 中 `git fetch origin && git merge origin/<base>`，`data/` 文件取 `--theirs`（远端权威）；
+- commit → push 到 PR 分支 → 重试 `gh pr merge`（最多 1 次），日志写明哪些文件取了远端；
+- 存在**非 `data/` 冲突**（真实代码冲突）→ 不自动解，`needs_human` 并在 issue 评论里列出冲突文件；
+- 幂等：同一 PR 只自愈一次、只发一条失败评论（`state.json` 记录 `dataConflictHealedPr` / `mergeConflictNotifiedPr`）。
 
 ### 常驻行为说明
 
