@@ -4,8 +4,9 @@
 // Keeping `detectBase()` and `resolvePi()` in ONE place avoids the two drifting
 // apart (lessons #1 PATH pollution, #14 missing origin/HEAD).
 import { execFileSync, spawn } from 'node:child_process';
-import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import path from 'node:path';
+import { tmpdir } from 'node:os';
 import { fileURLToPath } from 'node:url';
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
@@ -256,6 +257,10 @@ export function resolvePi(env = process.env) {
 //     distinguishable by eye (both look identical to the process table).
 export const DEFAULT_PI_TIMEOUT_MS = 50 * 60_000;   // 50 min (issue asks 45–60)
 export const DEFAULT_PI_HEARTBEAT_MS = 60_000;
+// Timeouts are TRANSIENT in practice (issues #96/#118/#121 all succeeded on the
+// very next attempt), so one retry in the same phase replaces a human round-trip
+// (issue #130). Two consecutive timeouts still escalate to needs_human.
+export const DEFAULT_PI_TIMEOUT_RETRIES = 1;
 
 // `AGENT_PI_TIMEOUT_<PHASE>_MS` (IMPL/REVIEW) wins over AGENT_PI_TIMEOUT_MS;
 // 0 = timeout disabled (explicit opt-out), invalid/negative = default.
@@ -270,6 +275,13 @@ export function resolvePiTimeoutMs(phase = 'pi', env = process.env) {
 export function resolvePiHeartbeatMs(env = process.env) {
   const n = parseInt(env.AGENT_PI_HEARTBEAT_MS ?? '', 10);
   if (!Number.isFinite(n) || n < 0) return DEFAULT_PI_HEARTBEAT_MS;
+  return n;
+}
+
+/** How many automatic retries after a pi timeout (0 = never retry). */
+export function resolvePiTimeoutRetries(env = process.env) {
+  const n = parseInt(env.AGENT_PI_TIMEOUT_RETRIES ?? '', 10);
+  if (!Number.isFinite(n) || n < 0) return DEFAULT_PI_TIMEOUT_RETRIES;
   return n;
 }
 
@@ -297,6 +309,11 @@ export function formatPiHeartbeat({ elapsedMs, sinceLastOutputMs }) {
 /** Log line written to .agent/logs/issue-<N>.md on timeout (acceptance criterion). */
 export function piTimeoutLogLine(timeoutMs) {
   return `pi 超时（${formatDuration(timeoutMs)}）：本轮 pass 已终止，issue 置 needs_human（可能是模型 API 挂起或工具调用无限等待）`;
+}
+
+/** Log line written when a timeout is retried instead of escalating (#130). */
+export function piTimeoutRetryLogLine(timeoutMs, attempt = 1, max = DEFAULT_PI_TIMEOUT_RETRIES) {
+  return `pi 超时，自动重试 ${attempt}/${max}（超时阈值 ${formatDuration(timeoutMs)}，同一阶段；已清理残留 worktree/锁）`;
 }
 
 /** Issue comment posted when a pass dies of a pi timeout. */
@@ -426,4 +443,186 @@ export function runPiWithTimeout({
       settle(resolve, { stdout, stderr, code, signal });
     });
   });
+}
+
+// ── retry hygiene (issue #130) ──────────────────────────────────────
+/**
+ * Clear what a killed pi left behind, BEFORE retrying the same phase: a stale
+ * `.git/index.lock` (git was interrupted → every later git command fails with
+ * "index.lock exists"), stale worktree registrations and half-built
+ * `wt-*`/`merge-*` scratch dirs. Prompt files are inputs of the retried call
+ * and are deliberately kept. Returns the list of removed things for the log.
+ */
+export function cleanupPiTimeoutLeftovers({ cwd = ROOT, tmpDir = path.join(ROOT, '.agent', 'tmp') } = {}) {
+  const removed = [];
+  for (const lock of ['index.lock']) {
+    const file = path.join(cwd, '.git', lock);
+    try {
+      if (existsSync(file)) { rmSync(file, { force: true }); removed.push(`.git/${lock}`); }
+    } catch { /* best effort: never let cleanup break the retry */ }
+  }
+  try { sh(['git', 'worktree', 'prune'], { cwd }); } catch { /* no repo / no git */ }
+  try {
+    for (const name of readdirSync(tmpDir)) {
+      if (!/^(wt-|merge-)/.test(name)) continue;
+      const dir = path.join(tmpDir, name);
+      try { sh(['git', 'worktree', 'remove', dir, '--force'], { cwd }); } catch { /* not registered */ }
+      rmSync(dir, { recursive: true, force: true });
+      removed.push(name);
+    }
+  } catch { /* tmp dir may not exist */ }
+  return { removed };
+}
+
+// ── merge self-healing (issue #130) ─────────────────────────────────
+// master receives a `data/` commit every 15–60 min (probe + Actions), so any
+// branch that touched `data/` is GUARANTEED to conflict, and the resolution is
+// always the same: the remote (regenerated) version wins. That is mechanical —
+// doing it by hand 4 times (#93/#103/#114/#124) is pure waste. Code conflicts
+// are never touched: they go to a human with the file list.
+export const GENERATED_DATA_DIR = 'data/';
+
+/** True for `data/` and anything below it (generated probe/Actions output). */
+export function isGeneratedDataPath(p) {
+  const n = String(p || '').trim().replace(/^\.\//, '');
+  return n === 'data' || n === GENERATED_DATA_DIR || n.startsWith(GENERATED_DATA_DIR);
+}
+
+/** Parse unmerged paths out of `git status --porcelain` / `git diff` output. */
+export function parseUnmergedPaths(text) {
+  return String(text || '')
+    .split('\n')
+    .map(l => l.trim())
+    .filter(Boolean)
+    .map(l => l.replace(/^[A-Z?]{1,2}\s+/, '').trim())
+    .filter(Boolean);
+}
+
+/** Only conflicts entirely under `data/` may be auto-resolved (empty ≠ safe). */
+export function isDataOnlyConflict(paths = []) {
+  const list = (paths || []).map(p => String(p).trim()).filter(Boolean);
+  return list.length > 0 && list.every(isGeneratedDataPath);
+}
+
+/** Is this gh/git failure a merge conflict (vs branch protection / permissions)? */
+export function isMergeConflictError(errOrMsg) {
+  const s = String((errOrMsg && (errOrMsg.stderr || errOrMsg.stdout || errOrMsg.message)) || errOrMsg || '');
+  return /conflict|CONFLICT|not mergeable|mergeable=false|merge conflict/i.test(s);
+}
+
+/**
+ * Resolve a merge conflict that consists ONLY of generated `data/` files.
+ * Works in a throw-away detached worktree so the caller's tree/branch is never
+ * disturbed (the pipeline's main worktree may be on any branch).
+ *
+ * Returns:
+ *   { resolved: true,  merged: true,  pushed: true, files }   → healed & pushed
+ *   { resolved: true,  merged: false, files: [] }             → nothing to do
+ *   { resolved: false, reason: 'code-conflict'|'merge-failed', files }
+ */
+export function healMergeConflict({ branch, base, cwd = ROOT, worktreeDir } = {}) {
+  if (!branch || !base) return { resolved: false, reason: 'no-branch', files: [] };
+  const scratch = worktreeDir || mkdtempSync(path.join(tmpdir(), 'agent-merge-'));
+  const inScratch = (args) => sh(['git', ...args], { cwd: scratch });
+  let added = false;
+  try {
+    sh(['git', 'fetch', 'origin', '--quiet'], { cwd });
+    try {
+      sh(['git', 'worktree', 'add', '--detach', scratch, `origin/${branch}`], { cwd });
+      added = true;
+    } catch {
+      sh(['git', 'worktree', 'add', '--detach', scratch, branch], { cwd });
+      added = true;
+    }
+    let mergeFailed = false;
+    try {
+      inScratch(['merge', '--no-commit', '--no-ff', `origin/${base}`]);
+    } catch {
+      mergeFailed = true;
+    }
+    if (!mergeFailed) {
+      // already up to date / merged cleanly → nothing to heal, leave the branch alone
+      try { inScratch(['merge', '--abort']); } catch { /* nothing in progress */ }
+      return { resolved: true, merged: false, pushed: false, files: [] };
+    }
+    const unmerged = parseUnmergedPaths(inScratch(['diff', '--name-only', '--diff-filter=U']));
+    if (!isDataOnlyConflict(unmerged)) {
+      try { inScratch(['merge', '--abort']); } catch { /* best effort */ }
+      return { resolved: false, reason: unmerged.length ? 'code-conflict' : 'merge-failed', files: unmerged };
+    }
+    for (const f of unmerged) {
+      // remote (regenerated) version is authoritative for data/
+      inScratch(['checkout', '--theirs', '--', f]);
+      inScratch(['add', '--', f]);
+    }
+    inScratch(['commit', '--no-edit', '-m',
+      `Merge origin/${base} into ${branch}: data/ 冲突自动取远端（生成数据，issue #130）`]);
+    sh(['git', 'push', 'origin', `HEAD:refs/heads/${branch}`], { cwd: scratch });
+    return { resolved: true, merged: true, pushed: true, files: unmerged };
+  } finally {
+    if (added) { try { sh(['git', 'worktree', 'remove', scratch, '--force'], { cwd }); } catch { /* already gone */ } }
+    try { sh(['git', 'worktree', 'prune'], { cwd }); } catch { /* no repo */ }
+    if (!worktreeDir) rmSync(scratch, { recursive: true, force: true });
+  }
+}
+
+/**
+ * `gh pr merge` with ONE self-healing retry for data-only conflicts.
+ * `mergeFn` is injectable (the pipeline passes `gh pr merge …`) so the retry
+ * logic is testable without network. `allowHeal=false` makes repeat runs
+ * idempotent: no second heal, no second merge attempt.
+ */
+export async function mergeWithConflictHeal({
+  pr,
+  branch,
+  base,
+  cwd = ROOT,
+  mergeFn,
+  healFn = healMergeConflict,
+  maxMergeRetries = 1,
+  allowHeal = true,
+  onLog = () => {},
+} = {}) {
+  const attempt = async (label) => {
+    try { await mergeFn({ pr, label }); return { ok: true }; }
+    catch (error) { return { ok: false, error }; }
+  };
+
+  const first = await attempt('initial');
+  if (first.ok) return { merged: true, healed: false, files: [], attempts: 1 };
+  onLog(`merge 失败（PR #${pr}）：${first.error?.message || first.error}`);
+  if (!isMergeConflictError(first.error)) {
+    return { merged: false, reason: 'merge-error', files: [], error: first.error, attempts: 1 };
+  }
+  if (!allowHeal) {
+    onLog(`冲突已尝试过自愈（幂等：不再重复合并/解冲突），交人工`);
+    return { merged: false, reason: 'already-healed', files: [], error: first.error, attempts: 1 };
+  }
+
+  const heal = healFn({ branch, base, cwd });
+  if (!heal.resolved) {
+    onLog(`冲突不能自愈（${heal.reason}）：${(heal.files || []).join(', ') || '(未知文件)'}`);
+    return { merged: false, reason: heal.reason, files: heal.files || [], error: first.error, attempts: 1 };
+  }
+  if (heal.merged) {
+    onLog(`data/ 冲突已自愈：${heal.files.join(', ')} 取远端版本，已推送到 ${branch}`);
+  } else {
+    onLog(`分支 ${branch} 已包含 origin/${base}（无待解冲突），重试 merge`);
+  }
+
+  let last = first;
+  for (let i = 0; i < maxMergeRetries; i++) {
+    const again = await attempt(`retry-${i + 1}`);
+    if (again.ok) {
+      onLog(`重试 merge 成功（第 ${i + 1}/${maxMergeRetries} 次，PR #${pr}）`);
+      return { merged: true, healed: Boolean(heal.merged), files: heal.files || [], attempts: 2 + i };
+    }
+    last = again;
+    onLog(`重试 merge 失败：${again.error?.message || again.error}`);
+    if (!isMergeConflictError(again.error)) {
+      return { merged: false, reason: 'merge-error', files: heal.files || [], error: again.error, attempts: 2 + i };
+    }
+  }
+  onLog(`重试 merge 后仍冲突，交人工（冲突文件：${(heal.files || []).join(', ') || '无'}）`);
+  return { merged: false, reason: 'merge-retry-failed', files: heal.files || [], error: last.error, attempts: 1 + maxMergeRetries };
 }
