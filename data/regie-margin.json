@@ -1,80 +1,80 @@
 {
  "v": 1,
- "generated_at": "2026-10-27T10:00:47Z",
+ "generated_at": "2026-10-30T15:00:17Z",
  "source_url": "https://www.regie-energie.qc.ca/storage/app/media/consommateurs/informations-pratiques/prix-petrole/publications/Publications-hebdomadaires/Bulletin/bulletin.pdf",
  "week": {
-  "start": "2026-10-12",
-  "end": "2026-10-19",
-  "published_at": "2026-10-23"
+  "start": "2026-10-19",
+  "end": "2026-10-26",
+  "published_at": "2026-10-30"
  },
  "fuels": {
   "regular": {
    "regions": {
     "Bas-Saint-Laurent": {
-     "prev_mean": 195.1,
-     "mean": 193.2,
-     "delta": -1.9,
-     "margin": 11.0
+     "prev_mean": 193.2,
+     "mean": 189.1,
+     "delta": -4.2,
+     "margin": 15.4
     },
     "Saguenay–Lac-Saint-Jean": {
-     "prev_mean": 185.8,
-     "mean": 174.1,
-     "delta": -11.7,
-     "margin": -3.7
+     "prev_mean": 174.1,
+     "mean": 171.0,
+     "delta": -3.1,
+     "margin": 1.6
     },
     "Capitale-Nationale": {
-     "prev_mean": 193.7,
-     "mean": 189.6,
-     "delta": -4.1,
-     "margin": 6.6
+     "prev_mean": 189.6,
+     "mean": 185.8,
+     "delta": -3.8,
+     "margin": 11.2
     },
     "Mauricie": {
-     "prev_mean": 191.3,
-     "mean": 188.2,
-     "delta": -3.0,
-     "margin": 5.4
+     "prev_mean": 188.2,
+     "mean": 185.9,
+     "delta": -2.3,
+     "margin": 11.4
     },
     "Estrie": {
-     "prev_mean": 192.2,
-     "mean": 189.2,
-     "delta": -2.9,
-     "margin": 6.1
+     "prev_mean": 189.2,
+     "mean": 185.6,
+     "delta": -3.6,
+     "margin": 11.0
     },
     "Montréal": {
-     "prev_mean": 196.1,
+     "prev_mean": 188.9,
      "mean": 188.9,
-     "delta": -7.2,
-     "margin": 3.7
+     "delta": 0.0,
+     "margin": 11.6
     },
     "Outaouais": {
-     "prev_mean": 186.2,
-     "mean": 181.9,
-     "delta": -4.3,
-     "margin": 2.4
+     "prev_mean": 181.9,
+     "mean": 176.9,
+     "delta": -4.9,
+     "margin": 6.1
     },
     "Abitibi-Témiscamingue": {
-     "prev_mean": 196.7,
-     "mean": 195.3,
-     "delta": -1.5,
-     "margin": 12.1
+     "prev_mean": 195.3,
+     "mean": 190.3,
+     "delta": -4.9,
+     "margin": 15.8
     },
     "Côte-Nord": {
-     "prev_mean": 195.6,
-     "mean": 194.9,
-     "delta": -0.7,
-     "margin": 11.3
+     "prev_mean": 194.9,
+     "mean": 190.5,
+     "delta": -4.5,
+     "margin": 15.4
     },
     "Nord-du-Québec": {
-     "prev_mean": 210.6,
-     "mean": 209.6,
-     "delta": -1.1,
-     "margin": 21.2,
+     "prev_mean": 209.6,
+     "mean": 204.6,
+     "delta": -5.0,
+     "margin": 24.9,
      "sub": {
       "Jamésie": {
-       "prev_mean": 210.6,
-       "mean": 209.6,
-       "delta": -1.1,
-       "margin": 21.2
+       "prev_mean": 209.6,
+       "mean": 204.6,
+       "delta": -5.0,
+       "margin": 24.9
       },
       "Nunavik": {
        "prev_mean": null,
@@ -85,304 +85,297 @@
      }
     },
     "Gaspésie–Iles-de-la-Madeleine": {
-     "prev_mean": 199.4,
-     "mean": 196.2,
-     "delta": -3.2,
-     "margin": 13.6
+     "prev_mean": 196.2,
+     "mean": 191.8,
+     "delta": -4.3,
+     "margin": 17.8
     },
     "Chaudière-Appalaches": {
-     "prev_mean": 193.1,
-     "mean": 189.7,
-     "delta": -3.4,
-     "margin": 6.4
+     "prev_mean": 189.7,
+     "mean": 186.7,
+     "delta": -2.9,
+     "margin": 11.9
     },
     "Laval": {
-     "prev_mean": 195.9,
-     "mean": 188.8,
-     "delta": -7.1,
-     "margin": 3.4
+     "prev_mean": 188.8,
+     "mean": 188.5,
+     "delta": -0.3,
+     "margin": 11.2
     },
     "Lanaudière": {
-     "prev_mean": 191.3,
-     "mean": 186.4,
-     "delta": -4.9,
-     "margin": 3.2
+     "prev_mean": 186.4,
+     "mean": 183.9,
+     "delta": -2.6,
+     "margin": 9.0
     },
     "Laurentides": {
-     "prev_mean": 192.8,
-     "mean": 186.9,
-     "delta": -5.9,
-     "margin": 3.3
+     "prev_mean": 186.9,
+     "mean": 184.7,
+     "delta": -2.2,
+     "margin": 9.4
     },
     "Montérégie": {
-     "prev_mean": 189.4,
-     "mean": 183.8,
-     "delta": -5.7,
-     "margin": 0.9
+     "prev_mean": 183.8,
+     "mean": 181.7,
+     "delta": -2.0,
+     "margin": 7.1
     },
     "Centre-du-Québec": {
-     "prev_mean": 189.6,
-     "mean": 183.9,
-     "delta": -5.7,
-     "margin": 1.3
+     "prev_mean": 183.9,
+     "mean": 178.7,
+     "delta": -5.2,
+     "margin": 4.8
     }
    },
    "quebec": {
-    "prev_mean": 192.3,
-    "mean": 187.3,
-    "delta": -5.0,
-    "margin": 4.5
+    "prev_mean": 187.3,
+    "mean": 184.5,
+    "delta": -2.8,
+    "margin": 10.0
    }
   },
   "super": {
    "regions": {
     "Bas-Saint-Laurent": {
-     "prev_mean": 220.7,
-     "mean": 218.8,
-     "delta": -1.9,
-     "margin": 14.7
+     "prev_mean": 218.8,
+     "mean": 214.7,
+     "delta": -4.1,
+     "margin": 19.1
     },
     "Saguenay–Lac-Saint-Jean": {
-     "prev_mean": 211.3,
-     "mean": 199.6,
-     "delta": -11.7,
-     "margin": 0.0
+     "prev_mean": 199.6,
+     "mean": 196.6,
+     "delta": -3.1,
+     "margin": 5.3
     },
     "Capitale-Nationale": {
-     "prev_mean": 219.1,
-     "mean": 215.1,
-     "delta": -4.1,
-     "margin": 10.2
+     "prev_mean": 215.1,
+     "mean": 211.2,
+     "delta": -3.8,
+     "margin": 14.9
     },
     "Mauricie": {
-     "prev_mean": 217.6,
-     "mean": 214.5,
-     "delta": -3.1,
-     "margin": 9.7
-    },
-    "Estrie": {
-     "prev_mean": 218.8,
-     "mean": 215.9,
-     "delta": -2.9,
-     "margin": 10.9
-    },
-    "Montréal": {
-     "prev_mean": 223.1,
-     "mean": 215.9,
-     "delta": -7.2,
-     "margin": 8.6
-    },
-    "Outaouais": {
-     "prev_mean": 212.5,
-     "mean": 208.2,
-     "delta": -4.3,
-     "margin": 6.8
-    },
-    "Abitibi-Témiscamingue": {
-     "prev_mean": 223.3,
-     "mean": 221.8,
-     "delta": -1.4,
-     "margin": 16.7
-    },
-    "Côte-Nord": {
-     "prev_mean": 221.5,
-     "mean": 221.2,
-     "delta": -0.3,
+     "prev_mean": 214.5,
+     "mean": 212.0,
+     "delta": -2.5,
      "margin": 15.6
     },
+    "Estrie": {
+     "prev_mean": 215.9,
+     "mean": 212.3,
+     "delta": -3.5,
+     "margin": 15.8
+    },
+    "Montréal": {
+     "prev_mean": 215.9,
+     "mean": 215.8,
+     "delta": -0.1,
+     "margin": 16.5
+    },
+    "Outaouais": {
+     "prev_mean": 208.2,
+     "mean": 203.3,
+     "delta": -4.9,
+     "margin": 10.5
+    },
+    "Abitibi-Témiscamingue": {
+     "prev_mean": 221.8,
+     "mean": 217.0,
+     "delta": -4.8,
+     "margin": 20.5
+    },
+    "Côte-Nord": {
+     "prev_mean": 221.2,
+     "mean": 216.8,
+     "delta": -4.3,
+     "margin": 19.9
+    },
     "Nord-du-Québec": {
-     "prev_mean": 226.6,
-     "mean": 225.7,
-     "delta": -1.0,
-     "margin": 16.7,
+     "prev_mean": 225.7,
+     "mean": 219.9,
+     "delta": -5.8,
+     "margin": 19.7,
      "sub": {
       "Jamésie": {
-       "prev_mean": 226.6,
-       "mean": 225.7,
-       "delta": -1.0,
-       "margin": 16.7
+       "prev_mean": 225.7,
+       "mean": 219.9,
+       "delta": -5.8,
+       "margin": 19.7
       }
      }
     },
     "Gaspésie–Iles-de-la-Madeleine": {
-     "prev_mean": 224.9,
-     "mean": 221.7,
-     "delta": -3.2,
-     "margin": 17.3
+     "prev_mean": 221.7,
+     "mean": 217.2,
+     "delta": -4.5,
+     "margin": 21.4
     },
     "Chaudière-Appalaches": {
-     "prev_mean": 218.9,
-     "mean": 215.4,
-     "delta": -3.5,
-     "margin": 10.3
+     "prev_mean": 215.4,
+     "mean": 212.6,
+     "delta": -2.9,
+     "margin": 15.8
     },
     "Laval": {
-     "prev_mean": 222.4,
-     "mean": 215.3,
-     "delta": -7.1,
-     "margin": 8.0
+     "prev_mean": 215.3,
+     "mean": 215.0,
+     "delta": -0.3,
+     "margin": 15.7
     },
     "Lanaudière": {
-     "prev_mean": 217.6,
-     "mean": 212.7,
-     "delta": -4.9,
-     "margin": 7.5
+     "prev_mean": 212.7,
+     "mean": 210.2,
+     "delta": -2.5,
+     "margin": 13.4
     },
     "Laurentides": {
-     "prev_mean": 219.6,
-     "mean": 213.5,
-     "delta": -6.0,
-     "margin": 7.9
+     "prev_mean": 213.5,
+     "mean": 211.4,
+     "delta": -2.1,
+     "margin": 14.1
     },
     "Montérégie": {
-     "prev_mean": 215.9,
-     "mean": 210.2,
-     "delta": -5.7,
-     "margin": 5.4
+     "prev_mean": 210.2,
+     "mean": 208.2,
+     "delta": -2.0,
+     "margin": 11.6
     },
     "Centre-du-Québec": {
-     "prev_mean": 215.8,
-     "mean": 210.0,
-     "delta": -5.8,
-     "margin": 5.5
+     "prev_mean": 210.0,
+     "mean": 204.9,
+     "delta": -5.1,
+     "margin": 9.0
     }
    },
    "quebec": {
-    "prev_mean": 218.4,
-    "mean": 213.5,
-    "delta": -5.0,
-    "margin": 8.7
+    "prev_mean": 213.5,
+    "mean": 210.6,
+    "delta": -2.9,
+    "margin": 14.2
    }
   },
   "diesel": {
    "regions": {
     "Bas-Saint-Laurent": {
-     "prev_mean": 289.9,
-     "mean": 290.0,
-     "delta": 0.2,
-     "margin": -3.7
+     "prev_mean": 290.0,
+     "mean": 290.7,
+     "delta": 0.7,
+     "margin": 8.1
     },
     "Saguenay–Lac-Saint-Jean": {
-     "prev_mean": 286.5,
-     "mean": 284.9,
-     "delta": -1.6,
-     "margin": -6.7
+     "prev_mean": 284.9,
+     "mean": 282.4,
+     "delta": -2.5,
+     "margin": 2.3
     },
     "Capitale-Nationale": {
-     "prev_mean": 289.1,
-     "mean": 289.2,
-     "delta": 0.1,
-     "margin": -5.3
+     "prev_mean": 289.2,
+     "mean": 288.7,
+     "delta": -0.5,
+     "margin": 5.5
     },
     "Mauricie": {
-     "prev_mean": 289.0,
-     "mean": 289.2,
+     "prev_mean": 289.2,
+     "mean": 289.4,
      "delta": 0.2,
-     "margin": -5.5
+     "margin": 5.8
     },
     "Estrie": {
-     "prev_mean": 290.7,
-     "mean": 290.5,
-     "delta": -0.3,
-     "margin": -4.8
+     "prev_mean": 290.5,
+     "mean": 290.0,
+     "delta": -0.4,
+     "margin": 6.0
     },
     "Montréal": {
-     "prev_mean": 293.2,
-     "mean": 292.8,
-     "delta": -0.5,
-     "margin": -1.5
+     "prev_mean": 292.8,
+     "mean": 290.7,
+     "delta": -2.0,
+     "margin": 7.9
     },
     "Outaouais": {
-     "prev_mean": 292.4,
-     "mean": 292.7,
-     "delta": 0.3,
-     "margin": -2.1
+     "prev_mean": 292.7,
+     "mean": 291.2,
+     "delta": -1.4,
+     "margin": 7.9
     },
     "Abitibi-Témiscamingue": {
-     "prev_mean": 289.9,
-     "mean": 290.7,
-     "delta": 0.8,
-     "margin": -5.1
+     "prev_mean": 290.7,
+     "mean": 291.0,
+     "delta": 0.3,
+     "margin": 6.3
     },
     "Côte-Nord": {
-     "prev_mean": 291.4,
-     "mean": 291.7,
-     "delta": 0.2,
-     "margin": -4.6
+     "prev_mean": 291.7,
+     "mean": 290.3,
+     "delta": -1.3,
+     "margin": 5.4
     },
     "Nord-du-Québec": {
-     "prev_mean": 309.0,
-     "mean": 310.5,
-     "delta": 1.5,
-     "margin": 9.5,
+     "prev_mean": 310.5,
+     "mean": 307.7,
+     "delta": -2.8,
+     "margin": 18.3,
      "sub": {
       "Jamésie": {
-       "prev_mean": 309.0,
-       "mean": 310.5,
-       "delta": 1.5,
-       "margin": 9.5
+       "prev_mean": 310.5,
+       "mean": 307.7,
+       "delta": -2.8,
+       "margin": 18.3
       }
      }
     },
     "Gaspésie–Iles-de-la-Madeleine": {
-     "prev_mean": 293.3,
-     "mean": 293.2,
-     "delta": -0.1,
-     "margin": -0.4
+     "prev_mean": 293.2,
+     "mean": 292.6,
+     "delta": -0.7,
+     "margin": 10.2
     },
     "Chaudière-Appalaches": {
-     "prev_mean": 288.6,
-     "mean": 288.7,
-     "delta": 0.0,
-     "margin": -6.0
+     "prev_mean": 288.7,
+     "mean": 288.6,
+     "delta": -0.1,
+     "margin": 5.1
     },
     "Laval": {
-     "prev_mean": 293.2,
-     "mean": 292.7,
-     "delta": -0.5,
-     "margin": -1.7
+     "prev_mean": 292.7,
+     "mean": 290.2,
+     "delta": -2.5,
+     "margin": 7.4
     },
     "Lanaudière": {
-     "prev_mean": 290.7,
-     "mean": 290.6,
-     "delta": -0.2,
-     "margin": -3.7
+     "prev_mean": 290.6,
+     "mean": 289.2,
+     "delta": -1.4,
+     "margin": 6.3
     },
     "Laurentides": {
-     "prev_mean": 292.3,
-     "mean": 291.8,
-     "delta": -0.5,
-     "margin": -2.6
+     "prev_mean": 291.8,
+     "mean": 289.7,
+     "delta": -2.1,
+     "margin": 6.8
     },
     "Montérégie": {
-     "prev_mean": 291.4,
-     "mean": 291.1,
-     "delta": -0.3,
-     "margin": -3.4
+     "prev_mean": 291.1,
+     "mean": 289.4,
+     "delta": -1.8,
+     "margin": 6.3
     },
     "Centre-du-Québec": {
      "prev_mean": 287.7,
-     "mean": 287.7,
-     "delta": 0.0,
-     "margin": -6.9
+     "mean": 286.7,
+     "delta": -1.0,
+     "margin": 3.4
     }
    },
    "quebec": {
-    "prev_mean": 290.7,
-    "mean": 290.5,
-    "delta": -0.2,
-    "margin": -3.9
+    "prev_mean": 290.5,
+    "mean": 289.3,
+    "delta": -1.2,
+    "margin": 6.3
    }
   }
  },
  "rack": [
-  {
-   "week": "2026-09-28",
-   "regular": 143.6,
-   "super": 160.1,
-   "diesel": 229.3,
-   "mazout": 212.1
-  },
   {
    "week": "2026-10-05",
    "regular": 142.0,
@@ -403,11 +396,18 @@
    "super": 148.5,
    "diesel": 224.2,
    "mazout": 207.0
+  },
+  {
+   "week": "2026-10-26",
+   "regular": 132.5,
+   "super": 151.0,
+   "diesel": 223.4,
+   "mazout": 207.2
   }
  ],
  "source": {
-  "etag": "\"ac408cdcf862dd1:0\"",
-  "last_modified": "Fri, 23 Oct 2026 14:14:48 GMT",
-  "fetched_at": "2026-10-27T10:00:47Z"
+  "etag": "\"395747d97c68dd1:0\"",
+  "last_modified": "Fri, 30 Oct 2026 14:42:12 GMT",
+  "fetched_at": "2026-10-30T15:00:17Z"
  }
 }
