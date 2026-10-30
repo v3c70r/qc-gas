@@ -1,1 +1,1 @@
-{"v":1,"last_fetch_at":"2026-10-30T04:50:10Z","fetches":960,"last_reason":"event \"repository_dispatch\" (not budget-counted): slot 04:50 due (0 min ago)","event":"repository_dispatch"}
+{"v":1,"last_fetch_at":"2026-10-30T05:05:10Z","fetches":961,"last_reason":"event \"repository_dispatch\" (not budget-counted): slot 05:00 [explore] due (5 min ago)","event":"repository_dispatch"}
