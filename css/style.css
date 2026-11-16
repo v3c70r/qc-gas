@@ -1027,6 +1027,35 @@ body {
   .pwa-install-actions {
     justify-content: flex-end;
   }
+
+  /* Docked guidance keeps the compact single-line layout on phones; the mobile
+     column stack would cover too much of the map. */
+  #header > .pwa-install {
+    flex-direction: row;
+    align-items: center;
+    padding: 6px 6px 6px 10px;
+  }
+}
+
+/* Issue #134: when the install guidance is docked in the header stack it is a
+   normal pill in the flow — never a fixed overlay — so it cannot sit on top of
+   the radius buttons, the locate FAB or the collapsed results sheet. */
+#header > .pwa-install {
+  position: static;
+  left: auto;
+  bottom: auto;
+  transform: none;
+  width: fit-content;
+  max-width: min(92vw, 340px);
+  padding: 8px 8px 8px 12px;
+  gap: 8px;
+  border-radius: 8px;
+  box-shadow: 0 2px 8px rgba(0,0,0,0.1);
+}
+
+#header > .pwa-install .pwa-install-text {
+  font-size: 12px;
+  font-weight: 600;
 }
 
 /* Service worker update banner (issue #45) — non-blocking, user decides when */

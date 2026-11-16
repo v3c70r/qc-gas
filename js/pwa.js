@@ -19,6 +19,9 @@ let generatedAt = null;
 let stationCount = 0;
 let installPrompt = null;
 let bannerVisible = false;
+// Issue #134: a dismissal is a decision, not a per-session annoyance, so it is
+// remembered. The guidance must not come back and cover the map on every visit.
+const INSTALL_DISMISSED_KEY = 'qc-gas-install-dismissed';
 let serviceWorkerRegistration = null;
 let waitingWorker = null;
 let updateBannerVisible = false;
@@ -33,6 +36,23 @@ function isStandalone() {
 
 function isIOS() {
   return /iphone|ipad|ipod/i.test(navigator.userAgent);
+}
+
+function isInstallDismissed() {
+  try {
+    return localStorage.getItem(INSTALL_DISMISSED_KEY) === '1';
+  } catch {
+    // Private mode / blocked storage: keep the banner, it is still dismissible.
+    return false;
+  }
+}
+
+function rememberInstallDismissed() {
+  try {
+    localStorage.setItem(INSTALL_DISMISSED_KEY, '1');
+  } catch {
+    // Persisting is best-effort; the current-page dismissal already happened.
+  }
 }
 
 function canRegisterServiceWorker() {
@@ -271,7 +291,7 @@ export function isResponseFromCache(response) {
 // ── Install entry ─────────────────────────────────────────────────────────
 
 function createInstallBanner(ios) {
-  if (bannerVisible) return;
+  if (bannerVisible || isInstallDismissed()) return;
   bannerVisible = true;
 
   const wrap = document.createElement('div');
@@ -314,14 +334,21 @@ function createInstallBanner(ios) {
   close.setAttribute('aria-label', t('installAppDismiss'));
   close.textContent = '✕';
   close.addEventListener('click', () => {
+    rememberInstallDismissed();
     bannerVisible = false;
     wrap.remove();
   });
   actions.appendChild(close);
 
+  // Issue #134: a fixed bottom banner landed on top of the radius buttons, the
+  // locate FAB, the collapsed results sheet and Safari's own toolbar. Docking it
+  // in the header stack keeps it inside the existing pill layout, so it can
+  // never occlude another control. The body fallback keeps working if the
+  // header is absent.
+  const header = document.getElementById('header');
   wrap.appendChild(text);
   wrap.appendChild(actions);
-  document.body.appendChild(wrap);
+  (header || document.body).appendChild(wrap);
 
   onLanguageChange(() => {
     text.textContent = t(ios ? 'iosInstallGuide' : 'installApp');

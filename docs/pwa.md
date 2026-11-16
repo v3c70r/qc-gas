@@ -63,6 +63,9 @@ npm run icons
 - Service worker **仅在 `import.meta.env.PROD` 且 HTTPS 下注册**，因此 Playwright 的 Vite dev 测试不受影响。
 - Chrome/Edge/Android 出现 `beforeinstallprompt` 时显示三语“安装应用”入口（44px、可关闭）；已处于 `display-mode: standalone` 时隐藏。
 - iOS Safari 显示“分享 → 添加到主屏”指引（iOS 不派发 `beforeinstallprompt`）。
+- 两种入口都**停靠在 `#header` 竖排胶囊里**，而不是固定在视口底部（issue #134）：iPhone Safari
+  上的固定底部条会压住半径按钮、定位 FAB、收起的结果面板，还会和 Safari 自身的工具栏打架。
+  关闭后写入 `qc-gas-install-dismissed=1`，下次访问不再出现。
 - 断网或数据来自缓存时，`#data-status` 显示“离线 · 最后同步 `<generated_at>`”，不会把缓存价格伪装成实时；恢复在线后自动恢复。
 
 ## 个人数据与备份（`js/databackup.js`）
