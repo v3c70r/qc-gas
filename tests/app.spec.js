@@ -2047,6 +2047,53 @@ test.describe('PWA installability and offline shell', () => {
   });
 });
 
+// Issue #134: on iPhone Safari the "Share → Add to Home Screen" hint floated at
+// the bottom of the viewport, on top of the radius buttons, the locate FAB, the
+// collapsed results sheet and Safari's own toolbar. It now docks into the
+// header stack, so it can never cover another control, and a dismissal sticks.
+test.describe('iOS install guidance banner stays out of the way (Issue #134)', () => {
+  const IPHONE_UA = 'Mozilla/5.0 (iPhone; CPU iPhone OS 17_5 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.5 Mobile/15E148 Safari/604.1';
+
+  test.use({ userAgent: IPHONE_UA, viewport: { width: 390, height: 844 } });
+
+  test.beforeEach(async ({ page }) => {
+    await page.goto(BASE_URL);
+    await page.waitForLoadState('networkidle', { timeout: 15000 }).catch(() => {});
+  });
+
+  const boxesOverlap = (a, b) => {
+    if (!a || !b) return false;
+    return a.x < b.x + b.width && b.x < a.x + a.width &&
+      a.y < b.y + b.height && b.y < a.y + a.height;
+  };
+
+  test('docks the guidance in the header instead of floating over map controls', async ({ page }) => {
+    const banner = page.locator('#pwa-install');
+    await expect(banner).toBeVisible();
+
+    // In flow inside #header: no fixed overlay can cover the map's controls.
+    expect(await banner.evaluate((el) => el.parentElement?.id)).toBe('header');
+    expect(await banner.evaluate((el) => getComputedStyle(el).position)).toBe('static');
+
+    const bannerBox = await banner.boundingBox();
+    for (const selector of ['#radius-control', '#locate-btn', '#legend', '#sidebar', '#header h1']) {
+      const control = page.locator(selector).first();
+      // Every map control must still be visible and untouched by the banner.
+      const controlBox = await control.boundingBox();
+      expect(boxesOverlap(bannerBox, controlBox), `${selector} must not be covered`).toBe(false);
+    }
+  });
+
+  test('a dismissed guidance banner stays dismissed on the next visit', async ({ page }) => {
+    await page.locator('#pwa-install-close').click();
+    await expect(page.locator('#pwa-install')).toHaveCount(0);
+
+    await page.reload();
+    await page.waitForLoadState('networkidle', { timeout: 15000 }).catch(() => {});
+    await expect(page.locator('#pwa-install')).toHaveCount(0);
+  });
+});
+
 test.describe('Province-first view & location memory (Issue #39)', () => {
   const isValidCoord = (f) => {
     const [lng, lat] = f.geometry.coordinates;
